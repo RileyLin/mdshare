@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/v/:id", "destination": "/api/render?id=:id" },
+    { "source": "/raw/:id", "destination": "/api/share?id=:id" }
+  ]
+}
