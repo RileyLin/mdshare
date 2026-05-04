@@ -1,6 +1,166 @@
-// GET /api/dashboard — returns the dashboard HTML page
+// GET /api/dashboard — returns the dashboard HTML page (auth-gated)
+import { isAuthenticated } from './auth.js';
+
+const LOGIN_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login — mdshare</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --ink: oklch(16% 0.01 260);
+      --ink-2: oklch(38% 0.015 260);
+      --ink-3: oklch(56% 0.01 260);
+      --paper: oklch(97.5% 0.005 80);
+      --paper-2: oklch(94% 0.008 80);
+      --border: oklch(86% 0.01 80);
+      --accent: oklch(52% 0.18 250);
+      --error: oklch(52% 0.2 25);
+    }
+    html { -webkit-font-smoothing: antialiased; }
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--paper);
+      color: var(--ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      width: 100%;
+      max-width: 360px;
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 40px 36px;
+      box-shadow: 0 2px 8px oklch(0% 0 0 / 0.05), 0 12px 40px oklch(0% 0 0 / 0.07);
+      opacity: 0;
+      animation: fadeUp 0.35s 0.05s cubic-bezier(0.16,1,0.3,1) forwards;
+    }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .wordmark {
+      font-family: 'Instrument Serif', serif;
+      font-size: 1.3rem;
+      color: var(--ink);
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 28px;
+    }
+    .wordmark-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); display: inline-block; }
+    .label {
+      display: block;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--ink-3);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .input {
+      width: 100%;
+      padding: 10px 14px;
+      font-family: 'DM Sans', sans-serif;
+      font-size: 15px;
+      color: var(--ink);
+      background: var(--paper);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 15%, transparent);
+    }
+    .btn {
+      width: 100%;
+      margin-top: 16px;
+      padding: 11px 20px;
+      font-family: 'DM Sans', sans-serif;
+      font-size: 14px;
+      font-weight: 500;
+      color: white;
+      background: var(--accent);
+      border: none;
+      border-radius: 9px;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    .btn:hover { opacity: 0.88; }
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .error-msg {
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--error);
+      text-align: center;
+      min-height: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <a class="wordmark" href="/"><span class="wordmark-dot"></span>mdshare</a>
+    <label class="label" for="pwd">Password</label>
+    <input class="input" type="password" id="pwd" placeholder="••••••••" autocomplete="current-password" autofocus>
+    <button class="btn" id="submit-btn" onclick="login()">Sign in</button>
+    <p class="error-msg" id="err"></p>
+  </div>
+  <script>
+    document.getElementById('pwd').addEventListener('keydown', e => {
+      if (e.key === 'Enter') login();
+    });
+    async function login() {
+      const pwd = document.getElementById('pwd').value;
+      const btn = document.getElementById('submit-btn');
+      const err = document.getElementById('err');
+      if (!pwd) return;
+      btn.disabled = true;
+      btn.textContent = 'Signing in…';
+      err.textContent = '';
+      try {
+        const res = await fetch('/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: pwd }),
+        });
+        if (res.ok) {
+          window.location.href = '/dashboard';
+        } else {
+          err.textContent = 'Wrong password';
+          btn.disabled = false;
+          btn.textContent = 'Sign in';
+          document.getElementById('pwd').select();
+        }
+      } catch (e) {
+        err.textContent = 'Network error — try again';
+        btn.disabled = false;
+        btn.textContent = 'Sign in';
+      }
+    }
+  <\/script>
+</body>
+</html>`;
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).end();
+
+  if (!isAuthenticated(req)) {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(401).send(LOGIN_HTML);
+  }
 
   const html = `<!DOCTYPE html>
 <html lang="en">

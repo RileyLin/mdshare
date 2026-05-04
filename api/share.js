@@ -1,6 +1,7 @@
-// POST /api/share — accepts markdown, returns a shareable URL
-// GET  /api/share?id=xxx — returns raw markdown
-// PATCH /api/share — updates content for an existing paste (inline edit)
+// POST /api/share — accepts markdown, returns a shareable URL (public)
+// GET  /api/share?id=xxx — returns raw markdown (public)
+// PATCH /api/share — updates content for an existing paste (auth-gated)
+import { isAuthenticated } from './auth.js';
 
 function nanoid(size = 7) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -96,6 +97,10 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'PATCH') {
+    if (!isAuthenticated(req)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     let body = req.body;
     if (typeof body === 'string') {
       try { body = JSON.parse(body); } catch {}

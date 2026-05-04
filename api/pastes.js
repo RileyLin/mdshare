@@ -1,6 +1,7 @@
-// GET /api/pastes — list all pastes for dashboard
+// GET /api/pastes — list all pastes for dashboard (auth-gated)
 // Returns: id, title, content preview (200 chars), created_at, pinned, expires_at
 // Sorted: pinned first, then by created_at desc. Limit 100.
+import { isAuthenticated } from './auth.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -12,6 +13,10 @@ export default async function handler(req, res) {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+
+  if (!isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
 
   const dbRes = await fetch(
     `${SUPABASE_URL}/rest/v1/mdshare_pastes?select=id,title,content,created_at,pinned,expires_at&order=pinned.desc,created_at.desc&limit=100`,

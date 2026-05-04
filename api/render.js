@@ -1,4 +1,6 @@
 // GET /api/render?id=xxx — returns rendered HTML (redesigned UI + all actions + inline edit)
+import { isAuthenticated } from './auth.js';
+
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
@@ -14,7 +16,7 @@ async function getMarkdown(id) {
   return row.content;
 }
 
-const HTML_TEMPLATE = (content, title, id) => `<!DOCTYPE html>
+const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -197,7 +199,7 @@ const HTML_TEMPLATE = (content, title, id) => `<!DOCTYPE html>
 
     <!-- View mode actions -->
     <div class="top-bar-actions view-actions">
-      <button class="btn" id="btn-edit" onclick="enterEdit()">✎ Edit</button>
+      ${authed ? '<button class="btn" id="btn-edit" onclick="enterEdit()">✎ Edit</button>' : ''}
       <button class="btn" id="btn-download" onclick="downloadMd()">⬇ Download</button>
       <button class="btn" id="btn-copy" onclick="copyMd()">📋 Copy</button>
       <div class="save-dropdown-wrapper" id="save-wrapper">
@@ -211,11 +213,11 @@ const HTML_TEMPLATE = (content, title, id) => `<!DOCTYPE html>
     </div>
 
     <!-- Edit mode actions -->
-    <div class="top-bar-actions edit-actions">
+    ${authed ? `<div class="top-bar-actions edit-actions">
       <span style="font-size:12px;color:var(--ink-3)">editing</span>
       <button class="btn" id="btn-cancel" onclick="cancelEdit()">Cancel</button>
       <button class="btn btn-primary" id="btn-save-edit" onclick="saveEdit()">Save</button>
-    </div>
+    </div>` : ''}
   </div>
 
   <!-- Read view -->
@@ -406,8 +408,9 @@ export default async function handler(req, res) {
 
   const titleMatch = markdown.match(/^#\s+(.+)$/m);
   const title = titleMatch ? titleMatch[1].trim() : 'Untitled';
+  const authed = isAuthenticated(req);
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate');
-  return res.send(HTML_TEMPLATE(markdown, title, id));
+  return res.send(HTML_TEMPLATE(markdown, title, id, authed));
 }

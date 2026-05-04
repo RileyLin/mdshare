@@ -1,4 +1,6 @@
-// POST /api/save-to-notion — saves a paste as a Notion page
+// POST /api/save-to-notion — saves a paste as a Notion page [auth-gated]
+import { isAuthenticated } from './auth.js';
+
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const NOTION_TOKEN = process.env.NOTION_TOKEN;
@@ -120,6 +122,10 @@ export default async function handler(req, res) {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  if (!isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
 
   let body = req.body;
   if (typeof body === 'string') {
