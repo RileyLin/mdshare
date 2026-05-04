@@ -6,12 +6,13 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-const MDSHARE_API = "https://mdshare-rileylins-projects.vercel.app/api/share";
+// Default: public hosted API. Set MDSHARE_API to use your own instance.
+const MDSHARE_API = process.env.MDSHARE_API || "https://mdshare-rileylins-projects.vercel.app/api/share";
 
 const server = new Server(
   {
-    name: "mdshare-mcp",
-    version: "1.0.0",
+    name: "mdshare",
+    version: "1.0.1",
   },
   {
     capabilities: {
@@ -26,7 +27,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "share_markdown",
         description:
-          "Share markdown as a beautifully rendered web page. Returns a URL you can send in any chat app.",
+          "Share markdown as a beautifully rendered web page. Returns a URL you can send to anyone. Use this whenever you want to share structured content (tables, code, lists, diagrams) in a readable format.",
         inputSchema: {
           type: "object",
           properties: {
@@ -37,7 +38,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             ttl: {
               type: "number",
               description:
-                "Time-to-live in seconds (optional, default: 86400 = 24h)",
+                "Time-to-live in seconds (default: 86400 = 24h, max: 604800 = 7 days)",
             },
           },
           required: ["markdown"],
@@ -102,6 +103,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("mdshare-mcp fatal error:", err);
+  console.error("mdshare fatal error:", err);
   process.exit(1);
 });
