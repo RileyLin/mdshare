@@ -1,16 +1,15 @@
 {
-  "name": "mdshare-mcp",
-  "version": "1.0.0",
-  "description": "MCP server for mdshare — share markdown as beautifully rendered web pages",
+  "name": "mdshare",
+  "version": "1.0.1",
+  "description": "The output layer for AI agents \u2014 turn any markdown into a beautiful shareable link. MCP server for Claude Desktop & AI assistants.",
   "type": "module",
   "bin": {
-    "mdshare-mcp": "./dist/index.js"
+    "mdshare": "./dist/index.js"
   },
   "main": "./dist/index.js",
   "scripts": {
-    "build": "node node_modules/.bin/tsc",
-    "start": "node dist/index.js",
-    "dev": "tsc --watch"
+    "build": "tsc",
+    "start": "node dist/index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"
@@ -27,7 +26,20 @@
     "markdown",
     "share",
     "model-context-protocol",
-    "claude"
+    "claude",
+    "claude-code",
+    "ai-tools",
+    "agent",
+    "llm"
   ],
-  "license": "MIT"
+  "author": "Riley Lin",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RileyLin/mdshare"
+  },
+  "files": [
+    "dist/",
+    "README.md"
+  ]
 }
