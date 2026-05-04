@@ -1,5 +1,6 @@
 // POST /api/share — accepts markdown, returns a shareable URL
 // GET  /api/share?id=xxx — returns raw markdown
+// PATCH /api/share — updates content for an existing paste (inline edit)
 
 function nanoid(size = 7) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -8,6 +9,11 @@ function nanoid(size = 7) {
     id += chars[Math.floor(Math.random() * chars.length)];
   }
   return id;
+}
+
+function extractTitle(markdown) {
+  const m = markdown.match(/^#\s+(.+)$/m);
+  return m ? m[1].trim().slice(0, 255) : null;
 }
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -27,6 +33,7 @@ async function supabaseGet(id) {
 
 async function supabaseSet(id, content, ttlSeconds) {
   const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+  const title = extractTitle(content);
   const res = await fetch(`${SUPABASE_URL}/rest/v1/mdshare_pastes`, {
     method: 'POST',
     headers: {
@@ -35,14 +42,32 @@ async function supabaseSet(id, content, ttlSeconds) {
       'Content-Type': 'application/json',
       Prefer: 'return=minimal',
     },
-    body: JSON.stringify({ id, content, expires_at: expiresAt }),
+    body: JSON.stringify({ id, content, expires_at: expiresAt, title }),
   });
   if (!res.ok) throw new Error(`Supabase insert failed: ${res.status}`);
 }
 
+async function supabaseUpdate(id, content) {
+  const title = extractTitle(content);
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/mdshare_pastes?id=eq.${encodeURIComponent(id)}`,
+    {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        apikey: SUPABASE_KEY,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({ content, title }),
+    }
+  );
+  if (!res.ok) throw new Error(`Supabase update failed: ${res.status}`);
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -68,6 +93,20 @@ export default async function handler(req, res) {
     const url = `${protocol}://${host}/v/${id}`;
 
     return res.status(200).json({ url, id, expires_in: ttl });
+  }
+
+  if (req.method === 'PATCH') {
+    let body = req.body;
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch {}
+    }
+
+    const { id, content } = body || {};
+    if (!id || typeof id !== 'string') return res.status(400).json({ error: 'Missing id' });
+    if (!content || typeof content !== 'string') return res.status(400).json({ error: 'Missing content' });
+
+    await supabaseUpdate(id, content);
+    return res.status(200).json({ ok: true });
   }
 
   if (req.method === 'GET') {

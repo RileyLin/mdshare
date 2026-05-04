@@ -1,4 +1,4 @@
-// GET /api/render?id=xxx — returns rendered HTML (redesigned UI + all actions)
+// GET /api/render?id=xxx — returns rendered HTML (redesigned UI + all actions + inline edit)
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
@@ -37,6 +37,7 @@ const HTML_TEMPLATE = (content, title, id) => `<!DOCTYPE html>
       --accent-bg: oklch(95% 0.04 250);
       --success: oklch(52% 0.15 145);
       --success-bg: oklch(95% 0.04 145);
+      --editor-bg: oklch(14% 0.01 260);
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html { scroll-behavior: smooth; }
@@ -80,6 +81,11 @@ const HTML_TEMPLATE = (content, title, id) => `<!DOCTYPE html>
     .btn:hover:not(:disabled) { background: color-mix(in oklch, var(--accent) 8%, var(--paper)); border-color: var(--accent); color: var(--accent); }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .btn-success { color: var(--success) !important; border-color: var(--success) !important; background: var(--success-bg) !important; }
+    .btn-primary {
+      color: var(--paper) !important; background: var(--accent) !important;
+      border-color: var(--accent) !important;
+    }
+    .btn-primary:hover:not(:disabled) { background: color-mix(in oklch, var(--accent) 85%, var(--ink)) !important; border-color: color-mix(in oklch, var(--accent) 85%, var(--ink)) !important; }
 
     /* Save dropdown */
     .save-dropdown-wrapper { position: relative; display: inline-block; }
@@ -98,7 +104,7 @@ const HTML_TEMPLATE = (content, title, id) => `<!DOCTYPE html>
     }
     .save-menu-item:hover { background: color-mix(in oklch, var(--accent) 8%, var(--paper)); color: var(--accent); }
 
-    /* Content */
+    /* Content — read mode */
     .content-wrap { max-width: 860px; margin: 0 auto; padding: clamp(24px, 4vw, 56px) clamp(16px, 3vw, 40px); }
     #content { font-size: 15.5px; line-height: 1.75; color: var(--ink); }
     #content h1 { font-family: 'Instrument Serif', serif; font-size: 2rem; font-weight: 400; color: var(--ink); margin: 0 0 1.25rem; line-height: 1.25; }
@@ -119,14 +125,79 @@ const HTML_TEMPLATE = (content, title, id) => `<!DOCTYPE html>
     #content th { text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); padding: 8px 12px; border-bottom: 2px solid var(--border); }
     #content td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
     #content tr:hover td { background: color-mix(in oklch, var(--accent) 4%, var(--paper)); }
-    @media (max-width: 600px) { .doc-title { display: none; } }
+
+    /* Editor split-pane */
+    #editor-pane {
+      display: none;
+      height: calc(100vh - 52px);
+      overflow: hidden;
+    }
+    #editor-pane.active { display: flex; }
+    .editor-panel {
+      flex: 1; display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+    .editor-panel + .editor-panel {
+      border-left: 1px solid var(--border);
+    }
+    .panel-label {
+      padding: 8px 16px; font-size: 11px; font-weight: 600;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      color: var(--ink-3); background: color-mix(in oklch, var(--border) 40%, var(--paper));
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    #md-editor {
+      flex: 1; width: 100%; resize: none; border: none; outline: none;
+      font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+      font-size: 13.5px; line-height: 1.7;
+      background: var(--editor-bg); color: oklch(85% 0.01 260);
+      padding: 20px 24px;
+      overflow-y: auto;
+      tab-size: 2;
+    }
+    #md-editor::selection { background: color-mix(in oklch, var(--accent) 30%, transparent); }
+    .preview-panel { overflow-y: auto; }
+    #preview-content {
+      padding: clamp(16px, 2vw, 32px) clamp(16px, 3vw, 32px);
+      font-size: 15px; line-height: 1.75; color: var(--ink);
+    }
+    #preview-content h1 { font-family: 'Instrument Serif', serif; font-size: 1.75rem; font-weight: 400; margin: 0 0 1rem; line-height: 1.25; }
+    #preview-content h2 { font-family: 'Instrument Serif', serif; font-size: 1.3rem; font-weight: 400; margin: 2rem 0 0.6rem; border-bottom: 1px solid var(--border); padding-bottom: 0.35rem; }
+    #preview-content h3 { font-size: 1rem; font-weight: 600; margin: 1.5rem 0 0.4rem; }
+    #preview-content p { margin: 0 0 0.85rem; }
+    #preview-content ul, #preview-content ol { margin: 0 0 0.85rem 1.4rem; }
+    #preview-content li { margin-bottom: 0.3rem; }
+    #preview-content a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+    #preview-content code { font-size: 0.85em; background: color-mix(in oklch, var(--accent) 8%, var(--paper)); color: var(--accent); border-radius: 4px; padding: 2px 5px; }
+    #preview-content pre { background: oklch(14% 0.01 260); border-radius: 8px; padding: 1rem 1.25rem; overflow-x: auto; margin: 0 0 1rem; }
+    #preview-content pre code { background: none; color: oklch(85% 0.01 260); font-size: 0.85rem; padding: 0; }
+    #preview-content blockquote { border-left: 3px solid var(--accent); margin: 0 0 0.85rem; padding: 0.4rem 0.9rem; color: var(--ink-2); font-style: italic; }
+    #preview-content table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin: 0 0 1rem; }
+    #preview-content th { text-align: left; font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); padding: 7px 10px; border-bottom: 2px solid var(--border); }
+    #preview-content td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+
+    /* Edit-mode top bar adjustments */
+    .edit-actions { display: none; align-items: center; gap: 6px; }
+    body.editing .edit-actions { display: flex; }
+    body.editing .view-actions { display: none; }
+    body.editing .content-wrap { display: none; }
+    body.editing #editor-pane { display: flex; }
+
+    @media (max-width: 600px) {
+      .doc-title { display: none; }
+      #editor-pane { flex-direction: column; }
+      .editor-panel + .editor-panel { border-left: none; border-top: 1px solid var(--border); }
+    }
   </style>
 </head>
 <body>
   <div class="top-bar">
     <a class="wordmark" href="/"><span class="wordmark-dot"></span>mdshare</a>
     <span class="doc-title" id="doc-title"></span>
-    <div class="top-bar-actions">
+
+    <!-- View mode actions -->
+    <div class="top-bar-actions view-actions">
+      <button class="btn" id="btn-edit" onclick="enterEdit()">✎ Edit</button>
       <button class="btn" id="btn-download" onclick="downloadMd()">⬇ Download</button>
       <button class="btn" id="btn-copy" onclick="copyMd()">📋 Copy</button>
       <div class="save-dropdown-wrapper" id="save-wrapper">
@@ -138,15 +209,38 @@ const HTML_TEMPLATE = (content, title, id) => `<!DOCTYPE html>
       </div>
       <span class="badge">rendered</span>
     </div>
+
+    <!-- Edit mode actions -->
+    <div class="top-bar-actions edit-actions">
+      <span style="font-size:12px;color:var(--ink-3)">editing</span>
+      <button class="btn" id="btn-cancel" onclick="cancelEdit()">Cancel</button>
+      <button class="btn btn-primary" id="btn-save-edit" onclick="saveEdit()">Save</button>
+    </div>
   </div>
+
+  <!-- Read view -->
   <div class="content-wrap">
     <div id="content">Loading…</div>
   </div>
+
+  <!-- Editor split-pane -->
+  <div id="editor-pane">
+    <div class="editor-panel">
+      <div class="panel-label">Markdown</div>
+      <textarea id="md-editor" spellcheck="false" oninput="updatePreview()"></textarea>
+    </div>
+    <div class="editor-panel preview-panel">
+      <div class="panel-label">Preview</div>
+      <div id="preview-content"></div>
+    </div>
+  </div>
+
   <script>
     const raw = ${JSON.stringify(content)};
     const pasteId = ${JSON.stringify(id)};
     const pasteTitle = ${JSON.stringify(title)};
 
+    // Configure marked
     marked.use({
       renderer: (() => {
         const r = new marked.Renderer();
@@ -162,11 +256,14 @@ const HTML_TEMPLATE = (content, title, id) => `<!DOCTYPE html>
         return hljs.highlightAuto(code).value;
       }
     });
+
+    // Render initial content
     document.getElementById('content').innerHTML = marked.parse(raw);
     hljs.highlightAll();
     const h1 = document.querySelector('#content h1');
     if (h1) document.getElementById('doc-title').textContent = h1.textContent;
 
+    // --- Download / Copy ---
     function downloadMd() {
       const filename = (pasteTitle || ('mdshare-' + pasteId)).replace(/[^a-z0-9_\\-. ]/gi, '_').trim() + '.md';
       const blob = new Blob([raw], { type: 'text/markdown' });
@@ -189,6 +286,7 @@ const HTML_TEMPLATE = (content, title, id) => `<!DOCTYPE html>
       }
     }
 
+    // --- Save dropdown ---
     function toggleSaveMenu(e) {
       e.stopPropagation();
       document.getElementById('save-menu').classList.toggle('open');
@@ -230,6 +328,62 @@ const HTML_TEMPLATE = (content, title, id) => `<!DOCTYPE html>
         link.style.cssText = 'font-size:12px;color:var(--accent);text-decoration:underline;text-underline-offset:3px;white-space:nowrap;font-family:DM Sans,sans-serif;';
         wrapper.parentNode.insertBefore(link, wrapper.nextSibling);
       } catch(e) { btn.textContent = '⚠ Failed — retry'; btn.disabled = false; }
+    }
+
+    // --- Inline editor ---
+    let editingContent = raw;
+
+    function renderPreview(md) {
+      const html = marked.parse(md);
+      document.getElementById('preview-content').innerHTML = html;
+      hljs.highlightAll();
+    }
+
+    function enterEdit() {
+      const ta = document.getElementById('md-editor');
+      ta.value = editingContent;
+      renderPreview(editingContent);
+      document.body.classList.add('editing');
+      ta.focus();
+    }
+
+    function cancelEdit() {
+      document.body.classList.remove('editing');
+    }
+
+    let previewTimer = null;
+    function updatePreview() {
+      editingContent = document.getElementById('md-editor').value;
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(() => renderPreview(editingContent), 150);
+    }
+
+    async function saveEdit() {
+      const btn = document.getElementById('btn-save-edit');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        const res = await fetch('/api/share', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: pasteId, content: editingContent }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+
+        // Update read view with new content
+        document.getElementById('content').innerHTML = marked.parse(editingContent);
+        hljs.highlightAll();
+        const newH1 = document.querySelector('#content h1');
+        if (newH1) document.getElementById('doc-title').textContent = newH1.textContent;
+
+        btn.textContent = '✓ Saved'; btn.classList.add('btn-success');
+        setTimeout(() => {
+          document.body.classList.remove('editing');
+          btn.disabled = false; btn.textContent = 'Save'; btn.classList.remove('btn-success');
+        }, 800);
+      } catch(e) {
+        btn.textContent = '⚠ Failed'; btn.disabled = false;
+        setTimeout(() => { btn.textContent = 'Save'; }, 2000);
+      }
     }
   </script>
 </body>
