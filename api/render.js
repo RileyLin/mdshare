@@ -25,7 +25,7 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <style>
@@ -118,8 +118,14 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     #content a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
     #content a:hover { color: color-mix(in oklch, var(--accent) 80%, var(--ink)); }
     #content code { font-size: 0.875em; background: color-mix(in oklch, var(--accent) 8%, var(--paper)); color: var(--accent); border-radius: 4px; padding: 2px 5px; }
-    #content pre { background: oklch(14% 0.01 260); border-radius: 10px; padding: 1.25rem 1.5rem; overflow-x: auto; margin: 0 0 1.25rem; }
-    #content pre code { background: none; color: oklch(85% 0.01 260); font-size: 0.875rem; padding: 0; }
+    #content pre { background: oklch(18% 0.012 260); border: 1px solid oklch(28% 0.012 260); border-radius: 10px; padding: 1.25rem 1.5rem; overflow-x: auto; margin: 0 0 1.25rem; }
+    #content pre code, #content pre code.hljs { background: none; color: oklch(94% 0.01 240); font-size: 0.875rem; padding: 0; line-height: 1.55; }
+    /* brighten hljs github-dark tokens for better contrast on dark bg */
+    #content pre .hljs-keyword, #content pre .hljs-built_in, #content pre .hljs-type { color: oklch(80% 0.16 295); }
+    #content pre .hljs-string, #content pre .hljs-attr { color: oklch(82% 0.14 145); }
+    #content pre .hljs-number, #content pre .hljs-literal { color: oklch(80% 0.16 50); }
+    #content pre .hljs-title, #content pre .hljs-section, #content pre .hljs-name { color: oklch(82% 0.14 220); }
+    #content pre .hljs-comment, #content pre .hljs-meta { color: oklch(62% 0.02 260); }
     #content blockquote { border-left: 3px solid var(--accent); margin: 0 0 1rem; padding: 0.5rem 1rem; color: var(--ink-2); font-style: italic; }
     #content hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
     .table-wrap { overflow-x: auto; margin: 0 0 1.25rem; }
@@ -171,8 +177,13 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     #preview-content li { margin-bottom: 0.3rem; }
     #preview-content a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
     #preview-content code { font-size: 0.85em; background: color-mix(in oklch, var(--accent) 8%, var(--paper)); color: var(--accent); border-radius: 4px; padding: 2px 5px; }
-    #preview-content pre { background: oklch(14% 0.01 260); border-radius: 8px; padding: 1rem 1.25rem; overflow-x: auto; margin: 0 0 1rem; }
-    #preview-content pre code { background: none; color: oklch(85% 0.01 260); font-size: 0.85rem; padding: 0; }
+    #preview-content pre { background: oklch(18% 0.012 260); border: 1px solid oklch(28% 0.012 260); border-radius: 8px; padding: 1rem 1.25rem; overflow-x: auto; margin: 0 0 1rem; }
+    #preview-content pre code, #preview-content pre code.hljs { background: none; color: oklch(94% 0.01 240); font-size: 0.85rem; padding: 0; line-height: 1.55; }
+    #preview-content pre .hljs-keyword, #preview-content pre .hljs-built_in, #preview-content pre .hljs-type { color: oklch(80% 0.16 295); }
+    #preview-content pre .hljs-string, #preview-content pre .hljs-attr { color: oklch(82% 0.14 145); }
+    #preview-content pre .hljs-number, #preview-content pre .hljs-literal { color: oklch(80% 0.16 50); }
+    #preview-content pre .hljs-title, #preview-content pre .hljs-section, #preview-content pre .hljs-name { color: oklch(82% 0.14 220); }
+    #preview-content pre .hljs-comment, #preview-content pre .hljs-meta { color: oklch(62% 0.02 260); }
     #preview-content blockquote { border-left: 3px solid var(--accent); margin: 0 0 0.85rem; padding: 0.4rem 0.9rem; color: var(--ink-2); font-style: italic; }
     #preview-content table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin: 0 0 1rem; }
     #preview-content th { text-align: left; font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); padding: 7px 10px; border-bottom: 2px solid var(--border); }
@@ -184,6 +195,16 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     body.editing .view-actions { display: none; }
     body.editing .content-wrap { display: none; }
     body.editing #editor-pane { display: flex; }
+
+    /* Text zoom controls */
+    .zoom { display: inline-flex; align-items: center; gap: 2px; margin-left: 4px; background: var(--paper-2, color-mix(in oklch, var(--border) 40%, var(--paper))); border: 1px solid var(--border); border-radius: 100px; padding: 2px; flex-shrink: 0; }
+    .zoom button { font-family: inherit; font-size: 12px; font-weight: 600; color: var(--ink-2); background: transparent; border: none; border-radius: 100px; padding: 3px 9px; cursor: pointer; line-height: 1; transition: background 0.15s, color 0.15s; }
+    .zoom button:hover { background: var(--paper); color: var(--ink); }
+    .zoom button.small { font-size: 10px; }
+    .zoom button.big { font-size: 14px; }
+    /* Scale content with zoom variable (applied to #content and #preview-content) */
+    #content { font-size: calc(15.5px * var(--zoom, 1)); }
+    #preview-content { font-size: calc(15px * var(--zoom, 1)); }
 
     @media (max-width: 600px) {
       .doc-title { display: none; }
@@ -210,6 +231,11 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
         </div>
       </div>
       <span class="badge">rendered</span>
+      <div class="zoom" role="group" aria-label="Text size">
+        <button class="small" id="zoom-out" title="Smaller text (Ctrl/Cmd -)" aria-label="Smaller text">A−</button>
+        <button id="zoom-reset" title="Reset text size (Ctrl/Cmd 0)" aria-label="Reset text size">A</button>
+        <button class="big" id="zoom-in" title="Larger text (Ctrl/Cmd +)" aria-label="Larger text">A+</button>
+      </div>
     </div>
 
     <!-- Edit mode actions -->
@@ -264,6 +290,31 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     hljs.highlightAll();
     const h1 = document.querySelector('#content h1');
     if (h1) document.getElementById('doc-title').textContent = h1.textContent;
+
+    // --- Text zoom (persisted per browser) ---
+    (function() {
+      const MIN = 0.85, MAX = 1.6, STEP = 0.1, DEFAULT = 1;
+      const root = document.documentElement;
+      const clamp = (v) => Math.min(MAX, Math.max(MIN, Math.round(v * 100) / 100));
+      const get = () => {
+        const v = parseFloat(localStorage.getItem('mdshare-zoom'));
+        return isNaN(v) ? DEFAULT : clamp(v);
+      };
+      const apply = (v) => { root.style.setProperty('--zoom', v); localStorage.setItem('mdshare-zoom', v); };
+      apply(get());
+      const zi = document.getElementById('zoom-in');
+      const zo = document.getElementById('zoom-out');
+      const zr = document.getElementById('zoom-reset');
+      if (zi) zi.addEventListener('click', () => apply(clamp(get() + STEP)));
+      if (zo) zo.addEventListener('click', () => apply(clamp(get() - STEP)));
+      if (zr) zr.addEventListener('click', () => apply(DEFAULT));
+      document.addEventListener('keydown', (e) => {
+        if (!(e.ctrlKey || e.metaKey)) return;
+        if (e.key === '=' || e.key === '+') { e.preventDefault(); apply(clamp(get() + STEP)); }
+        else if (e.key === '-') { e.preventDefault(); apply(clamp(get() - STEP)); }
+        else if (e.key === '0') { e.preventDefault(); apply(DEFAULT); }
+      });
+    })();
 
     // --- Download / Copy ---
     function downloadMd() {
