@@ -40,6 +40,28 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
       --success: oklch(52% 0.15 145);
       --success-bg: oklch(95% 0.04 145);
       --editor-bg: oklch(14% 0.01 260);
+      --code-bg: oklch(18% 0.012 260);
+      --code-border: oklch(28% 0.012 260);
+      --code-ink: oklch(94% 0.01 240);
+      --inline-code-bg: color-mix(in oklch, var(--accent) 8%, var(--paper));
+      --inline-code-ink: var(--accent);
+    }
+    :root[data-theme="dark"] {
+      --paper: oklch(15% 0.008 260);
+      --ink: oklch(94% 0.008 80);
+      --ink-2: oklch(78% 0.012 260);
+      --ink-3: oklch(62% 0.012 260);
+      --border: oklch(28% 0.012 260);
+      --accent: oklch(72% 0.16 250);
+      --accent-bg: oklch(26% 0.06 250);
+      --success: oklch(78% 0.13 145);
+      --success-bg: oklch(26% 0.05 145);
+      --editor-bg: oklch(11% 0.008 260);
+      --code-bg: oklch(11% 0.008 260);
+      --code-border: oklch(24% 0.012 260);
+      --code-ink: oklch(94% 0.01 240);
+      --inline-code-bg: color-mix(in oklch, var(--accent) 14%, var(--paper));
+      --inline-code-ink: oklch(82% 0.14 250);
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html { scroll-behavior: smooth; }
@@ -117,9 +139,9 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     #content li { margin-bottom: 0.35rem; }
     #content a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
     #content a:hover { color: color-mix(in oklch, var(--accent) 80%, var(--ink)); }
-    #content code { font-size: 0.875em; background: color-mix(in oklch, var(--accent) 8%, var(--paper)); color: var(--accent); border-radius: 4px; padding: 2px 5px; }
-    #content pre { background: oklch(18% 0.012 260); border: 1px solid oklch(28% 0.012 260); border-radius: 10px; padding: 1.25rem 1.5rem; overflow-x: auto; margin: 0 0 1.25rem; }
-    #content pre code, #content pre code.hljs { background: none; color: oklch(94% 0.01 240); font-size: 0.875rem; padding: 0; line-height: 1.55; }
+    #content code { font-size: 0.875em; background: var(--inline-code-bg); color: var(--inline-code-ink); border-radius: 4px; padding: 2px 5px; }
+    #content pre { background: var(--code-bg); border: 1px solid var(--code-border); border-radius: 10px; padding: 1.25rem 1.5rem; overflow-x: auto; margin: 0 0 1.25rem; }
+    #content pre code, #content pre code.hljs { background: none; color: var(--code-ink); font-size: 0.875rem; padding: 0; line-height: 1.55; }
     /* brighten hljs github-dark tokens for better contrast on dark bg */
     #content pre .hljs-keyword, #content pre .hljs-built_in, #content pre .hljs-type { color: oklch(80% 0.16 295); }
     #content pre .hljs-string, #content pre .hljs-attr { color: oklch(82% 0.14 145); }
@@ -176,9 +198,9 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     #preview-content ul, #preview-content ol { margin: 0 0 0.85rem 1.4rem; }
     #preview-content li { margin-bottom: 0.3rem; }
     #preview-content a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
-    #preview-content code { font-size: 0.85em; background: color-mix(in oklch, var(--accent) 8%, var(--paper)); color: var(--accent); border-radius: 4px; padding: 2px 5px; }
-    #preview-content pre { background: oklch(18% 0.012 260); border: 1px solid oklch(28% 0.012 260); border-radius: 8px; padding: 1rem 1.25rem; overflow-x: auto; margin: 0 0 1rem; }
-    #preview-content pre code, #preview-content pre code.hljs { background: none; color: oklch(94% 0.01 240); font-size: 0.85rem; padding: 0; line-height: 1.55; }
+    #preview-content code { font-size: 0.85em; background: var(--inline-code-bg); color: var(--inline-code-ink); border-radius: 4px; padding: 2px 5px; }
+    #preview-content pre { background: var(--code-bg); border: 1px solid var(--code-border); border-radius: 8px; padding: 1rem 1.25rem; overflow-x: auto; margin: 0 0 1rem; }
+    #preview-content pre code, #preview-content pre code.hljs { background: none; color: var(--code-ink); font-size: 0.85rem; padding: 0; line-height: 1.55; }
     #preview-content pre .hljs-keyword, #preview-content pre .hljs-built_in, #preview-content pre .hljs-type { color: oklch(80% 0.16 295); }
     #preview-content pre .hljs-string, #preview-content pre .hljs-attr { color: oklch(82% 0.14 145); }
     #preview-content pre .hljs-number, #preview-content pre .hljs-literal { color: oklch(80% 0.16 50); }
@@ -202,6 +224,9 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     .zoom button:hover { background: var(--paper); color: var(--ink); }
     .zoom button.small { font-size: 10px; }
     .zoom button.big { font-size: 14px; }
+    /* Theme toggle */
+    .theme-toggle { display: inline-flex; align-items: center; justify-content: center; margin-left: 4px; width: 30px; height: 28px; background: transparent; border: 1px solid var(--border); border-radius: 100px; cursor: pointer; font-size: 14px; line-height: 1; color: var(--ink-2); transition: background 0.15s, color 0.15s, border-color 0.15s; flex-shrink: 0; padding: 0; }
+    .theme-toggle:hover { background: var(--paper); color: var(--ink); border-color: color-mix(in oklch, var(--ink-3) 40%, var(--border)); }
     /* Scale content with zoom variable (applied to #content and #preview-content) */
     #content { font-size: calc(15.5px * var(--zoom, 1)); }
     #preview-content { font-size: calc(15px * var(--zoom, 1)); }
@@ -236,6 +261,7 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
         <button id="zoom-reset" title="Reset text size (Ctrl/Cmd 0)" aria-label="Reset text size">A</button>
         <button class="big" id="zoom-in" title="Larger text (Ctrl/Cmd +)" aria-label="Larger text">A+</button>
       </div>
+      <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark" aria-label="Toggle light/dark theme">☾</button>
     </div>
 
     <!-- Edit mode actions -->
@@ -290,6 +316,21 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     hljs.highlightAll();
     const h1 = document.querySelector('#content h1');
     if (h1) document.getElementById('doc-title').textContent = h1.textContent;
+
+    // --- Theme toggle (light/dark, persisted per browser, with OS default) ---
+    (function() {
+      const root = document.documentElement;
+      const btn = document.getElementById('theme-toggle');
+      const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const getTheme = () => localStorage.getItem('mdshare-theme') || (prefersDark ? 'dark' : 'light');
+      const apply = (t) => {
+        root.setAttribute('data-theme', t);
+        localStorage.setItem('mdshare-theme', t);
+        if (btn) btn.textContent = t === 'dark' ? '☀' : '☾';
+      };
+      apply(getTheme());
+      if (btn) btn.addEventListener('click', () => apply(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
+    })();
 
     // --- Text zoom (persisted per browser) ---
     (function() {
