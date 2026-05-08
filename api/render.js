@@ -289,6 +289,7 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     </div>
   </div>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.8/purify.min.js"></script>
   <script>
     const raw = ${JSON.stringify(content)};
     const pasteId = ${JSON.stringify(id)};
@@ -312,7 +313,7 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     });
 
     // Render initial content
-    document.getElementById('content').innerHTML = marked.parse(raw);
+    document.getElementById('content').innerHTML = DOMPurify.sanitize(marked.parse(raw));
     hljs.highlightAll();
     const h1 = document.querySelector('#content h1');
     if (h1) document.getElementById('doc-title').textContent = h1.textContent;
@@ -504,5 +505,6 @@ export default async function handler(req, res) {
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'self'");
   return res.send(HTML_TEMPLATE(markdown, title, id, authed));
 }

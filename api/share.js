@@ -2,6 +2,7 @@
 // GET  /api/share?id=xxx — returns raw markdown (public)
 // PATCH /api/share — updates content for an existing paste (auth-gated)
 import { isAuthenticated } from './auth.js';
+import { randomBytes } from 'crypto';
 
 // --- Rate Limiting (in-memory, per Vercel serverless instance) ---
 // Vercel functions can be cold-started, so this is "best effort" rate limiting.
@@ -37,13 +38,8 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000); // every 5 min
 
-function nanoid(size = 7) {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let id = '';
-  for (let i = 0; i < size; i++) {
-    id += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return id;
+function nanoid(size = 10) {
+  return randomBytes(size).toString('base64url').slice(0, size);
 }
 
 function extractTitle(markdown) {
@@ -101,7 +97,12 @@ async function supabaseUpdate(id, content) {
 }
 
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin;
+  const ALLOWED_ORIGINS = ['https://mdshare-rileylins-projects.vercel.app', 'http://localhost:3000', 'http://localhost:5173'];
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
