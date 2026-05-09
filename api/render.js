@@ -236,6 +236,23 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
       #editor-pane { flex-direction: column; }
       .editor-panel + .editor-panel { border-left: none; border-top: 1px solid var(--border); }
     }
+
+    /* Print / PDF styles */
+    @media print {
+      body { background: white !important; color: #1a1a1a !important; }
+      .top-bar, #editor-pane, .zoom, .theme-toggle { display: none !important; }
+      .content-wrap { max-width: 100%; padding: 0; margin: 0; }
+      #content { font-size: 13px; line-height: 1.7; }
+      #content h1 { font-size: 1.6rem; margin-bottom: 0.5rem; }
+      #content h2 { font-size: 1.2rem; border-bottom: 1px solid #ddd; }
+      #content pre { background: #f5f5f5 !important; border: 1px solid #ddd !important; }
+      #content pre code, #content pre code.hljs { color: #333 !important; }
+      #content blockquote { border-left-color: #999; }
+      #content table { font-size: 12px; }
+      #content th, #content td { border: 1px solid #ccc; padding: 6px 8px; }
+      a { color: #1a1a1a !important; text-decoration: none !important; }
+      @page { margin: 1.5cm 2cm; }
+    }
   </style>
 </head>
 <body>
@@ -246,7 +263,8 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     <!-- View mode actions -->
     <div class="top-bar-actions view-actions">
       ${authed ? '<button class="btn" id="btn-edit" onclick="enterEdit()">✎ Edit</button>' : ''}
-      <button class="btn" id="btn-download" onclick="downloadMd()">⬇ Download</button>
+      <button class="btn" id="btn-download" onclick="downloadMd()">⬇ .md</button>
+      <button class="btn" id="btn-pdf" onclick="downloadPdf()">📄 PDF</button>
       <button class="btn" id="btn-copy" onclick="copyMd()">📋 Copy</button>
       <div class="save-dropdown-wrapper" id="save-wrapper">
         <button class="btn" id="btn-save" onclick="toggleSaveMenu(event)">📌 Save ▾</button>
@@ -367,6 +385,12 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
       a.href = url; a.download = filename;
       document.body.appendChild(a); a.click();
       setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+    }
+
+    function downloadPdf() {
+      document.title = (pasteTitle || 'mdshare') + '.pdf';
+      window.print();
+      setTimeout(() => { document.title = (pasteTitle || 'Untitled') + ' — mdshare'; }, 1000);
     }
 
     async function copyMd() {
