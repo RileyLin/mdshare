@@ -266,13 +266,13 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
       <button class="btn" id="btn-download" onclick="downloadMd()">⬇ .md</button>
       <button class="btn" id="btn-pdf" onclick="downloadPdf()">📄 PDF</button>
       <button class="btn" id="btn-copy" onclick="copyMd()">📋 Copy</button>
-      ${authed ? `<div class="save-dropdown-wrapper" id="save-wrapper">
+      <div class="save-dropdown-wrapper" id="save-wrapper">
         <button class="btn" id="btn-save" onclick="toggleSaveMenu(event)">📌 Save ▾</button>
         <div class="save-menu" id="save-menu">
           <button class="save-menu-item" id="btn-pin" onclick="pinPaste()">📌 Pin (keep forever)</button>
           <button class="save-menu-item" id="btn-notion" onclick="saveToNotion()">🔗 Save to Notion</button>
         </div>
-      </div>` : ''}
+      </div>
       <span class="badge">rendered</span>
       <div class="zoom" role="group" aria-label="Text size">
         <button class="small" id="zoom-out" title="Smaller text (Ctrl/Cmd -)" aria-label="Smaller text">A−</button>
@@ -412,8 +412,18 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     }
     document.addEventListener('click', () => document.getElementById('save-menu').classList.remove('open'));
 
+    async function requireAuth() {
+      const res = await fetch('/api/auth');
+      if (res.ok) return true;
+      if (confirm('Sign in required to save. Go to login?')) {
+        window.location.href = '/dashboard';
+      }
+      return false;
+    }
+
     async function pinPaste() {
       document.getElementById('save-menu').classList.remove('open');
+      if (!(await requireAuth())) return;
       const btn = document.getElementById('btn-pin');
       const saveBtn = document.getElementById('btn-save');
       btn.disabled = true; btn.textContent = 'Pinning…';
@@ -430,6 +440,7 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
 
     async function saveToNotion() {
       document.getElementById('save-menu').classList.remove('open');
+      if (!(await requireAuth())) return;
       const btn = document.getElementById('btn-notion');
       btn.disabled = true; btn.textContent = 'Saving…';
       try {
