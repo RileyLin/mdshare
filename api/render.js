@@ -231,6 +231,10 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     #content { font-size: calc(15.5px * var(--zoom, 1)); }
     #preview-content { font-size: calc(15px * var(--zoom, 1)); }
 
+    /* Mermaid diagram styling */
+    .mermaid { margin: 1.5rem 0; text-align: center; }
+    .mermaid svg { max-width: 100%; height: auto; }
+
     @media (max-width: 600px) {
       .doc-title { display: none; }
       #editor-pane { flex-direction: column; }
@@ -308,6 +312,7 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.8/purify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
   <script>
     const raw = ${JSON.stringify(content)};
     const pasteId = ${JSON.stringify(id)};
@@ -335,6 +340,25 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     hljs.highlightAll();
     const h1 = document.querySelector('#content h1');
     if (h1) document.getElementById('doc-title').textContent = h1.textContent;
+
+    // --- Mermaid diagram rendering ---
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: (localStorage.getItem('mdshare-theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default')) === 'dark' ? 'dark' : 'default',
+      themeVariables: { primaryColor: '#3b82f6', fontFamily: 'DM Sans, sans-serif' },
+      securityLevel: 'loose'
+    });
+    function renderMermaidBlocks(container) {
+      container.querySelectorAll('pre code.language-mermaid').forEach((el, i) => {
+        const pre = el.parentElement;
+        const div = document.createElement('div');
+        div.className = 'mermaid';
+        div.textContent = el.textContent;
+        pre.replaceWith(div);
+      });
+      mermaid.run({ nodes: container.querySelectorAll('.mermaid') });
+    }
+    renderMermaidBlocks(document.getElementById('content'));
 
     // --- Theme toggle (light/dark, persisted per browser, with OS default) ---
     (function() {
@@ -467,6 +491,7 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
       const html = marked.parse(md);
       document.getElementById('preview-content').innerHTML = html;
       hljs.highlightAll();
+      renderMermaidBlocks(document.getElementById('preview-content'));
     }
 
     function enterEdit() {
@@ -540,6 +565,6 @@ export default async function handler(req, res) {
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'self'");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'self'");
   return res.send(HTML_TEMPLATE(markdown, title, id, authed));
 }
