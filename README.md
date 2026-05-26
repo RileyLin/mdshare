@@ -73,6 +73,21 @@ Restart Claude Desktop. You'll see `share_markdown` available in the tools panel
 
 Claude will call `share_markdown` with the content and return a URL you can paste anywhere.
 
+> "Draw the system architecture as a diagram"
+
+Claude includes a ` ```mermaid ` block in the markdown — it renders as an interactive SVG on the page.
+
+> "Share this custom SVG chart"
+
+Claude calls `share_diagram` with raw SVG markup for fully custom visuals.
+
+### MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `share_markdown` | Share markdown (with optional Mermaid diagrams) as a rendered page |
+| `share_diagram` | Share a standalone SVG diagram with optional notes |
+
 ---
 
 ## API Reference
@@ -103,9 +118,69 @@ Share a markdown document and get a short-lived URL.
 }
 ```
 
+#### Mermaid Diagrams in Markdown
+
+mdshare renders [Mermaid](https://mermaid.js.org/) diagrams automatically. Use fenced code blocks with the `mermaid` language tag:
+
+````markdown
+```mermaid
+graph TD
+    A[User] --> B[API Gateway]
+    B --> C[Lambda]
+    C --> D[DynamoDB]
+```
+````
+
+Supported diagram types: flowcharts, sequence diagrams, class diagrams, state diagrams, ER diagrams, Gantt charts, pie charts, and more. See [Mermaid docs](https://mermaid.js.org/syntax/flowchart.html) for full syntax.
+
+Diagrams render client-side with Mermaid v11, support dark/light themes automatically, and work alongside regular markdown content (tables, code blocks, text).
+
+### `POST /api/diagram`
+
+Share a standalone SVG diagram (for fully custom visuals that Mermaid can't express).
+
+**Request body:**
+```json
+{
+  "svg": "<svg>...</svg> (required)",
+  "title": "My Diagram",
+  "markdown": "Optional companion notes (rendered below the diagram)",
+  "ttl": 86400
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `svg` | string | ✅ | Valid SVG markup |
+| `title` | string | ❌ | Diagram title. Default: `"Diagram"` |
+| `markdown` | string | ❌ | Markdown notes shown below the SVG |
+| `ttl` | number | ❌ | TTL in seconds. Default: `86400` (24h), max: `604800` (7 days) |
+
+**Response:**
+```json
+{
+  "url": "https://mdshare-rileylins-projects.vercel.app/d/:id",
+  "id": "string",
+  "expires_in": 86400
+}
+```
+
 ### `GET /v/:id`
 
-View a shared document. Returns a rendered HTML page with GitHub-flavored markdown styling, syntax highlighting, and proper typography.
+View a shared markdown document. Returns a rendered HTML page with:
+- GitHub-flavored markdown styling
+- Syntax highlighting (highlight.js)
+- Mermaid diagram rendering
+- Dark/light theme toggle
+- Proper typography (Instrument Serif + DM Sans)
+
+### `GET /d/:id`
+
+View a shared SVG diagram. Dark canvas theme with optional markdown notes below.
+
+### `GET /api/diagram?id=xxx`
+
+Get the raw SVG for a stored diagram (returns `image/svg+xml`).
 
 ### `GET /raw/:id`
 
