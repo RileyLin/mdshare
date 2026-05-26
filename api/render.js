@@ -330,6 +330,7 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     });
     marked.setOptions({
       highlight: function(code, lang) {
+        if (lang === 'mermaid') return code;
         if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value;
         return hljs.highlightAuto(code).value;
       }
