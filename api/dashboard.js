@@ -373,16 +373,19 @@ export default async function handler(req, res) {
     }
 
     function buildPasteCard(paste) {
-      const icon = paste.pinned ? '📌' : '✦';
+      const isDiagram = paste.kind === 'diagram';
+      const icon = isDiagram ? '◈' : (paste.pinned ? '📌' : '✦');
       const iconClass = paste.pinned ? 'paste-icon pinned-icon' : 'paste-icon';
       const pin = paste.pinned ? '<span class="pin-badge">Pinned</span>' : '';
+      const kindBadge = isDiagram ? '<span class="pin-badge" style="background:oklch(52% 0.18 250);color:#fff">Diagram</span>' : '';
       const preview = paste.preview ? \`<div class="paste-preview">\${escapeHtml(paste.preview)}</div>\` : '';
-      return \`<a class="paste-item" href="/v/\${paste.id}">
+      const href = isDiagram ? \`/d/\${paste.id}\` : \`/v/\${paste.id}\`;
+      return \`<a class="paste-item" href="\${href}">
         <div class="\${iconClass}">\${icon}</div>
         <div class="paste-body">
           <div class="paste-title-row">
             <span class="paste-title">\${escapeHtml(paste.title)}</span>
-            \${pin}
+            \${pin}\${kindBadge}
           </div>
           \${preview}
           <div class="paste-meta">

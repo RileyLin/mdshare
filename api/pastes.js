@@ -74,6 +74,50 @@ export default async function handler(req, res) {
     };
   }).filter(p => !p.expired); // hide expired non-pinned pastes
 
+  // --- Also pull diagrams so the catalog shows both pastes and SVG diagrams ---
+  let diagrams = [];
+  try {
+    const dgRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/mdshare_diagrams?select=id,title,markdown,created_at,expires_at&order=created_at.desc&limit=100`,
+      { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
+    );
+    if (dgRes.ok) {
+      const dgRows = await dgRes.json();
+      diagrams = dgRows.map(row => {
+        const md = row.markdown || '';
+        const preview = md
+          .replace(/^#+\s+.+$/gm, '')
+          .replace(/\*\*(.+?)\*\*/g, '$1')
+          .replace(/`(.+?)`/g, '$1')
+          .replace(/\n+/g, ' ')
+          .trim()
+          .slice(0, 200);
+        const expired = new Date(row.expires_at) < now;
+        return {
+          id: row.id,
+          title: row.title || 'Diagram',
+          preview: preview || 'SVG diagram',
+          created_at: row.created_at,
+          pinned: false,
+          expires_at: row.expires_at,
+          expired,
+          kind: 'diagram',
+        };
+      }).filter(d => !d.expired);
+    }
+  } catch (e) {
+    // diagrams table optional — ignore if missing
+  }
+
+  // Merge: pastes (kind=paste) + diagrams (kind=diagram), pinned first then newest
+  const merged = [
+    ...pastes.map(p => ({ ...p, kind: p.kind || 'paste' })),
+    ...diagrams,
+  ].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    return new Date(b.created_at) - new Date(a.created_at);
+  });
+
   res.setHeader('Cache-Control', 'no-store');
-  return res.status(200).json(pastes);
+  return res.status(200).json(merged);
 }

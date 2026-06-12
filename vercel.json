@@ -3,6 +3,7 @@
   "rewrites": [
     { "source": "/v/:id", "destination": "/api/render?id=:id" },
     { "source": "/raw/:id", "destination": "/api/share?id=:id" },
+    { "source": "/d/:id", "destination": "/api/diagram-render?id=:id" },
     { "source": "/dashboard", "destination": "/api/dashboard" }
   ]
 }
