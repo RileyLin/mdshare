@@ -1,4 +1,5 @@
 // GET /d/:id — renders SVG diagram, with optional markdown writeup below
+import { isAuthenticated } from './auth.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -15,7 +16,7 @@ async function getDiagram(id) {
   return row;
 }
 
-const DIAGRAM_TEMPLATE = (svg, title, markdown) => `<!DOCTYPE html>
+const DIAGRAM_TEMPLATE = (svg, title, markdown, id, authed = false) => `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -90,6 +91,37 @@ const DIAGRAM_TEMPLATE = (svg, title, markdown) => `<!DOCTYPE html>
       border: 1px solid oklch(30% 0.08 250);
       border-radius: 100px;
       padding: 3px 10px;
+    }
+
+    /* ── ACTION BAR ── */
+    .top-bar-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .btn {
+      font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 500;
+      color: oklch(72% 0.01 260); background: transparent;
+      border: 1px solid var(--canvas-border); border-radius: 6px;
+      padding: 5px 11px; cursor: pointer; white-space: nowrap;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    .btn:hover:not(:disabled) { background: oklch(22% 0.05 250); border-color: var(--accent); color: oklch(82% 0.14 250); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-success { color: oklch(78% 0.13 145) !important; border-color: oklch(50% 0.13 145) !important; background: oklch(24% 0.05 145) !important; }
+    .save-dropdown-wrapper { position: relative; display: inline-block; }
+    .save-menu {
+      display: none; position: absolute; right: 0; top: calc(100% + 6px);
+      background: var(--canvas-2); border: 1px solid var(--canvas-border); border-radius: 8px;
+      box-shadow: 0 8px 24px oklch(0% 0 0 / 40%);
+      min-width: 180px; z-index: 100; overflow: hidden;
+    }
+    .save-menu.open { display: block; }
+    .save-menu-item {
+      display: block; width: 100%; text-align: left;
+      background: none; border: none; padding: 9px 14px;
+      font-size: 13px; font-family: 'DM Sans', sans-serif; color: oklch(72% 0.01 260);
+      cursor: pointer; white-space: nowrap;
+    }
+    .save-menu-item:hover { background: oklch(22% 0.05 250); color: oklch(82% 0.14 250); }
+    @media print {
+      .top-bar { display: none !important; }
     }
 
     /* ── DIAGRAM CANVAS ── */
@@ -247,7 +279,18 @@ const DIAGRAM_TEMPLATE = (svg, title, markdown) => `<!DOCTYPE html>
   <div class="top-bar">
     <a class="wordmark" href="/"><span class="wordmark-dot"></span>mdshare</a>
     <span class="diag-title">${title.replace(/</g, '&lt;')}</span>
-    <span class="badge">diagram${markdown ? ' + notes' : ''}</span>
+    <div class="top-bar-actions">
+      ${markdown ? '<button class="btn" id="btn-copy" onclick="copyNotes()">📋 Copy notes</button>' : ''}
+      <button class="btn" id="btn-pdf" onclick="window.print()">📄 PDF</button>
+      <div class="save-dropdown-wrapper" id="save-wrapper">
+        <button class="btn" id="btn-save" onclick="toggleSaveMenu(event)">📌 Save ▾</button>
+        <div class="save-menu" id="save-menu">
+          <button class="save-menu-item" id="btn-pin" onclick="pinDiagram()">📌 Pin (keep forever)</button>
+          <button class="save-menu-item" id="btn-notion" onclick="saveToNotion()">🔗 Save to Notion</button>
+        </div>
+      </div>
+      <span class="badge">diagram${markdown ? ' + notes' : ''}</span>
+    </div>
   </div>
 
   <div class="diagram-section">
@@ -309,6 +352,81 @@ const DIAGRAM_TEMPLATE = (svg, title, markdown) => `<!DOCTYPE html>
       }
     }
   <\/script>
+
+  <script>
+    const diagramId = ${JSON.stringify(id)};
+    const diagramMarkdown = ${JSON.stringify(markdown || '')};
+
+    function toggleSaveMenu(e) {
+      e.stopPropagation();
+      document.getElementById('save-menu').classList.toggle('open');
+    }
+    document.addEventListener('click', () => {
+      const m = document.getElementById('save-menu');
+      if (m) m.classList.remove('open');
+    });
+
+    async function copyNotes() {
+      const btn = document.getElementById('btn-copy');
+      if (!btn) return;
+      try {
+        await navigator.clipboard.writeText(diagramMarkdown);
+        btn.textContent = '✓ Copied'; btn.classList.add('btn-success');
+        setTimeout(() => { btn.textContent = '📋 Copy notes'; btn.classList.remove('btn-success'); }, 2000);
+      } catch(e) {
+        btn.textContent = '⚠ Failed';
+        setTimeout(() => { btn.textContent = '📋 Copy notes'; }, 2000);
+      }
+    }
+
+    async function requireAuth() {
+      const res = await fetch('/api/auth');
+      if (res.ok) return true;
+      if (confirm('Sign in required to save. Go to login?')) {
+        window.location.href = '/dashboard';
+      }
+      return false;
+    }
+
+    async function pinDiagram() {
+      document.getElementById('save-menu').classList.remove('open');
+      if (!(await requireAuth())) return;
+      const btn = document.getElementById('btn-pin');
+      const saveBtn = document.getElementById('btn-save');
+      btn.disabled = true; btn.textContent = 'Pinning…';
+      try {
+        const res = await fetch('/api/pin', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: diagramId, type: 'diagram' }),
+        });
+        if (!res.ok) throw new Error();
+        btn.textContent = '✓ Pinned';
+        saveBtn.textContent = '✓ Pinned ▾'; saveBtn.classList.add('btn-success'); saveBtn.disabled = true;
+      } catch(e) { btn.textContent = '⚠ Failed — retry'; btn.disabled = false; }
+    }
+
+    async function saveToNotion() {
+      document.getElementById('save-menu').classList.remove('open');
+      if (!(await requireAuth())) return;
+      const btn = document.getElementById('btn-notion');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        const res = await fetch('/api/save-to-notion', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: diagramId, type: 'diagram' }),
+        });
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        btn.textContent = '✓ Saved to Notion';
+        const wrapper = document.getElementById('save-wrapper');
+        const link = document.createElement('a');
+        link.href = data.notionUrl; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        link.textContent = '↗ Open in Notion';
+        link.style.cssText = 'font-size:12px;color:oklch(82% 0.14 250);text-decoration:underline;text-underline-offset:3px;white-space:nowrap;font-family:DM Sans,sans-serif;margin-left:6px;';
+        wrapper.parentNode.insertBefore(link, wrapper.nextSibling);
+      } catch(e) { btn.textContent = '⚠ Failed — retry'; btn.disabled = false; }
+    }
+  <\/script>
 </body>
 </html>`;
 
@@ -330,5 +448,6 @@ export default async function handler(req, res) {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'self'");
-  return res.send(DIAGRAM_TEMPLATE(row.svg, row.title || 'Diagram', row.markdown));
+  const authed = isAuthenticated(req);
+  return res.send(DIAGRAM_TEMPLATE(row.svg, row.title || 'Diagram', row.markdown, id, authed));
 }

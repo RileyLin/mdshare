@@ -26,13 +26,15 @@ export default async function handler(req, res) {
     try { body = JSON.parse(body); } catch {}
   }
 
-  const { id } = body || {};
+  const { id, type } = body || {};
   if (!id || typeof id !== 'string') {
     return res.status(400).json({ error: 'Missing id' });
   }
 
+  const table = type === 'diagram' ? 'mdshare_diagrams' : 'mdshare_pastes';
+
   const patchRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/mdshare_pastes?id=eq.${encodeURIComponent(id)}`,
+    `${SUPABASE_URL}/rest/v1/${table}?id=eq.${encodeURIComponent(id)}`,
     {
       method: 'PATCH',
       headers: {

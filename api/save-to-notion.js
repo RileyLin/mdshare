@@ -18,6 +18,18 @@ async function getMarkdown(id) {
   return row.content;
 }
 
+async function getDiagram(id) {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/mdshare_diagrams?id=eq.${encodeURIComponent(id)}&select=markdown,title,expires_at`,
+    { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
+  );
+  const rows = await res.json();
+  if (!rows || rows.length === 0) return null;
+  const row = rows[0];
+  if (new Date(row.expires_at) < new Date()) return null;
+  return row;
+}
+
 // Simple markdown → Notion blocks converter
 function markdownToNotionBlocks(markdown) {
   const lines = markdown.split('\n');
@@ -137,7 +149,7 @@ export default async function handler(req, res) {
     try { body = JSON.parse(body); } catch {}
   }
 
-  const { id } = body || {};
+  const { id, type } = body || {};
   if (!id || typeof id !== 'string') {
     return res.status(400).json({ error: 'Missing id' });
   }
@@ -146,14 +158,26 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'NOTION_TOKEN not configured' });
   }
 
-  const markdown = await getMarkdown(id);
-  if (!markdown) {
-    return res.status(404).json({ error: 'Paste not found or expired' });
+  let markdown, title;
+  if (type === 'diagram') {
+    const row = await getDiagram(id);
+    if (!row) {
+      return res.status(404).json({ error: 'Diagram not found or expired' });
+    }
+    title = (row.title || `mdshare-diagram-${id}`).trim();
+    // Diagram notes may be empty; fall back to a title-only page
+    markdown = row.markdown && row.markdown.trim()
+      ? row.markdown
+      : `# ${title}\n\n_(diagram — view at the share link)_`;
+  } else {
+    markdown = await getMarkdown(id);
+    if (!markdown) {
+      return res.status(404).json({ error: 'Paste not found or expired' });
+    }
+    // Extract title from first H1
+    const titleMatch = markdown.match(/^#\s+(.+)$/m);
+    title = titleMatch ? titleMatch[1].trim() : `mdshare-${id}`;
   }
-
-  // Extract title from first H1
-  const titleMatch = markdown.match(/^#\s+(.+)$/m);
-  const title = titleMatch ? titleMatch[1].trim() : `mdshare-${id}`;
 
   const blocks = markdownToNotionBlocks(markdown);
 
