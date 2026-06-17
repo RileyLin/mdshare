@@ -325,6 +325,62 @@ export default async function handler(req, res) {
     /* No-results */
     .no-results { padding: 32px 16px; text-align: center; color: var(--ink-3); font-size: 14px; }
 
+    /* ===== Select mode + batch bar ===== */
+    .select-btn {
+      flex-shrink: 0; font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500;
+      color: var(--ink-2); background: var(--paper); border: 1px solid var(--border);
+      border-radius: 8px; padding: 6px 12px; cursor: pointer; transition: background 0.12s, border-color 0.12s;
+    }
+    .select-btn:hover { background: var(--card-hover); }
+    .select-btn.active { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); }
+
+    body.selecting .paste-item { cursor: pointer; }
+    .paste-check {
+      width: 18px; height: 18px; flex-shrink: 0; margin-top: 8px;
+      border: 1.5px solid var(--border); border-radius: 5px;
+      display: none; align-items: center; justify-content: center;
+      background: white; transition: background 0.12s, border-color 0.12s;
+      font-size: 12px; color: white;
+    }
+    body.selecting .paste-check { display: flex; }
+    .paste-item.checked .paste-check { background: var(--accent); border-color: var(--accent); }
+    .paste-item.checked { background: var(--accent-bg); border-color: color-mix(in oklch, var(--accent) 30%, transparent); }
+    body.selecting .paste-arrow { display: none; }
+
+    .batch-bar {
+      position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 120%);
+      z-index: 60; display: flex; align-items: center; gap: 12px;
+      background: var(--ink); color: white; border-radius: 14px;
+      padding: 10px 12px 10px 18px;
+      box-shadow: 0 8px 30px oklch(0% 0 0 / 0.25);
+      transition: transform 0.28s cubic-bezier(0.16,1,0.3,1);
+      max-width: calc(100vw - 32px);
+    }
+    .batch-bar.show { transform: translate(-50%, 0); }
+    .batch-count { font-size: 13.5px; font-weight: 500; white-space: nowrap; }
+    .batch-actions { display: flex; gap: 8px; }
+    .batch-btn {
+      font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500;
+      border: none; border-radius: 8px; padding: 7px 14px; cursor: pointer;
+      transition: opacity 0.12s, transform 0.1s; white-space: nowrap;
+    }
+    .batch-btn:active { transform: scale(0.97); }
+    .batch-btn.pin { background: var(--success); color: white; }
+    .batch-btn.unpin { background: color-mix(in oklch, white 18%, var(--ink)); color: white; }
+    .batch-btn.selall { background: transparent; color: oklch(80% 0.01 260); border: 1px solid color-mix(in oklch, white 25%, transparent); }
+    .batch-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .batch-btn.busy { opacity: 0.6; cursor: wait; }
+
+    .toast {
+      position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%) translateY(10px);
+      z-index: 70; background: var(--success); color: white;
+      font-size: 13px; font-weight: 500; padding: 8px 16px; border-radius: 10px;
+      opacity: 0; transition: opacity 0.2s, transform 0.2s; pointer-events: none;
+      box-shadow: 0 4px 16px oklch(0% 0 0 / 0.2);
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .toast.err { background: var(--error, oklch(52% 0.2 25)); }
+
     @media (max-width: 600px) {
       .page-title { display: none; }
       .search-wrap { max-width: none; }
@@ -340,6 +396,7 @@ export default async function handler(req, res) {
       <span class="search-icon">⌕</span>
       <input class="search-input" type="search" id="search" placeholder="Search pastes…" oninput="filterPastes(this.value)" autocomplete="off">
     </div>
+    <button class="select-btn" id="select-toggle" onclick="toggleSelectMode()">Select</button>
   </div>
 
   <div class="main" id="main">
@@ -358,8 +415,21 @@ export default async function handler(req, res) {
     <div id="paste-sections" style="display:none"></div>
   </div>
 
+  <div class="batch-bar" id="batch-bar">
+    <span class="batch-count" id="batch-count">0 selected</span>
+    <div class="batch-actions">
+      <button class="batch-btn selall" id="btn-selall" onclick="selectAllVisible()">Select all</button>
+      <button class="batch-btn pin" id="btn-pin" onclick="batchPin(true)">📌 Pin</button>
+      <button class="batch-btn unpin" id="btn-unpin" onclick="batchPin(false)">Unpin</button>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+
   <script>
     let allPastes = [];
+    let selectMode = false;
+    const selected = new Map(); // id -> {id, type}
+    let currentlyShown = []; // ids currently rendered (respects search filter)
 
     function formatDate(iso) {
       const d = new Date(iso);
@@ -380,7 +450,10 @@ export default async function handler(req, res) {
       const kindBadge = isDiagram ? '<span class="pin-badge" style="background:oklch(52% 0.18 250);color:#fff">Diagram</span>' : '';
       const preview = paste.preview ? \`<div class="paste-preview">\${escapeHtml(paste.preview)}</div>\` : '';
       const href = isDiagram ? \`/d/\${paste.id}\` : \`/v/\${paste.id}\`;
-      return \`<a class="paste-item" href="\${href}">
+      const type = isDiagram ? 'diagram' : 'paste';
+      const isChecked = selected.has(paste.id);
+      return \`<a class="paste-item\${isChecked ? ' checked' : ''}" href="\${href}" data-id="\${paste.id}" data-type="\${type}" onclick="return onCardClick(event, this)">
+        <div class="paste-check">✓</div>
         <div class="\${iconClass}">\${icon}</div>
         <div class="paste-body">
           <div class="paste-title-row">
@@ -402,6 +475,7 @@ export default async function handler(req, res) {
 
     function renderSections(pastes) {
       const container = document.getElementById('paste-sections');
+      currentlyShown = pastes.map(p => p.id);
       if (pastes.length === 0) {
         container.innerHTML = '<div class="empty-state"><p style="font-size:1.5rem">✦</p><p>No pastes yet. Share some markdown to get started.</p></div>';
         return;
@@ -444,9 +518,11 @@ export default async function handler(req, res) {
         p.title.toLowerCase().includes(q) ||
         (p.preview || '').toLowerCase().includes(q)
       );
+      currentlyShown = filtered.map(p => p.id);
       // Show all filtered (no pinned/recent split when searching)
       const container = document.getElementById('paste-sections');
       if (filtered.length === 0) {
+        currentlyShown = [];
         container.innerHTML = '<div class="no-results">No results for "' + escapeHtml(query) + '"</div>';
         return;
       }
@@ -457,6 +533,101 @@ export default async function handler(req, res) {
         </div>
         <div class="paste-list">\${filtered.map(buildPasteCard).join('')}</div>
       </div>\`;
+    }
+
+    // ===== Select mode + batch actions =====
+    function toggleSelectMode() {
+      selectMode = !selectMode;
+      document.body.classList.toggle('selecting', selectMode);
+      document.getElementById('select-toggle').classList.toggle('active', selectMode);
+      document.getElementById('select-toggle').textContent = selectMode ? 'Done' : 'Select';
+      if (!selectMode) clearSelection();
+      updateBatchBar();
+    }
+
+    function onCardClick(ev, el) {
+      if (!selectMode) return true; // normal navigation
+      ev.preventDefault();
+      const id = el.dataset.id;
+      const type = el.dataset.type;
+      if (selected.has(id)) { selected.delete(id); el.classList.remove('checked'); }
+      else { selected.set(id, { id, type }); el.classList.add('checked'); }
+      updateBatchBar();
+      return false;
+    }
+
+    function clearSelection() {
+      selected.clear();
+      document.querySelectorAll('.paste-item.checked').forEach(el => el.classList.remove('checked'));
+    }
+
+    function selectAllVisible() {
+      const items = document.querySelectorAll('#paste-sections .paste-item');
+      const allSelected = currentlyShown.length > 0 && currentlyShown.every(id => selected.has(id));
+      items.forEach(el => {
+        const id = el.dataset.id, type = el.dataset.type;
+        if (allSelected) { selected.delete(id); el.classList.remove('checked'); }
+        else { selected.set(id, { id, type }); el.classList.add('checked'); }
+      });
+      updateBatchBar();
+    }
+
+    function updateBatchBar() {
+      const bar = document.getElementById('batch-bar');
+      const count = selected.size;
+      document.getElementById('batch-count').textContent = count + ' selected';
+      const allSelected = currentlyShown.length > 0 && currentlyShown.every(id => selected.has(id));
+      document.getElementById('btn-selall').textContent = allSelected ? 'Deselect all' : 'Select all';
+      document.getElementById('btn-pin').disabled = count === 0;
+      document.getElementById('btn-unpin').disabled = count === 0;
+      bar.classList.toggle('show', selectMode);
+    }
+
+    function showToast(msg, isErr) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.toggle('err', !!isErr);
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 2400);
+    }
+
+    async function batchPin(pinned) {
+      if (selected.size === 0) return;
+      const items = Array.from(selected.values());
+      const pinBtn = document.getElementById('btn-pin');
+      const unpinBtn = document.getElementById('btn-unpin');
+      pinBtn.classList.add('busy'); unpinBtn.classList.add('busy');
+      pinBtn.disabled = true; unpinBtn.disabled = true;
+      try {
+        const res = await fetch('/api/pin', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items, pinned }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok && res.status !== 207) throw new Error(data.error || 'Request failed');
+        // Update local state
+        items.forEach(it => {
+          const p = allPastes.find(x => x.id === it.id);
+          if (p) p.pinned = pinned;
+        });
+        const n = data.count != null ? data.count : (data.succeeded != null ? data.succeeded : items.length);
+        showToast((pinned ? '📌 Pinned ' : 'Unpinned ') + n + ' item' + (n === 1 ? '' : 's'));
+        clearSelection();
+        // re-sort (pinned first) and re-render, preserving any active search
+        allPastes.sort((a, b) => {
+          if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+          return new Date(b.created_at) - new Date(a.created_at);
+        });
+        const q = document.getElementById('search').value;
+        if (q.trim()) filterPastes(q); else renderSections(allPastes);
+        updateBatchBar();
+      } catch (e) {
+        showToast('Failed: ' + e.message, true);
+      } finally {
+        pinBtn.classList.remove('busy'); unpinBtn.classList.remove('busy');
+        updateBatchBar();
+      }
     }
 
     async function load() {

@@ -78,7 +78,7 @@ export default async function handler(req, res) {
   let diagrams = [];
   try {
     const dgRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/mdshare_diagrams?select=id,title,markdown,created_at,expires_at&order=created_at.desc&limit=100`,
+      `${SUPABASE_URL}/rest/v1/mdshare_diagrams?select=id,title,markdown,created_at,expires_at,pinned&order=pinned.desc,created_at.desc&limit=100`,
       { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
     );
     if (dgRes.ok) {
@@ -92,13 +92,13 @@ export default async function handler(req, res) {
           .replace(/\n+/g, ' ')
           .trim()
           .slice(0, 200);
-        const expired = new Date(row.expires_at) < now;
+        const expired = new Date(row.expires_at) < now && !row.pinned;
         return {
           id: row.id,
           title: row.title || 'Diagram',
           preview: preview || 'SVG diagram',
           created_at: row.created_at,
-          pinned: false,
+          pinned: row.pinned || false,
           expires_at: row.expires_at,
           expired,
           kind: 'diagram',
