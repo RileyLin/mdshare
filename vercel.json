@@ -5,6 +5,7 @@
     { "source": "/d/:id", "destination": "/api/diagram-render?id=:id" },
     { "source": "/raw/:id", "destination": "/api/share?id=:id" },
     { "source": "/d/:id", "destination": "/api/diagram-render?id=:id" },
+    { "source": "/a/:id", "destination": "/api/archify-render?id=:id" },
     { "source": "/dashboard", "destination": "/api/dashboard" }
   ]
 }
