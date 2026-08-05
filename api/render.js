@@ -267,6 +267,7 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
     <!-- View mode actions -->
     <div class="top-bar-actions view-actions">
       ${authed ? '<button class="btn" id="btn-edit" onclick="enterEdit()">✎ Edit</button>' : ''}
+      ${authed ? '<button class="btn" id="btn-delete" onclick="deletePaste()" title="Delete this paste permanently">🗑 Delete</button>' : ''}
       <button class="btn" id="btn-download" onclick="downloadMd()">⬇ .md</button>
       <button class="btn" id="btn-pdf" onclick="downloadPdf()">📄 PDF</button>
       <button class="btn" id="btn-copy" onclick="copyMd()">📋 Copy</button>
@@ -483,6 +484,28 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
         link.style.cssText = 'font-size:12px;color:var(--accent);text-decoration:underline;text-underline-offset:3px;white-space:nowrap;font-family:DM Sans,sans-serif;';
         wrapper.parentNode.insertBefore(link, wrapper.nextSibling);
       } catch(e) { btn.textContent = '⚠ Failed — retry'; btn.disabled = false; }
+    }
+
+    async function deletePaste() {
+      const confirmed = window.confirm('Delete this paste permanently? This cannot be undone.');
+      if (!confirmed) return;
+
+      const btn = document.getElementById('btn-delete');
+      btn.disabled = true;
+      btn.textContent = 'Deleting…';
+
+      try {
+        const res = await fetch('/api/share?id=' + encodeURIComponent(pasteId), {
+          method: 'DELETE',
+        });
+        if (!res.ok) throw new Error(await res.text());
+
+        btn.textContent = '✓ Deleted';
+        window.location.replace('/dashboard?deleted=1');
+      } catch (e) {
+        btn.textContent = '⚠ Failed — retry';
+        btn.disabled = false;
+      }
     }
 
     // --- Inline editor ---

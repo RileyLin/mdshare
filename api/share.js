@@ -78,6 +78,21 @@ async function supabaseSet(id, content, ttlSeconds) {
   if (!res.ok) throw new Error(`Supabase insert failed: ${res.status}`);
 }
 
+async function supabaseDelete(id) {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/mdshare_pastes?id=eq.${encodeURIComponent(id)}`,
+    {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        apikey: SUPABASE_KEY,
+        Prefer: 'return=minimal',
+      },
+    }
+  );
+  if (!res.ok) throw new Error(`Supabase delete failed: ${res.status}`);
+}
+
 async function supabaseUpdate(id, content) {
   const title = extractTitle(content);
   const res = await fetch(
@@ -103,7 +118,7 @@ export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -171,6 +186,16 @@ export default async function handler(req, res) {
 
     await supabaseUpdate(id, content);
     return res.status(200).json({ ok: true });
+  }
+
+  if (req.method === 'DELETE') {
+    if (!isAuthenticated(req)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const id = req.query?.id || (typeof req.body === 'object' ? req.body?.id : undefined);
+    if (!id || typeof id !== 'string') return res.status(400).json({ error: 'Missing id' });
+    await supabaseDelete(id);
+    return res.status(200).json({ ok: true, deleted: id });
   }
 
   if (req.method === 'GET') {
