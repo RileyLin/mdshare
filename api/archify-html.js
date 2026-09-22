@@ -8,6 +8,25 @@
 // page. No login UI here: the parent page (/a/:id) owns the sign-in flow.
 import { getRow, isVisible } from './_lib/access.js';
 
+// Force archify's editorial (warm-paper) preset + light theme as the default view, matching
+// mdshare's house palette, unless the stored artifact already pins its own preset/theme.
+// Carried over from the pre-privacy-rollout archify-render.js (applyWarmPaperDefault) — that
+// forcing logic was dropped when the iframe split happened and needs to live here now, since
+// this file is what actually serves the stored HTML that ends up in the iframe. Without it,
+// diagrams saved without an explicit data-preset attribute silently lose mdshare's house look.
+export function applyWarmPaperDefault(html) {
+  return html.replace(
+    /<html\b([^>]*)>/i,
+    (m, attrs) => {
+      let a = attrs;
+      if (!/data-preset=/.test(a)) a += ' data-preset="editorial"';
+      else a = a.replace(/data-preset="[^"]*"/, 'data-preset="editorial"');
+      if (!/data-theme=/.test(a)) a += ' data-theme="light"';
+      return `<html${a}>`;
+    }
+  );
+}
+
 export default async function handler(req, res) {
   const { id } = req.query;
   if (!id) return res.status(400).send('Missing id');
@@ -28,5 +47,5 @@ export default async function handler(req, res) {
   // implicitly trust from inside this document. frame-ancestors 'self' means only mdshare's own
   // /a/:id wrapper may embed it.
   res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'none'; frame-ancestors 'self'");
-  return res.send(row.html);
+  return res.send(applyWarmPaperDefault(row.html));
 }
