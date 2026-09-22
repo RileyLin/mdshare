@@ -81,7 +81,7 @@ export default async function handler(req, res) {
     setPrivacyHeaders(res);
     const { row, dbError } = await getRow('mdshare_diagrams', id, 'svg,expires_at,is_public');
     if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
-    if (!row || !isVisible(row, req)) return res.status(404).json({ error: 'Not found or expired' });
+    if (!row || !isVisible(row, req, res)) return res.status(404).json({ error: 'Not found or expired' });
 
     res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
     return res.send(row.svg);

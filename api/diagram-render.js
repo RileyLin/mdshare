@@ -1,7 +1,7 @@
 // GET /d/:id — renders SVG diagram, with optional markdown writeup below. Private unless the
 // owner is authenticated or the row has is_public: true. Unauthenticated requests to a private id
 // get a same-URL login prompt instead of the diagram's title/content.
-import { isAuthenticated } from './auth.js';
+import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
 import { getRow, isVisible, setPrivacyHeaders, privateGateHtml, visibilityControlHtml, visibilityControlScript } from './_lib/access.js';
 
 const DIAGRAM_TEMPLATE = (svg, title, markdown, id, authed = false, isPublic = false) => `<!DOCTYPE html>
@@ -442,13 +442,13 @@ export default async function handler(req, res) {
     </body></html>`);
   }
 
-  if (!isVisible(row, req)) {
+  if (!isVisible(row, req, res)) {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     return res.status(401).send(privateGateHtml());
   }
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'self'");
-  const authed = isAuthenticated(req);
+  const authed = checkAuthAndRefresh(req, res);
   return res.send(DIAGRAM_TEMPLATE(row.svg, row.title || 'Diagram', row.markdown, id, authed, row.is_public === true));
 }

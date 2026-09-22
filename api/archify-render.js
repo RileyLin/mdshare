@@ -10,7 +10,7 @@
 // allow-same-origin keeps it in an opaque, unique origin that can still run its own client-side
 // interactivity (pan/zoom/hover/theme-toggle — all local DOM work) but cannot read mdshare cookies
 // or call mdshare APIs with the owner's session. Do not change this back to inlining HTML.
-import { isAuthenticated } from './auth.js';
+import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
 import { getRow, isVisible, setPrivacyHeaders, privateGateHtml, visibilityControlHtml, visibilityControlScript } from './_lib/access.js';
 
 const MISSING_HTML_PAGE = (title, id, kind) => `<!DOCTYPE html>
@@ -93,11 +93,11 @@ export default async function handler(req, res) {
     return res.status(404).send('<!DOCTYPE html><html><body style="font-family:sans-serif;padding:3rem;background:#f2eee5;color:#242018"><h1>Not found or expired</h1></body></html>');
   }
 
-  if (!isVisible(row, req)) {
+  if (!isVisible(row, req, res)) {
     return res.status(401).send(privateGateHtml());
   }
 
-  const authed = isAuthenticated(req);
+  const authed = checkAuthAndRefresh(req, res);
 
   if (!row.html) {
     return res.status(200).send(MISSING_HTML_PAGE(row.title, id, row.kind));

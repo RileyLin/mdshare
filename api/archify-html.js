@@ -19,7 +19,7 @@ export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'private, no-store');
   res.setHeader('X-Robots-Tag', 'noindex, nofollow');
 
-  if (dbError || !row || !row.html || !isVisible(row, req)) {
+  if (dbError || !row || !row.html || !isVisible(row, req, res)) {
     return res.status(404).send('<!DOCTYPE html><html><body style="background:#f2eee5;margin:0;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui;color:#7a7365">Diagram expired, not found, or private.</body></html>');
   }
 

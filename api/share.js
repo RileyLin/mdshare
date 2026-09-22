@@ -4,7 +4,7 @@
 // GET  /api/share?id=xxx — returns raw markdown. Private unless the owner is authenticated or the
 //   row has is_public: true.
 // PATCH /api/share — updates content for an existing paste (auth-gated). Never touches is_public.
-import { isAuthenticated } from './auth.js';
+import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
 import { getRow, isVisible, setPrivacyHeaders } from './_lib/access.js';
 import { randomBytes } from 'crypto';
 
@@ -171,7 +171,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'PATCH') {
-    if (!isAuthenticated(req)) {
+    if (!checkAuthAndRefresh(req, res)) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
@@ -189,7 +189,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'DELETE') {
-    if (!isAuthenticated(req)) {
+    if (!checkAuthAndRefresh(req, res)) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
     const id = req.query?.id || (typeof req.body === 'object' ? req.body?.id : undefined);
@@ -205,7 +205,7 @@ export default async function handler(req, res) {
     setPrivacyHeaders(res);
     const { row, dbError } = await getRow('mdshare_pastes', id, 'content,expires_at,is_public');
     if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
-    if (!row || !isVisible(row, req)) return res.status(404).json({ error: 'Not found or expired' });
+    if (!row || !isVisible(row, req, res)) return res.status(404).json({ error: 'Not found or expired' });
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     return res.send(row.content);

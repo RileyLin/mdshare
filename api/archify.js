@@ -97,7 +97,7 @@ export default async function handler(req, res) {
     setPrivacyHeaders(res);
     const { row, dbError } = await getRow('mdshare_archify', id, 'ir,kind,title,expires_at,is_public');
     if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
-    if (!row || !isVisible(row, req)) return res.status(404).json({ error: 'Not found or expired' });
+    if (!row || !isVisible(row, req, res)) return res.status(404).json({ error: 'Not found or expired' });
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     return res.json({ kind: row.kind, title: row.title, ir: row.ir });
   }

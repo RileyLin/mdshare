@@ -1,5 +1,5 @@
 // GET /api/dashboard — returns the dashboard HTML page (auth-gated)
-import { isAuthenticated } from './auth.js';
+import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
 
 const LOGIN_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -157,7 +157,7 @@ const LOGIN_HTML = `<!DOCTYPE html>
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).end();
 
-  if (!isAuthenticated(req)) {
+  if (!checkAuthAndRefresh(req, res)) {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     return res.status(401).send(LOGIN_HTML);
   }

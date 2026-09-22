@@ -5,7 +5,7 @@
 // explicit Supabase insert payloads and always set is_public: false themselves — they never read
 // is_public from the request body, so this endpoint cannot be bypassed by posting is_public on
 // create.
-import { isAuthenticated } from './auth.js';
+import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
 import { tableFor, isValidId, patchRow } from './_lib/access.js';
 
 const ALLOWED_ORIGINS = ['https://mdshare-rileylins-projects.vercel.app', 'http://localhost:3000', 'http://localhost:5173'];
@@ -25,7 +25,7 @@ export default async function handler(req, res) {
 
   // Auth-only: anonymous requests (including the public paste/diagram/archify creation flow)
   // can never flip visibility.
-  if (!isAuthenticated(req)) {
+  if (!checkAuthAndRefresh(req, res)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 

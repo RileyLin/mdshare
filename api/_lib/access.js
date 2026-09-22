@@ -1,7 +1,7 @@
 // Shared visibility + Supabase access helpers for mdshare content routes.
 // Underscore-prefixed directory: Vercel does not expose files under api/_lib/* as their own
 // routes, so this is safe to import from without creating an extra public endpoint.
-import { isAuthenticated } from '../auth.js';
+import { isAuthenticated, checkAuthAndRefresh } from '../auth.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -81,10 +81,15 @@ export async function patchRow(table, id, patch) {
 // Visibility rule: the owner (authenticated) can always see their own content. Everyone else can
 // only see it if is_public === true. A missing row is never visible. This is the single choke
 // point every render/raw/IR route must call before returning content.
-export function isVisible(row, req) {
+//
+// Pass `res` when it's available (every HTTP handler has one) so an owner on a still-valid
+// legacy-format cookie gets silently upgraded to a fresh v2 session cookie on this same request
+// (see checkAuthAndRefresh in auth.js) — no re-login, no extra step. `res` is optional: omitting
+// it (e.g. in tests) falls back to a plain isAuthenticated() check with no side effect.
+export function isVisible(row, req, res) {
   if (!row) return false;
-  if (isAuthenticated(req)) return true;
-  return row.is_public === true;
+  if (res) return checkAuthAndRefresh(req, res) || row.is_public === true;
+  return isAuthenticated(req) || row.is_public === true;
 }
 
 // Applied to every render/raw response (public and private alike): keep share links out of

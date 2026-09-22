@@ -10,6 +10,7 @@ process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
 const {
   default: authHandler,
   isAuthenticated,
+  checkAuthAndRefresh,
   signSessionToken,
   verifySessionToken,
   verifyLegacyCookie,
@@ -135,3 +136,39 @@ test('isAuthenticated accepts a legacy cookie before the cutoff and rejects it a
 function legacyTokenFor(password) {
   return createHmac('sha256', process.env.MDSHARE_HMAC_SECRET).update(password).digest('hex');
 }
+
+// --- seamless legacy-cookie upgrade (checkAuthAndRefresh) ---
+
+test('checkAuthAndRefresh silently upgrades a valid legacy cookie to a fresh v2 Set-Cookie', () => {
+  const legacyToken = legacyTokenFor('test-password');
+  const req = reqWithCookie(legacyToken);
+  const res = responseRecorder();
+  const ok = checkAuthAndRefresh(req, res);
+  assert.equal(ok, true);
+  const setCookie = res.headers['set-cookie'];
+  assert.ok(setCookie, 'expected a Set-Cookie header on legacy-cookie upgrade');
+  assert.match(setCookie, /Max-Age=15552000/); // fresh full 180-day lifetime, not a partial top-up
+  const freshValue = setCookie.split(';')[0].split('=')[1];
+  assert.equal(verifySessionToken(decodeURIComponent(freshValue), Math.floor(Date.now() / 1000)), true);
+});
+
+test('checkAuthAndRefresh does not re-issue a cookie for an already-v2 session', () => {
+  const now = Math.floor(Date.now() / 1000);
+  const token = signSessionToken(now + 1000);
+  const req = reqWithCookie(token);
+  const res = responseRecorder();
+  assert.equal(checkAuthAndRefresh(req, res), true);
+  assert.equal(res.headers['set-cookie'], undefined);
+});
+
+test('checkAuthAndRefresh with no res behaves exactly like isAuthenticated (no throw, same boolean)', () => {
+  const legacyToken = legacyTokenFor('test-password');
+  const req = reqWithCookie(legacyToken);
+  assert.equal(checkAuthAndRefresh(req, undefined), true);
+});
+
+test('checkAuthAndRefresh never upgrades an invalid/expired/garbage cookie', () => {
+  const res = responseRecorder();
+  assert.equal(checkAuthAndRefresh(reqWithCookie('garbage'), res), false);
+  assert.equal(res.headers['set-cookie'], undefined);
+});

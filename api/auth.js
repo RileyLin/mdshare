@@ -13,6 +13,14 @@
 // grace period, not a perpetual token: after the cutoff every browser must re-authenticate to
 // receive a v2 token. Bump the cutoff forward (and note why) if more transition time is needed;
 // do not remove it entirely.
+//
+// Seamless upgrade: checkAuthAndRefresh() (used by every authenticated route instead of a bare
+// isAuthenticated() check) silently re-issues a fresh v2 cookie whenever it validates a request
+// via the legacy path — so an existing owner session gets upgraded to v2 (full new 180-day
+// lifetime) on its very next authenticated request, with no re-login, no visible change, and no
+// extra step. In practice this means LEGACY_COOKIE_CUTOFF only matters for a browser that makes
+// zero authenticated requests between rollout and the cutoff date; any browser that's used at
+// least once during that window is already upgraded before the cutoff ever applies to it.
 
 import { createHmac, timingSafeEqual } from 'crypto';
 
@@ -85,6 +93,17 @@ export function verifyLegacyCookie(cookieValue, password = PASSWORD, hmacKey = H
   return safeHexEqual(cookieValue, expected);
 }
 
+function buildSessionCookieHeader(token) {
+  return [
+    `${COOKIE_NAME}=${encodeURIComponent(token)}`,
+    `Max-Age=${COOKIE_MAX_AGE}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Secure',
+  ].join('; ');
+}
+
 export function isAuthenticated(req, now = new Date()) {
   if (!PASSWORD) return false; // no password set -> fail closed
   const cookies = parseCookies(req.headers.cookie);
@@ -96,6 +115,33 @@ export function isAuthenticated(req, now = new Date()) {
 
   // Bounded legacy transition — see LEGACY_COOKIE_CUTOFF above.
   if (now < LEGACY_COOKIE_CUTOFF && verifyLegacyCookie(token)) return true;
+
+  return false;
+}
+
+// Preferred entry point for every HTTP handler that has a `res` to write to. Identical to
+// isAuthenticated(), except that when it validates the request via the legacy-cookie path it
+// also transparently sets a fresh v2 Set-Cookie header on `res` (full 180-day lifetime) — the
+// "seamless upgrade" described above. Safe to call even when the response has already started
+// being built; it only ever *adds* a Set-Cookie header, never removes/blocks anything. `res` is
+// optional so this can still be used where only a boolean is needed (e.g. isVisible() call sites
+// without a natural `res`), in which case it behaves exactly like isAuthenticated().
+export function checkAuthAndRefresh(req, res, now = new Date()) {
+  if (!PASSWORD) return false;
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies[COOKIE_NAME];
+  if (!token) return false;
+
+  const nowSeconds = Math.floor(now.getTime() / 1000);
+  if (verifySessionToken(token, nowSeconds)) return true;
+
+  if (now < LEGACY_COOKIE_CUTOFF && verifyLegacyCookie(token)) {
+    if (res && typeof res.setHeader === 'function') {
+      const freshToken = signSessionToken(nowSeconds + COOKIE_MAX_AGE);
+      res.setHeader('Set-Cookie', buildSessionCookieHeader(freshToken));
+    }
+    return true;
+  }
 
   return false;
 }
@@ -130,7 +176,7 @@ authRateLimitCleanup.unref?.();
 
 export default async function handler(req, res) {
   if (req.method === 'GET') {
-    const ok = isAuthenticated(req);
+    const ok = checkAuthAndRefresh(req, res);
     return res.status(ok ? 200 : 401).json({ ok });
   }
 
@@ -162,16 +208,7 @@ export default async function handler(req, res) {
 
     const nowSeconds = Math.floor(Date.now() / 1000);
     const token = signSessionToken(nowSeconds + COOKIE_MAX_AGE, password);
-    const cookieValue = [
-      `${COOKIE_NAME}=${encodeURIComponent(token)}`,
-      `Max-Age=${COOKIE_MAX_AGE}`,
-      'Path=/',
-      'HttpOnly',
-      'SameSite=Lax',
-      'Secure',
-    ].join('; ');
-
-    res.setHeader('Set-Cookie', cookieValue);
+    res.setHeader('Set-Cookie', buildSessionCookieHeader(token));
     return res.status(200).json({ ok: true });
   }
 
