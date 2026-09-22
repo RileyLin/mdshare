@@ -7,7 +7,7 @@ process.env.SUPABASE_URL = 'https://example.supabase.co';
 process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
 
 const { default: authHandler } = await import('../api/auth.js');
-const { default: visibilityHandler } = await import('../api/visibility.js');
+const { default: visibilityHandler } = await import('../api/pin.js');
 const { default: shareHandler } = await import('../api/share.js');
 const { default: diagramHandler } = await import('../api/diagram.js');
 const { default: archifyHandler } = await import('../api/archify.js');

@@ -4,7 +4,15 @@
 //   batch:   { items: [{ id, type }], pinned? }
 // Pinning extends expires_at to 2099 + sets pinned=true.
 // Unpinning sets pinned=false (expires_at left as-is; pinned items already pushed to 2099).
+//
+// Also handles PATCH /api/visibility's job (merged in here 2026-09-22 to stay under Vercel
+// Hobby's 12-serverless-function cap — same auth gate, same PATCH method, disjoint body shape:
+// visibility requests carry { id, kind, is_public: boolean } (no `type`/`pinned`), pin requests
+// carry { id|items, type, pinned } (no `kind`/`is_public`), so dispatch-by-shape is unambiguous.
+// This is the ONLY code path that may set is_public; POST create routes never read it from the
+// request body (see api/share.js, api/diagram.js, api/archify.js).
 import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
+import { tableFor, isValidId, patchRow } from './_lib/access.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -52,6 +60,27 @@ export default async function handler(req, res) {
     try { body = JSON.parse(body); } catch {}
   }
   body = body || {};
+
+  // Visibility-toggle shape: { id, kind, is_public } — formerly api/visibility.js. Dispatch on
+  // `kind` presence alone (not is_public's type) so an invalid is_public value still gets the
+  // correct 400 validation error below instead of silently falling through to pin logic.
+  if (body.kind !== undefined) {
+    const table = tableFor(body.kind);
+    if (!table) {
+      return res.status(400).json({ error: 'Invalid kind. Must be one of: paste, diagram, archify.' });
+    }
+    if (!isValidId(body.id)) {
+      return res.status(400).json({ error: 'Invalid id' });
+    }
+    if (typeof body.is_public !== 'boolean') {
+      return res.status(400).json({ error: 'is_public must be a boolean' });
+    }
+    const result = await patchRow(table, body.id, { is_public: body.is_public });
+    if (!result.ok) {
+      return res.status(result.status || 500).json({ error: result.error || 'Update failed' });
+    }
+    return res.status(200).json({ ok: true, id: body.id, kind: body.kind, is_public: body.is_public });
+  }
 
   // pinned defaults to true (pin). Pass pinned:false to unpin.
   const pinned = body.pinned === undefined ? true : !!body.pinned;

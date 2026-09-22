@@ -202,7 +202,7 @@ export function visibilityControlScript(id, kind, isPublic) {
       var btn = document.getElementById('btn-visibility');
       btn.disabled = true;
       try {
-        var res = await fetch('/api/visibility', {
+        var res = await fetch('/api/pin', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: VIS_ID, kind: VIS_KIND, is_public: makingPublic }),
