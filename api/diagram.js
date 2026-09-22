@@ -1,25 +1,17 @@
-// POST /api/diagram — accepts SVG (+ optional markdown), returns a shareable URL
-// GET  /api/diagram?id=xxx — returns raw SVG
+// POST /api/diagram — accepts SVG (+ optional markdown), returns a shareable URL. Always creates
+//   a PRIVATE row (is_public: false) — visibility can only be changed via the auth-gated
+//   PATCH /api/visibility endpoint, never from this request body.
+// GET  /api/diagram?id=xxx — returns raw SVG. Private unless the owner is authenticated or the row
+//   has is_public: true.
 
 import { randomBytes } from 'crypto';
+import { getRow, isVisible, setPrivacyHeaders } from './_lib/access.js';
 function nanoid(size = 10) {
   return randomBytes(size).toString('base64url').slice(0, size);
 }
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-
-async function supabaseGet(id) {
-  const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/mdshare_diagrams?id=eq.${id}&select=svg,markdown,title,expires_at`,
-    { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
-  );
-  const rows = await res.json();
-  if (!rows || rows.length === 0) return null;
-  const row = rows[0];
-  if (new Date(row.expires_at) < new Date()) return null;
-  return row;
-}
 
 async function supabaseSet(id, svg, title, markdown, ttlSeconds) {
   const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
@@ -31,7 +23,8 @@ async function supabaseSet(id, svg, title, markdown, ttlSeconds) {
       'Content-Type': 'application/json',
       Prefer: 'return=minimal',
     },
-    body: JSON.stringify({ id, svg, title: title || 'Diagram', markdown: markdown || null, expires_at: expiresAt }),
+    // Explicit field list: is_public is always false on create regardless of the request body.
+    body: JSON.stringify({ id, svg, title: title || 'Diagram', markdown: markdown || null, expires_at: expiresAt, is_public: false }),
   });
   if (!res.ok) {
     const text = await res.text();
@@ -85,8 +78,10 @@ export default async function handler(req, res) {
     const { id } = req.query;
     if (!id) return res.status(400).json({ error: 'Missing id' });
 
-    const row = await supabaseGet(id);
-    if (!row) return res.status(404).json({ error: 'Not found or expired' });
+    setPrivacyHeaders(res);
+    const { row, dbError } = await getRow('mdshare_diagrams', id, 'svg,expires_at,is_public');
+    if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
+    if (!row || !isVisible(row, req)) return res.status(404).json({ error: 'Not found or expired' });
 
     res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
     return res.send(row.svg);

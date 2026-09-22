@@ -444,13 +444,16 @@ export default async function handler(req, res) {
 
     function buildPasteCard(paste) {
       const isDiagram = paste.kind === 'diagram';
-      const icon = isDiagram ? '◈' : (paste.pinned ? '📌' : '✦');
+      const isArchify = paste.kind === 'archify';
+      const icon = isDiagram || isArchify ? '◈' : (paste.pinned ? '📌' : '✦');
       const iconClass = paste.pinned ? 'paste-icon pinned-icon' : 'paste-icon';
       const pin = paste.pinned ? '<span class="pin-badge">Pinned</span>' : '';
-      const kindBadge = isDiagram ? '<span class="pin-badge" style="background:oklch(52% 0.18 250);color:#fff">Diagram</span>' : '';
+      const kindLabel = isArchify ? (paste.archifyKind ? paste.archifyKind.charAt(0).toUpperCase() + paste.archifyKind.slice(1) : 'Archify') : 'Diagram';
+      const kindBadge = (isDiagram || isArchify) ? \`<span class="pin-badge" style="background:oklch(52% 0.18 250);color:#fff">\${kindLabel}</span>\` : '';
+      const publicBadge = paste.is_public ? '<span class="pin-badge" style="background:oklch(52% 0.15 145);color:#fff">Public</span>' : '';
       const preview = paste.preview ? \`<div class="paste-preview">\${escapeHtml(paste.preview)}</div>\` : '';
-      const href = isDiagram ? \`/d/\${paste.id}\` : \`/v/\${paste.id}\`;
-      const type = isDiagram ? 'diagram' : 'paste';
+      const href = isArchify ? \`/a/\${paste.id}\` : (isDiagram ? \`/d/\${paste.id}\` : \`/v/\${paste.id}\`);
+      const type = isArchify ? 'archify' : (isDiagram ? 'diagram' : 'paste');
       const isChecked = selected.has(paste.id);
       return \`<a class="paste-item\${isChecked ? ' checked' : ''}" href="\${href}" data-id="\${paste.id}" data-type="\${type}" onclick="return onCardClick(event, this)">
         <div class="paste-check">✓</div>
@@ -458,7 +461,7 @@ export default async function handler(req, res) {
         <div class="paste-body">
           <div class="paste-title-row">
             <span class="paste-title">\${escapeHtml(paste.title)}</span>
-            \${pin}\${kindBadge}
+            \${pin}\${kindBadge}\${publicBadge}
           </div>
           \${preview}
           <div class="paste-meta">

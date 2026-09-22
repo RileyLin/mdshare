@@ -24,7 +24,7 @@ export default async function handler(req, res) {
   }
 
   const dbRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/mdshare_pastes?select=id,title,content,created_at,pinned,expires_at&order=pinned.desc,created_at.desc&limit=100`,
+    `${SUPABASE_URL}/rest/v1/mdshare_pastes?select=id,title,content,created_at,pinned,expires_at,is_public&order=pinned.desc,created_at.desc&limit=100`,
     {
       headers: {
         Authorization: `Bearer ${SUPABASE_KEY}`,
@@ -71,6 +71,7 @@ export default async function handler(req, res) {
       pinned: row.pinned || false,
       expires_at: row.expires_at,
       expired,
+      is_public: row.is_public === true,
     };
   }).filter(p => !p.expired); // hide expired non-pinned pastes
 
@@ -78,7 +79,7 @@ export default async function handler(req, res) {
   let diagrams = [];
   try {
     const dgRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/mdshare_diagrams?select=id,title,markdown,created_at,expires_at,pinned&order=pinned.desc,created_at.desc&limit=100`,
+      `${SUPABASE_URL}/rest/v1/mdshare_diagrams?select=id,title,markdown,created_at,expires_at,pinned,is_public&order=pinned.desc,created_at.desc&limit=100`,
       { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
     );
     if (dgRes.ok) {
@@ -102,6 +103,7 @@ export default async function handler(req, res) {
           expires_at: row.expires_at,
           expired,
           kind: 'diagram',
+          is_public: row.is_public === true,
         };
       }).filter(d => !d.expired);
     }
@@ -109,10 +111,42 @@ export default async function handler(req, res) {
     // diagrams table optional — ignore if missing
   }
 
-  // Merge: pastes (kind=paste) + diagrams (kind=diagram), pinned first then newest
+  // --- Also pull archify diagrams (interactive architecture/workflow/sequence/dataflow/lifecycle) ---
+  let archifyItems = [];
+  try {
+    const arRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/mdshare_archify?select=id,title,kind,created_at,expires_at,pinned,is_public&order=pinned.desc,created_at.desc&limit=100`,
+      { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
+    );
+    if (arRes.ok) {
+      const arRows = await arRes.json();
+      archifyItems = arRows.map(row => {
+        const expired = new Date(row.expires_at) < now && !row.pinned;
+        const kindLabel = (row.kind || 'diagram').charAt(0).toUpperCase() + (row.kind || 'diagram').slice(1);
+        return {
+          id: row.id,
+          title: row.title || 'Diagram',
+          preview: `Interactive ${kindLabel} diagram`,
+          created_at: row.created_at,
+          pinned: row.pinned || false,
+          expires_at: row.expires_at,
+          expired,
+          kind: 'archify',
+          archifyKind: row.kind || null,
+          is_public: row.is_public === true,
+        };
+      }).filter(a => !a.expired);
+    }
+  } catch (e) {
+    // archify table optional — ignore if missing
+  }
+
+  // Merge: pastes (kind=paste) + diagrams (kind=diagram) + archify (kind=archify), pinned first
+  // then newest.
   const merged = [
     ...pastes.map(p => ({ ...p, kind: p.kind || 'paste' })),
     ...diagrams,
+    ...archifyItems,
   ].sort((a, b) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
     return new Date(b.created_at) - new Date(a.created_at);

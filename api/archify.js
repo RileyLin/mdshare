@@ -1,16 +1,20 @@
-// POST /api/archify — accepts a full archify-rendered interactive HTML + markdown explainer (+ kind, title, ir).
-// GET  /api/archify?id=xxx — returns raw IR JSON.
+// POST /api/archify — accepts a full archify-rendered interactive HTML + markdown explainer (+
+// kind, title, ir). Always creates a PRIVATE row (is_public: false) — visibility can only be
+// changed via the auth-gated PATCH /api/visibility endpoint, never from this request body.
+// GET  /api/archify?id=xxx — returns raw IR JSON. Private unless the owner is authenticated or the
+// row has is_public: true.
 //
 // Design (revised per Ryan, Jul 23): /a/:id is a NORMAL mdshare page — same structure as /d/:id
 // (diagram on top + markdown explainer below + Pin + Save-to-Notion). The diagram at the top keeps
 // archify's FULL interactivity (hover-to-trace, route probe, pan/zoom, theme toggle) by embedding the
-// self-contained archify HTML in an iframe inside the mdshare .svg-frame. The markdown explainer renders
-// below in mdshare's own warm-paper Notes styling, exactly like a regular mdshare page.
+// self-contained archify HTML in a sandboxed iframe (see api/archify-render.js) inside the mdshare
+// .svg-frame. The markdown explainer renders below in mdshare's own warm-paper Notes styling.
 //
 // We store: html (full self-contained archify doc, powers the interactive iframe),
 // markdown (the explainer rendered below), ir (source of truth, re-renderable), kind, title.
 
 import { randomBytes } from 'crypto';
+import { getRow, isVisible, setPrivacyHeaders } from './_lib/access.js';
 function nanoid(size = 10) {
   return randomBytes(size).toString('base64url').slice(0, size);
 }
@@ -19,18 +23,6 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY;
 
 const VALID_KINDS = ['architecture', 'workflow', 'sequence', 'dataflow', 'lifecycle'];
-
-async function supabaseGet(id) {
-  const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/mdshare_archify?id=eq.${id}&select=ir,kind,title,expires_at`,
-    { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
-  );
-  const rows = await res.json();
-  if (!rows || rows.length === 0) return null;
-  const row = rows[0];
-  if (new Date(row.expires_at) < new Date()) return null;
-  return row;
-}
 
 async function supabaseSet({ id, kind, ir, html, markdown, title, ttlSeconds }) {
   const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
@@ -44,7 +36,8 @@ async function supabaseSet({ id, kind, ir, html, markdown, title, ttlSeconds }) 
     },
     body: JSON.stringify({
       id, kind, ir: ir || null, html, markdown: markdown || null,
-      title: title || 'Diagram', expires_at: expiresAt,
+      // is_public is always false on create, regardless of anything in the request body.
+      title: title || 'Diagram', expires_at: expiresAt, is_public: false,
     }),
   });
   if (!res.ok) {
@@ -101,8 +94,10 @@ export default async function handler(req, res) {
   if (req.method === 'GET') {
     const { id } = req.query;
     if (!id) return res.status(400).json({ error: 'Missing id' });
-    const row = await supabaseGet(id);
-    if (!row) return res.status(404).json({ error: 'Not found or expired' });
+    setPrivacyHeaders(res);
+    const { row, dbError } = await getRow('mdshare_archify', id, 'ir,kind,title,expires_at,is_public');
+    if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
+    if (!row || !isVisible(row, req)) return res.status(404).json({ error: 'Not found or expired' });
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     return res.json({ kind: row.kind, title: row.title, ir: row.ir });
   }

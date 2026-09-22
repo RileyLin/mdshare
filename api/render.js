@@ -1,22 +1,10 @@
 // GET /api/render?id=xxx — returns rendered HTML (redesigned UI + all actions + inline edit)
+// Private unless the owner is authenticated or the row has is_public: true. Unauthenticated
+// requests to a private id get a same-URL login prompt instead of the paste's title/content.
 import { isAuthenticated } from './auth.js';
+import { getRow, isVisible, setPrivacyHeaders, privateGateHtml, visibilityControlHtml, visibilityControlScript } from './_lib/access.js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-
-async function getMarkdown(id) {
-  const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/mdshare_pastes?id=eq.${id}&select=content,expires_at`,
-    { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
-  );
-  const rows = await res.json();
-  if (!rows || rows.length === 0) return null;
-  const row = rows[0];
-  if (new Date(row.expires_at) < new Date()) return null;
-  return row.content;
-}
-
-const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
+const HTML_TEMPLATE = (content, title, id, authed = false, isPublic = false) => `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -271,6 +259,7 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
       <button class="btn" id="btn-download" onclick="downloadMd()">⬇ .md</button>
       <button class="btn" id="btn-pdf" onclick="downloadPdf()">📄 PDF</button>
       <button class="btn" id="btn-copy" onclick="copyMd()">📋 Copy</button>
+      ${authed ? visibilityControlHtml(isPublic) : ''}
       <div class="save-dropdown-wrapper" id="save-wrapper">
         <button class="btn" id="btn-save" onclick="toggleSaveMenu(event)">📌 Save ▾</button>
         <div class="save-menu" id="save-menu">
@@ -564,6 +553,8 @@ const HTML_TEMPLATE = (content, title, id, authed = false) => `<!DOCTYPE html>
         setTimeout(() => { btn.textContent = 'Save'; }, 2000);
       }
     }
+
+    ${authed ? visibilityControlScript(id, 'paste', isPublic) : ''}
   </script>
 </body>
 </html>`;
@@ -572,8 +563,19 @@ export default async function handler(req, res) {
   const { id } = req.query;
   if (!id) return res.status(400).send('Missing id');
 
-  const markdown = await getMarkdown(id);
-  if (!markdown) {
+  setPrivacyHeaders(res);
+  const { row, dbError } = await getRow('mdshare_pastes', id, 'content,expires_at,is_public');
+
+  if (dbError) {
+    return res.status(503).send(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Unavailable — mdshare</title></head>
+      <body style="font-family:'DM Sans',sans-serif;background:oklch(97.5% 0.005 80);display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:16px;color:oklch(38% 0.015 260)">
+      <p style="font-size:2rem">✦</p>
+      <h2 style="font-family:'Instrument Serif',serif;color:oklch(16% 0.01 260)">Temporarily unavailable</h2>
+      <p style="font-size:14px">Something went wrong loading this paste. Try again shortly.</p>
+      </body></html>`);
+  }
+
+  if (!row) {
     return res.status(404).send(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Not found — mdshare</title></head>
       <body style="font-family:'DM Sans',sans-serif;background:oklch(97.5% 0.005 80);display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:16px;color:oklch(38% 0.015 260)">
       <p style="font-size:2rem">✦</p>
@@ -583,12 +585,18 @@ export default async function handler(req, res) {
       </body></html>`);
   }
 
-  const titleMatch = markdown.match(/^#\s+(.+)$/m);
-  const title = titleMatch ? titleMatch[1].trim() : 'Untitled';
   const authed = isAuthenticated(req);
 
+  if (!isVisible(row, req)) {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(401).send(privateGateHtml());
+  }
+
+  const markdown = row.content;
+  const titleMatch = markdown.match(/^#\s+(.+)$/m);
+  const title = titleMatch ? titleMatch[1].trim() : 'Untitled';
+
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'self'");
-  return res.send(HTML_TEMPLATE(markdown, title, id, authed));
+  return res.send(HTML_TEMPLATE(markdown, title, id, authed, row.is_public === true));
 }

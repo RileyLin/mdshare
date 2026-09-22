@@ -1,22 +1,10 @@
-// GET /d/:id — renders SVG diagram, with optional markdown writeup below
+// GET /d/:id — renders SVG diagram, with optional markdown writeup below. Private unless the
+// owner is authenticated or the row has is_public: true. Unauthenticated requests to a private id
+// get a same-URL login prompt instead of the diagram's title/content.
 import { isAuthenticated } from './auth.js';
+import { getRow, isVisible, setPrivacyHeaders, privateGateHtml, visibilityControlHtml, visibilityControlScript } from './_lib/access.js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-
-async function getDiagram(id) {
-  const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/mdshare_diagrams?id=eq.${id}&select=svg,markdown,title,expires_at`,
-    { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
-  );
-  const rows = await res.json();
-  if (!rows || rows.length === 0) return null;
-  const row = rows[0];
-  if (new Date(row.expires_at) < new Date()) return null;
-  return row;
-}
-
-const DIAGRAM_TEMPLATE = (svg, title, markdown, id, authed = false) => `<!DOCTYPE html>
+const DIAGRAM_TEMPLATE = (svg, title, markdown, id, authed = false, isPublic = false) => `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -282,6 +270,7 @@ const DIAGRAM_TEMPLATE = (svg, title, markdown, id, authed = false) => `<!DOCTYP
     <div class="top-bar-actions">
       ${markdown ? '<button class="btn" id="btn-copy" onclick="copyNotes()">📋 Copy notes</button>' : ''}
       <button class="btn" id="btn-pdf" onclick="window.print()">📄 PDF</button>
+      ${authed ? visibilityControlHtml(isPublic) : ''}
       <div class="save-dropdown-wrapper" id="save-wrapper">
         <button class="btn" id="btn-save" onclick="toggleSaveMenu(event)">📌 Save ▾</button>
         <div class="save-menu" id="save-menu">
@@ -426,6 +415,8 @@ const DIAGRAM_TEMPLATE = (svg, title, markdown, id, authed = false) => `<!DOCTYP
         wrapper.parentNode.insertBefore(link, wrapper.nextSibling);
       } catch(e) { btn.textContent = '⚠ Failed — retry'; btn.disabled = false; }
     }
+
+    ${authed ? visibilityControlScript(id, 'diagram', isPublic) : ''}
   <\/script>
 </body>
 </html>`;
@@ -434,7 +425,13 @@ export default async function handler(req, res) {
   const { id } = req.query;
   if (!id) return res.status(400).send('Missing id');
 
-  const row = await getDiagram(id);
+  setPrivacyHeaders(res);
+  const { row, dbError } = await getRow('mdshare_diagrams', id, 'svg,markdown,title,expires_at,is_public');
+
+  if (dbError) {
+    return res.status(503).send('<!DOCTYPE html><html><body style="font-family:sans-serif;background:oklch(12% 0.008 260);color:oklch(88% 0.005 260);display:flex;align-items:center;justify-content:center;height:100vh">Temporarily unavailable — try again shortly.</body></html>');
+  }
+
   if (!row) {
     return res.status(404).send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Not found — mdshare</title></head>
     <body style="font-family:'DM Sans',sans-serif;background:oklch(12% 0.008 260);display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:16px;color:oklch(56% 0.01 260)">
@@ -445,9 +442,13 @@ export default async function handler(req, res) {
     </body></html>`);
   }
 
+  if (!isVisible(row, req)) {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(401).send(privateGateHtml());
+  }
+
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'self'");
   const authed = isAuthenticated(req);
-  return res.send(DIAGRAM_TEMPLATE(row.svg, row.title || 'Diagram', row.markdown, id, authed));
+  return res.send(DIAGRAM_TEMPLATE(row.svg, row.title || 'Diagram', row.markdown, id, authed, row.is_public === true));
 }

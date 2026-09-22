@@ -1,16 +1,43 @@
-// POST /api/auth — password login, sets HttpOnly cookie
+// POST /api/auth — password login, sets a signed, server-expiring HttpOnly cookie
 // GET  /api/auth — check auth status (returns {ok: true/false})
+//
+// Session token format (v2): "<expEpochSeconds>.<hmacHex>"
+//   hmacHex = HMAC-SHA256(HMAC_KEY, "mdshare-session:v2:" + expEpochSeconds + ":" + computeToken(PASSWORD))
+// Binding the signature to computeToken(PASSWORD) means rotating MDSHARE_PASSWORD invalidates
+// every existing session, same as before. The expiry lives in the token itself (server-verified on
+// every request) instead of relying solely on the browser honoring Max-Age.
+//
+// Legacy transition: cookies issued before this change are a bare hex digest equal to
+// computeToken(PASSWORD) (no embedded expiry). Those remain valid — checked with
+// timingSafeEqual — only until LEGACY_COOKIE_CUTOFF below. This is a bounded, documented
+// grace period, not a perpetual token: after the cutoff every browser must re-authenticate to
+// receive a v2 token. Bump the cutoff forward (and note why) if more transition time is needed;
+// do not remove it entirely.
 
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 
 const PASSWORD = process.env.MDSHARE_PASSWORD;
 const HMAC_KEY = process.env.MDSHARE_HMAC_SECRET || process.env.SUPABASE_SERVICE_KEY;
 if (!HMAC_KEY) throw new Error('MDSHARE_HMAC_SECRET or SUPABASE_SERVICE_KEY required');
 const COOKIE_NAME = 'mdshare_auth';
-const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days in seconds
+const COOKIE_MAX_AGE = 60 * 60 * 24 * 180; // 180 days in seconds ("six month session")
+
+// Bounded transition window for legacy (pre-v2) cookies. Chosen as ~30 days from the rollout of
+// this change (2026-09-22); after this date only v2 signed tokens are accepted.
+export const LEGACY_COOKIE_CUTOFF = new Date('2026-10-22T00:00:00Z');
 
 function computeToken(password) {
   return createHmac('sha256', HMAC_KEY).update(password).digest('hex');
+}
+
+function safeHexEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (!/^[0-9a-f]+$/i.test(a) || a.length !== b.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
+  } catch {
+    return false;
+  }
 }
 
 function parseCookies(cookieHeader) {
@@ -23,14 +50,54 @@ function parseCookies(cookieHeader) {
   return cookies;
 }
 
-export function isAuthenticated(req) {
-  if (!PASSWORD) return false; // no password set → fail closed
+// --- v2 signed, server-expiring session token ---
+
+export function signSessionToken(expSeconds, password = PASSWORD, hmacKey = HMAC_KEY) {
+  const sig = createHmac('sha256', hmacKey)
+    .update(`mdshare-session:v2:${expSeconds}:${computeToken(password)}`)
+    .digest('hex');
+  return `${expSeconds}.${sig}`;
+}
+
+// Pure, dependency-injectable verifier so tests can pass an explicit "now" instead of mocking
+// the system clock. Never throws on malformed input — always returns a boolean.
+export function verifySessionToken(cookieValue, nowSeconds, password = PASSWORD, hmacKey = HMAC_KEY) {
+  if (typeof cookieValue !== 'string') return false;
+  const dot = cookieValue.indexOf('.');
+  if (dot <= 0) return false;
+  const expStr = cookieValue.slice(0, dot);
+  const sigHex = cookieValue.slice(dot + 1);
+  if (!/^\d+$/.test(expStr)) return false;
+  const exp = Number(expStr);
+  if (!Number.isSafeInteger(exp)) return false;
+  if (exp <= nowSeconds) return false; // expired
+  if (!password) return false; // no password configured -> fail closed
+  const expected = createHmac('sha256', hmacKey)
+    .update(`mdshare-session:v2:${expStr}:${computeToken(password)}`)
+    .digest('hex');
+  return safeHexEqual(sigHex, expected);
+}
+
+// Pure legacy verifier: bare hex digest, no embedded expiry. Caller applies the cutoff.
+export function verifyLegacyCookie(cookieValue, password = PASSWORD, hmacKey = HMAC_KEY) {
+  if (typeof cookieValue !== 'string' || !password) return false;
+  const expected = computeToken(password);
+  return safeHexEqual(cookieValue, expected);
+}
+
+export function isAuthenticated(req, now = new Date()) {
+  if (!PASSWORD) return false; // no password set -> fail closed
   const cookies = parseCookies(req.headers.cookie);
   const token = cookies[COOKIE_NAME];
   if (!token) return false;
-  const expected = computeToken(PASSWORD);
-  // constant-time compare via HMAC
-  return computeToken(token) === computeToken(expected);
+
+  const nowSeconds = Math.floor(now.getTime() / 1000);
+  if (verifySessionToken(token, nowSeconds)) return true;
+
+  // Bounded legacy transition — see LEGACY_COOKIE_CUTOFF above.
+  if (now < LEGACY_COOKIE_CUTOFF && verifyLegacyCookie(token)) return true;
+
+  return false;
 }
 
 // --- Auth Rate Limiting (5 attempts per IP per 15 min) ---
@@ -53,12 +120,13 @@ function checkAuthRateLimit(ip) {
   return { allowed: true, remaining: AUTH_LIMIT - entry.count };
 }
 
-setInterval(() => {
+const authRateLimitCleanup = setInterval(() => {
   const now = Date.now();
   for (const [ip, entry] of authRateLimitMap) {
     if (now > entry.resetAt) authRateLimitMap.delete(ip);
   }
 }, 5 * 60 * 1000);
+authRateLimitCleanup.unref?.();
 
 export default async function handler(req, res) {
   if (req.method === 'GET') {
@@ -88,11 +156,12 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'MDSHARE_PASSWORD not configured' });
     }
 
-    if (password !== PASSWORD) {
+    if (!safeHexEqual(computeToken(password), computeToken(PASSWORD))) {
       return res.status(401).json({ error: 'Wrong password' });
     }
 
-    const token = computeToken(password);
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const token = signSessionToken(nowSeconds + COOKIE_MAX_AGE, password);
     const cookieValue = [
       `${COOKIE_NAME}=${encodeURIComponent(token)}`,
       `Max-Age=${COOKIE_MAX_AGE}`,
