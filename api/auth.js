@@ -23,6 +23,7 @@
 // least once during that window is already upgraded before the cutoff ever applies to it.
 
 import { createHmac, timingSafeEqual } from 'crypto';
+import { createToken, listTokens, revokeToken } from './_lib/agent-tokens.js';
 
 const PASSWORD = process.env.MDSHARE_PASSWORD;
 const HMAC_KEY = process.env.MDSHARE_HMAC_SECRET || process.env.SUPABASE_SERVICE_KEY;
@@ -174,23 +175,56 @@ const authRateLimitCleanup = setInterval(() => {
 }, 5 * 60 * 1000);
 authRateLimitCleanup.unref?.();
 
+// --- Owner-only per-agent bearer token management (additive, parallel to the password/cookie
+// flow above). Dispatched by method + an explicit `action` field so the existing bare
+// GET/POST{password} paths above are completely untouched (no `action` field -> old behavior).
+// See api/_lib/agent-tokens.js for the token model itself; this file only wires it to HTTP and
+// enforces that every one of these three routes requires the owner's cookie.
+
 export default async function handler(req, res) {
   if (req.method === 'GET') {
+    if (req.query && req.query.action === 'tokens') {
+      if (!checkAuthAndRefresh(req, res)) return res.status(401).json({ error: 'Unauthorized' });
+      try {
+        const tokens = await listTokens();
+        return res.status(200).json({ ok: true, tokens });
+      } catch (e) {
+        return res.status(502).json({ error: 'Failed to list tokens' });
+      }
+    }
     const ok = checkAuthAndRefresh(req, res);
     return res.status(ok ? 200 : 401).json({ ok });
   }
 
   if (req.method === 'POST') {
+    let body = req.body;
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch {}
+    }
+
+    // Owner-only agent-token creation. Requires an already-valid owner cookie — issuing a new
+    // credential is never itself a way to authenticate. Raw token is returned exactly once, in
+    // this response body, and is never logged or persisted anywhere else.
+    if (body && body.action === 'create_token') {
+      if (!checkAuthAndRefresh(req, res)) return res.status(401).json({ error: 'Unauthorized' });
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      if (!name || name.length > 100) {
+        return res.status(400).json({ error: 'name is required (max 100 chars)' });
+      }
+      try {
+        const created = await createToken({ name, expiresInDays: body.expires_in_days });
+        return res.status(200).json({ ok: true, ...created });
+      } catch (e) {
+        return res.status(502).json({ error: 'Failed to create token' });
+      }
+    }
+
+    // --- existing password login flow (unchanged) ---
     const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
     const rateCheck = checkAuthRateLimit(ip);
     if (!rateCheck.allowed) {
       res.setHeader('Retry-After', String(rateCheck.retryAfter));
       return res.status(429).json({ error: 'Too many login attempts. Try again later.', retry_after: rateCheck.retryAfter });
-    }
-
-    let body = req.body;
-    if (typeof body === 'string') {
-      try { body = JSON.parse(body); } catch {}
     }
 
     const { password } = body || {};
@@ -210,6 +244,27 @@ export default async function handler(req, res) {
     const token = signSessionToken(nowSeconds + COOKIE_MAX_AGE, password);
     res.setHeader('Set-Cookie', buildSessionCookieHeader(token));
     return res.status(200).json({ ok: true });
+  }
+
+  if (req.method === 'DELETE') {
+    if (!checkAuthAndRefresh(req, res)) return res.status(401).json({ error: 'Unauthorized' });
+
+    let body = req.body;
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch {}
+    }
+    body = body || {};
+
+    if (body.action && body.action !== 'revoke_token') {
+      return res.status(400).json({ error: 'Unknown action' });
+    }
+
+    const id = body.id || req.query?.id;
+    if (!id || typeof id !== 'string') return res.status(400).json({ error: 'Missing id' });
+
+    const result = await revokeToken(id);
+    if (!result.ok) return res.status(result.status || 500).json({ error: result.error || 'Revoke failed' });
+    return res.status(200).json({ ok: true, id: result.id });
   }
 
   return res.status(405).json({ error: 'Method not allowed' });

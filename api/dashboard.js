@@ -397,6 +397,35 @@ export default async function handler(req, res) {
       <input class="search-input" type="search" id="search" placeholder="Search pastes…" oninput="filterPastes(this.value)" autocomplete="off">
     </div>
     <button class="select-btn" id="select-toggle" onclick="toggleSelectMode()">Select</button>
+    <button class="select-btn" id="tokens-toggle" onclick="toggleTokensPanel()">🔑 API Tokens</button>
+  </div>
+
+  <div class="main" id="tokens-panel" style="display:none">
+    <div class="section">
+      <div class="section-header">
+        <span class="section-title">API Tokens</span>
+        <span class="section-count" id="tokens-count">0</span>
+      </div>
+      <p style="font-size:12.5px;color:var(--ink-3);margin:-8px 0 16px;line-height:1.5">Bearer tokens for agents/scripts to call the API directly. A token can create private content and read back only what it itself created — it can never list, delete, publish, or read anyone else's rows. Treat a token like a password: anyone who has it can act as that agent.</p>
+      <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;align-items:center">
+        <input class="search-input" id="new-token-name" type="text" placeholder="Token name (e.g. \"Kit\")" style="max-width:220px;padding:8px 12px">
+        <select class="search-input" id="new-token-days" style="max-width:160px;padding:8px 12px;cursor:pointer">
+          <option value="30">Expires in 30 days</option>
+          <option value="90" selected>Expires in 90 days</option>
+          <option value="180">Expires in 180 days</option>
+          <option value="365">Expires in 365 days</option>
+        </select>
+        <button class="select-btn active" id="btn-create-token" onclick="createToken()" style="cursor:pointer">+ New token</button>
+      </div>
+      <div id="new-token-reveal" style="display:none;margin-bottom:20px;padding:14px 16px;border:1px solid var(--success);background:var(--success-bg);border-radius:10px">
+        <div style="font-size:12px;font-weight:600;color:var(--success);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:8px">Copy this now — it will not be shown again</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <code id="new-token-value" style="flex:1;font-size:12.5px;background:white;border:1px solid var(--border);border-radius:6px;padding:8px 10px;overflow-x:auto;white-space:nowrap"></code>
+          <button class="select-btn" onclick="copyNewToken()">Copy</button>
+        </div>
+      </div>
+      <div id="tokens-list" class="paste-list"></div>
+    </div>
   </div>
 
   <div class="main" id="main">
@@ -647,6 +676,128 @@ export default async function handler(req, res) {
     }
 
     load();
+
+    // ===== API Tokens panel =====
+    let tokensLoaded = false;
+    let lastCreatedToken = '';
+
+    function toggleTokensPanel() {
+      const panel = document.getElementById('tokens-panel');
+      const main = document.getElementById('main');
+      const btn = document.getElementById('tokens-toggle');
+      const showing = panel.style.display === 'none';
+      panel.style.display = showing ? '' : 'none';
+      main.style.display = showing ? 'none' : '';
+      btn.classList.toggle('active', showing);
+      if (showing && !tokensLoaded) loadTokens();
+    }
+
+    async function loadTokens() {
+      const list = document.getElementById('tokens-list');
+      list.innerHTML = '<div class="empty-state"><p>Loading\u2026</p></div>';
+      try {
+        const res = await fetch('/api/auth?action=tokens');
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        tokensLoaded = true;
+        renderTokens(data.tokens || []);
+      } catch (e) {
+        list.innerHTML = '<div class="empty-state"><p style="color:oklch(52% 0.18 25)">Failed to load tokens: ' + escapeHtml(e.message) + '</p></div>';
+      }
+    }
+
+    function statusBadge(status) {
+      const colors = {
+        active: 'background:oklch(95% 0.04 145);color:oklch(52% 0.15 145);border-color:color-mix(in oklch, oklch(52% 0.15 145) 25%, transparent)',
+        revoked: 'background:oklch(95% 0.05 25);color:oklch(52% 0.2 25);border-color:color-mix(in oklch, oklch(52% 0.2 25) 25%, transparent)',
+        expired: 'background:transparent;color:var(--ink-3);border-color:var(--border)',
+      };
+      return '<span class="pin-badge" style="' + (colors[status] || colors.expired) + '">' + status + '</span>';
+    }
+
+    function renderTokens(tokens) {
+      document.getElementById('tokens-count').textContent = tokens.length;
+      const list = document.getElementById('tokens-list');
+      if (!tokens.length) {
+        list.innerHTML = '<div class="empty-state"><p>No API tokens yet. Create one above for an agent or script to call the API directly.</p></div>';
+        return;
+      }
+      list.innerHTML = tokens.map(t => {
+        const canRevoke = t.status === 'active';
+        return '<div class="paste-item" style="cursor:default">' +
+          '<div class="paste-icon">\ud83d\udd11</div>' +
+          '<div class="paste-body">' +
+            '<div class="paste-title-row">' +
+              '<span class="paste-title">' + escapeHtml(t.name) + '</span>' +
+              statusBadge(t.status) +
+            '</div>' +
+            '<div class="paste-meta">' +
+              '<span>created ' + formatDate(t.created_at) + '</span>' +
+              '<span>\u00b7 expires ' + new Date(t.expires_at).toLocaleDateString() + '</span>' +
+              (t.last_used_at ? '<span>\u00b7 last used ' + formatDate(t.last_used_at) + '</span>' : '<span>\u00b7 never used</span>') +
+            '</div>' +
+          '</div>' +
+          (canRevoke ? '<button class="btn" style="flex-shrink:0" onclick="revokeToken(' + JSON.stringify(t.id) + ', this)">Revoke</button>' : '') +
+        '</div>';
+      }).join('');
+    }
+
+    async function createToken() {
+      const nameInput = document.getElementById('new-token-name');
+      const daysSelect = document.getElementById('new-token-days');
+      const btn = document.getElementById('btn-create-token');
+      const name = nameInput.value.trim();
+      if (!name) { showToast('Name required', true); return; }
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'create_token', name, expires_in_days: Number(daysSelect.value) }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Request failed');
+        lastCreatedToken = data.token;
+        document.getElementById('new-token-value').textContent = data.token;
+        document.getElementById('new-token-reveal').style.display = '';
+        nameInput.value = '';
+        showToast('Token created \u2014 copy it now');
+        loadTokens();
+      } catch (e) {
+        showToast('Failed: ' + e.message, true);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function copyNewToken() {
+      if (!lastCreatedToken) return;
+      try {
+        await navigator.clipboard.writeText(lastCreatedToken);
+        showToast('Copied to clipboard');
+      } catch (e) {
+        showToast('Copy failed \u2014 select and copy manually', true);
+      }
+    }
+
+    async function revokeToken(id, btnEl) {
+      if (!window.confirm('Revoke this token? Any agent using it will immediately get 401s.')) return;
+      if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Revoking\u2026'; }
+      try {
+        const res = await fetch('/api/auth', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'revoke_token', id }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Request failed');
+        showToast('Token revoked');
+        loadTokens();
+      } catch (e) {
+        showToast('Failed: ' + e.message, true);
+        if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Revoke'; }
+      }
+    }
   </script>
 </body>
 </html>`;

@@ -6,6 +6,7 @@
 // PATCH /api/share — updates content for an existing paste (auth-gated). Never touches is_public.
 import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
 import { getRow, isVisible, setPrivacyHeaders } from './_lib/access.js';
+import { resolveAgentToken } from './_lib/agent-tokens.js';
 import { randomBytes } from 'crypto';
 
 // --- Rate Limiting (in-memory, per Vercel serverless instance) ---
@@ -54,7 +55,7 @@ function extractTitle(markdown) {
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
-async function supabaseSet(id, content, ttlSeconds) {
+async function supabaseSet(id, content, ttlSeconds, createdByToken) {
   const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
   const title = extractTitle(content);
   const res = await fetch(`${SUPABASE_URL}/rest/v1/mdshare_pastes`, {
@@ -67,8 +68,9 @@ async function supabaseSet(id, content, ttlSeconds) {
     },
     // Explicit field list (never a body spread): is_public is always false on create, regardless
     // of anything a caller puts in the request body. Making it public requires the authenticated
-    // PATCH /api/visibility endpoint.
-    body: JSON.stringify({ id, content, expires_at: expiresAt, title, is_public: false }),
+    // PATCH /api/visibility endpoint. created_by_token is set only from a server-validated bearer
+    // token (see handler below) — never read from the request body either.
+    body: JSON.stringify({ id, content, expires_at: expiresAt, title, is_public: false, created_by_token: createdByToken || null }),
   });
   if (!res.ok) throw new Error(`Supabase insert failed: ${res.status}`);
 }
@@ -124,6 +126,14 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   if (req.method === 'POST') {
+    // Per-agent bearer tokens (api/_lib/agent-tokens.js): absent Authorization header -> unchanged
+    // anonymous-create path below. Present-but-invalid (malformed/unknown/revoked/expired) -> hard
+    // 401, never a silent fallback to anonymous creation.
+    const agentAuth = await resolveAgentToken(req);
+    if (agentAuth.present && !agentAuth.valid) {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+
     // Rate limit by IP
     const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
     const rateCheck = checkRateLimit(ip);
@@ -161,7 +171,7 @@ export default async function handler(req, res) {
     const ttl = Math.min(parseInt(body?.ttl) || 86400, 604800); // max 7 days
     const id = nanoid();
 
-    await supabaseSet(id, markdown, ttl);
+    await supabaseSet(id, markdown, ttl, agentAuth.valid ? agentAuth.id : null);
 
     const host = req.headers.host || 'mdshare.vercel.app';
     const protocol = host.includes('localhost') ? 'http' : 'https';
@@ -202,10 +212,18 @@ export default async function handler(req, res) {
     const { id } = req.query;
     if (!id) return res.status(400).json({ error: 'Missing id' });
 
+    // Same fail-closed rule as POST above: an invalid bearer must 401, never silently fall back to
+    // the owner-or-public check below.
+    const agentAuth = await resolveAgentToken(req);
+    if (agentAuth.present && !agentAuth.valid) {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+
     setPrivacyHeaders(res);
-    const { row, dbError } = await getRow('mdshare_pastes', id, 'content,expires_at,is_public');
+    const { row, dbError } = await getRow('mdshare_pastes', id, 'content,expires_at,is_public,created_by_token');
     if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
-    if (!row || !isVisible(row, req, res)) return res.status(404).json({ error: 'Not found or expired' });
+    const agentOwns = !!(agentAuth.valid && row && row.created_by_token === agentAuth.id);
+    if (!row || !isVisible(row, req, res, { agentOwns })) return res.status(404).json({ error: 'Not found or expired' });
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     return res.send(row.content);

@@ -15,6 +15,7 @@
 
 import { randomBytes } from 'crypto';
 import { getRow, isVisible, setPrivacyHeaders } from './_lib/access.js';
+import { resolveAgentToken } from './_lib/agent-tokens.js';
 function nanoid(size = 10) {
   return randomBytes(size).toString('base64url').slice(0, size);
 }
@@ -24,7 +25,7 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KE
 
 const VALID_KINDS = ['architecture', 'workflow', 'sequence', 'dataflow', 'lifecycle'];
 
-async function supabaseSet({ id, kind, ir, html, markdown, title, ttlSeconds }) {
+async function supabaseSet({ id, kind, ir, html, markdown, title, ttlSeconds, createdByToken }) {
   const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
   const res = await fetch(`${SUPABASE_URL}/rest/v1/mdshare_archify`, {
     method: 'POST',
@@ -37,7 +38,8 @@ async function supabaseSet({ id, kind, ir, html, markdown, title, ttlSeconds }) 
     body: JSON.stringify({
       id, kind, ir: ir || null, html, markdown: markdown || null,
       // is_public is always false on create, regardless of anything in the request body.
-      title: title || 'Diagram', expires_at: expiresAt, is_public: false,
+      // created_by_token comes only from a server-validated bearer token, never the request body.
+      title: title || 'Diagram', expires_at: expiresAt, is_public: false, created_by_token: createdByToken || null,
     }),
   });
   if (!res.ok) {
@@ -59,6 +61,11 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   if (req.method === 'POST') {
+    const agentAuth = await resolveAgentToken(req);
+    if (agentAuth.present && !agentAuth.valid) {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+
     let body = req.body;
     if (typeof body === 'string') {
       try { body = JSON.parse(body); } catch {}
@@ -82,7 +89,7 @@ export default async function handler(req, res) {
     const ttl = Math.min(parseInt(body?.ttl) || 604800, 2592000); // default 7d, max 30d
     const id = nanoid();
 
-    await supabaseSet({ id, kind, ir, html, markdown, title, ttlSeconds: ttl });
+    await supabaseSet({ id, kind, ir, html, markdown, title, ttlSeconds: ttl, createdByToken: agentAuth.valid ? agentAuth.id : null });
 
     const host = req.headers.host || 'mdshare.vercel.app';
     const protocol = host.includes('localhost') ? 'http' : 'https';
@@ -94,10 +101,17 @@ export default async function handler(req, res) {
   if (req.method === 'GET') {
     const { id } = req.query;
     if (!id) return res.status(400).json({ error: 'Missing id' });
+
+    const agentAuth = await resolveAgentToken(req);
+    if (agentAuth.present && !agentAuth.valid) {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+
     setPrivacyHeaders(res);
-    const { row, dbError } = await getRow('mdshare_archify', id, 'ir,kind,title,expires_at,is_public');
+    const { row, dbError } = await getRow('mdshare_archify', id, 'ir,kind,title,expires_at,is_public,created_by_token');
     if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
-    if (!row || !isVisible(row, req, res)) return res.status(404).json({ error: 'Not found or expired' });
+    const agentOwns = !!(agentAuth.valid && row && row.created_by_token === agentAuth.id);
+    if (!row || !isVisible(row, req, res, { agentOwns })) return res.status(404).json({ error: 'Not found or expired' });
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     return res.json({ kind: row.kind, title: row.title, ir: row.ir });
   }

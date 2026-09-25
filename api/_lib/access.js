@@ -86,10 +86,22 @@ export async function patchRow(table, id, patch) {
 // legacy-format cookie gets silently upgraded to a fresh v2 session cookie on this same request
 // (see checkAuthAndRefresh in auth.js) — no re-login, no extra step. `res` is optional: omitting
 // it (e.g. in tests) falls back to a plain isAuthenticated() check with no side effect.
-export function isVisible(row, req, res) {
+// `opts.agentOwns` (optional 4th param) is an additional OR-branch used by the raw content GET
+// routes (api/share.js, api/diagram.js, api/archify.js) for per-agent bearer tokens: a token may
+// read back only the exact rows it itself created (see api/_lib/agent-tokens.js). Omitting `opts`
+// entirely — every call site until the bearer-token feature was added, and every HTML-chrome
+// render route (render.js/diagram-render.js/archify-render.js/archify-html.js), which do not
+// support bearer tokens at all — is byte-identical to the original two-branch check.
+export function isVisible(row, req, res, opts) {
   if (!row) return false;
-  if (res) return checkAuthAndRefresh(req, res) || row.is_public === true;
-  return isAuthenticated(req) || row.is_public === true;
+  if (res) {
+    if (checkAuthAndRefresh(req, res)) return true;
+  } else if (isAuthenticated(req)) {
+    return true;
+  }
+  if (row.is_public === true) return true;
+  if (opts && opts.agentOwns === true) return true;
+  return false;
 }
 
 // Applied to every render/raw response (public and private alike): keep share links out of

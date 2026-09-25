@@ -10,6 +10,19 @@ import {
 const MDSHARE_API = process.env.MDSHARE_API || "https://mdshare-rileylins-projects.vercel.app/api/share";
 const MDSHARE_DIAGRAM_API = process.env.MDSHARE_DIAGRAM_API || "https://mdshare-rileylins-projects.vercel.app/api/diagram";
 
+// Optional per-agent bearer token (owner-issued from the mdshare dashboard's "API Tokens"
+// panel). Never hardcode a token here — set MDSHARE_AGENT_TOKEN in the MCP client's env config
+// (e.g. via a protected secrets store reference), one distinct token per agent/deployment so
+// usage and revocation stay attributable per agent. Unset -> identical unauthenticated behavior
+// as before (anonymous, always-private creation, no read-back capability).
+const MDSHARE_AGENT_TOKEN = process.env.MDSHARE_AGENT_TOKEN || "";
+
+function authHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (MDSHARE_AGENT_TOKEN) headers["Authorization"] = `Bearer ${MDSHARE_AGENT_TOKEN}`;
+  return headers;
+}
+
 const server = new Server(
   {
     name: "mdshare",
@@ -96,9 +109,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     const response = await fetch(MDSHARE_API, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: authHeaders(),
       body: JSON.stringify(body),
     });
 
@@ -141,9 +152,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     const response = await fetch(MDSHARE_DIAGRAM_API, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: authHeaders(),
       body: JSON.stringify(body),
     });
 
