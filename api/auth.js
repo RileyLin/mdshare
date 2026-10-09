@@ -23,7 +23,7 @@
 // least once during that window is already upgraded before the cutoff ever applies to it.
 
 import { createHmac, timingSafeEqual } from 'crypto';
-import { createToken, listTokens, revokeToken } from './_lib/agent-tokens.js';
+import { createToken, listTokens, revokeToken, resolveAgentToken, ALLOWED_SCOPES } from './_lib/agent-tokens.js';
 
 const PASSWORD = process.env.MDSHARE_PASSWORD;
 const HMAC_KEY = process.env.MDSHARE_HMAC_SECRET || process.env.SUPABASE_SERVICE_KEY;
@@ -192,6 +192,25 @@ export default async function handler(req, res) {
         return res.status(502).json({ error: 'Failed to list tokens' });
       }
     }
+
+    // Bearer-only self-introspection (added 2026-10-08, AGENT-SEARCH-PLAN.md). No owner cookie is
+    // involved or accepted here — a token asks "what am I", never "what is the owner's status".
+    // Absent header -> 401 (there is no anonymous meaning for "who am I" without a token); present
+    // but invalid (malformed/unknown/revoked/expired) -> 401, same fail-closed rule as every other
+    // bearer-consuming route; never falls back to the owner-cookie status check below.
+    if (req.query && req.query.action === 'whoami') {
+      res.setHeader('Cache-Control', 'no-store');
+      const agentAuth = await resolveAgentToken(req);
+      if (!agentAuth.present || !agentAuth.valid) return res.status(401).json({ error: 'Unauthorized' });
+      return res.status(200).json({
+        ok: true,
+        id: agentAuth.id,
+        name: agentAuth.name,
+        legacy: agentAuth.scopes == null,
+        scopes: agentAuth.scopes ?? [],
+      });
+    }
+
     const ok = checkAuthAndRefresh(req, res);
     return res.status(ok ? 200 : 401).json({ ok });
   }
@@ -211,8 +230,27 @@ export default async function handler(req, res) {
       if (!name || name.length > 100) {
         return res.status(400).json({ error: 'name is required (max 100 chars)' });
       }
+
+      // `scopes` (added 2026-10-08, AGENT-SEARCH-PLAN.md) is optional. Omitted entirely ->
+      // undefined is passed through to createToken(), which leaves the DB column at its default
+      // (null) -> a legacy token, preserving every existing caller of this endpoint byte-for-byte.
+      // Present -> must be an array of at most 3 distinct strings, each one of ALLOWED_SCOPES;
+      // anything else is a 400 before any Supabase call, never silently dropped/ignored/clamped.
+      let scopes;
+      if (body.scopes !== undefined) {
+        if (!Array.isArray(body.scopes) || body.scopes.length > ALLOWED_SCOPES.length) {
+          return res.status(400).json({ error: `scopes must be an array of up to ${ALLOWED_SCOPES.length} strings from: ${ALLOWED_SCOPES.join(', ')}` });
+        }
+        const deduped = [...new Set(body.scopes)];
+        const invalid = deduped.filter((s) => !ALLOWED_SCOPES.includes(s));
+        if (invalid.length) {
+          return res.status(400).json({ error: `Unknown scope(s): ${invalid.join(', ')}. Allowed: ${ALLOWED_SCOPES.join(', ')}` });
+        }
+        scopes = deduped;
+      }
+
       try {
-        const created = await createToken({ name, expiresInDays: body.expires_in_days });
+        const created = await createToken({ name, expiresInDays: body.expires_in_days, scopes });
         return res.status(200).json({ ok: true, ...created });
       } catch (e) {
         return res.status(502).json({ error: 'Failed to create token' });

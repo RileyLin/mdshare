@@ -6,7 +6,7 @@
 
 import { randomBytes } from 'crypto';
 import { getRow, isVisible, setPrivacyHeaders } from './_lib/access.js';
-import { resolveAgentToken } from './_lib/agent-tokens.js';
+import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
 function nanoid(size = 10) {
   return randomBytes(size).toString('base64url').slice(0, size);
 }
@@ -51,6 +51,11 @@ export default async function handler(req, res) {
     if (agentAuth.present && !agentAuth.valid) {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
+    // Scoped tokens need documents:write to create; legacy tokens (scopes === null) are
+    // unaffected — see api/share.js for the full rationale (AGENT-SEARCH-PLAN.md constraint 3).
+    if (agentAuth.valid && !isLegacyToken(agentAuth) && !hasScope(agentAuth, 'documents:write')) {
+      return res.status(403).json({ error: 'Token missing documents:write scope' });
+    }
 
     let body = req.body;
     if (typeof body === 'string') {
@@ -93,7 +98,7 @@ export default async function handler(req, res) {
     setPrivacyHeaders(res);
     const { row, dbError } = await getRow('mdshare_diagrams', id, 'svg,expires_at,is_public,created_by_token');
     if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
-    const agentOwns = !!(agentAuth.valid && row && row.created_by_token === agentAuth.id);
+    const agentOwns = !!(agentAuth.valid && row && (hasScope(agentAuth, 'documents:read') || row.created_by_token === agentAuth.id));
     if (!row || !isVisible(row, req, res, { agentOwns })) return res.status(404).json({ error: 'Not found or expired' });
 
     res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');

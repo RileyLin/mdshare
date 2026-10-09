@@ -1,0 +1,156 @@
+# Agent-native scoped catalog search/read/create + explicit publish — result
+
+Implements `AGENT-SEARCH-PLAN.md` in full. Parent constraint honored throughout: **no deploy, no
+migration apply, no production credentials issued, no `git push`, no remote/secret ever printed.**
+
+## What changed (see `AGENT-SEARCH-PLAN.md` "Files" for the full file list/rationale)
+
+- **Migration 006** (`migrations/006_add_agent_token_scopes.sql`, additive, **not applied**): adds
+  a nullable `scopes text[]` column to `mdshare_agent_tokens`.
+- **Scope model** (`api/_lib/agent-tokens.js`): `scopes === null` = legacy token (every
+  pre-existing token, by construction) = unaffected, unconditional create + own-row-read, no
+  catalog, no publish. A `scopes` array = scoped token, gated per-capability by
+  `documents:read`/`documents:write`/`documents:publish`. `hasScope()`/`isLegacyToken()` are the
+  two structural checks every gate uses.
+- **`api/_lib/catalog.js`** (new): real server-side search (sanitized `ilike` OR-filter across
+  title + body columns), real server-side not-expired-or-pinned filtering, real server-side
+  bounded `limit`/`offset`, across `paste`/`diagram`/`archify`/`all` — not "fetch latest 100, then
+  `Array.filter()`".
+- **`api/auth.js`**: `create_token` validates an optional `scopes` array (unknown value → `400`
+  before any Supabase call; omitted → legacy token, byte-identical to every existing caller);
+  `tokens` listing includes `scopes`; new bearer-only `GET ?action=whoami` introspection route.
+- **`api/share.js` / `api/diagram.js` / `api/archify.js`**: `POST` gated on `documents:write` for
+  scoped tokens only (legacy unaffected); `GET` visibility widened to any row when the token holds
+  `documents:read` (legacy unaffected — its own-row-only check is untouched).
+- **`api/pastes.js`**: an `Authorization` header now routes to a new bearer-gated catalog mode
+  (`documents:read` required, `403` otherwise) entirely separate from the unchanged owner-cookie
+  dashboard-listing branch (reached only with no `Authorization` header at all).
+- **`api/pin.js`**: the visibility-toggle branch (`{id, kind, is_public}` shape only — pin/unpin
+  untouched) gained a bearer `documents:publish` path, strictly own-row-only (fetches the row
+  first and compares `created_by_token` before patching).
+- **`api/dashboard.js`**: three scope checkboxes on the "+ New token" form (all unchecked → omits
+  `scopes` → legacy token, zero extra clicks for the existing simple flow) and scope/legacy badges
+  on the token list.
+- **`mcp/src/index.ts`**: four new tools (`auth_status`, `search_documents`, `read_document`,
+  `publish_document`); token now also resolvable from `MDSHARE_AGENT_TOKEN_FILE`, read via a
+  proper static `fs` import (an earlier draft used `require()`, which is not available under this
+  package's ESM/`NodeNext` module setup — caught by `tsc --noEmit` + a manual review, fixed before
+  the final build).
+- **`mcp/bin/mdshare-cli.mjs`** (new): portable, dependency-free CLI — `status`/`search`/`recent`/
+  `read`/`create`/`publish`. No `--token` flag; only `MDSHARE_AGENT_TOKEN` /
+  `MDSHARE_AGENT_TOKEN_FILE` (env) / `--token-file <path>`. Never prints the token.
+- **`mcp/package.json`**: adds the `mdshare-cli` bin entry + ships `bin/` in `files`.
+- **`CLAUDE.md`, `README.md`**: documentation updated to match (scope table, `whoami`, catalog
+  mode, publish-own-rows-only asymmetry, CLI/MCP machine-setup section).
+- **`tests/scopes.test.mjs`** (new, 14 tests), **`tests/catalog.test.mjs`** (new, 15 tests).
+
+## Commands run and actual output
+
+### Baseline (before any change)
+```
+$ git status --porcelain        -> (empty, clean)
+$ ls api/*.js | wc -l            -> 12
+$ node --test --test-force-exit tests/*.test.mjs
+  tests 65 / pass 65 / fail 0
+```
+
+### Final state (after all changes)
+```
+$ node --check <every touched/added .js/.mjs file>     -> OK, all 12 files
+$ node --test --test-force-exit tests/*.test.mjs
+  tests 94 / pass 94 / fail 0
+$ ls api/*.js | wc -l                                   -> 12   (cap preserved, no new top-level file)
+$ cd mcp && npx tsc --noEmit                             -> exit 0, no errors
+$ cd mcp && npx tsc                                      -> exit 0, no errors (dist/ rebuilt)
+$ node --check mcp/dist/index.js                         -> OK
+$ node --check mcp/bin/mdshare-cli.mjs                   -> OK
+$ node mcp/bin/mdshare-cli.mjs                            -> prints usage, exit 0
+```
+No lint script exists in either `package.json` (root or `mcp/`) — stated explicitly rather than
+inventing one, per the task's "state unavailable checks" instruction.
+
+Test breakdown: 65 pre-existing (unmodified, all still passing) + 14 new in `scopes.test.mjs` + 15
+new in `catalog.test.mjs` = 94.
+
+### New-test coverage mapped to the parent's required cases
+- **Legacy tokens unchanged**: `scopes.test.mjs` — create unconditional, catalog `403`, publish
+  denied; plus `agent-auth.test.mjs` (pre-existing, untouched) still green.
+- **Revoked/expired/malformed denied**: pre-existing `agent-auth.test.mjs` cases untouched and
+  still passing; the new scope/write/read/publish gates sit entirely downstream of that existing
+  401 check (verified by reading every new branch — the resolve-then-401 check always runs first).
+- **Scope isolation**: `scopes.test.mjs` — three dedicated tests, one scope at a time, confirming
+  the other two capabilities are denied for each.
+- **Cross-token read with explicit scope**: `scopes.test.mjs` — a `documents:read` token reads a
+  different token's private row.
+- **Denied publish**: `scopes.test.mjs` — no scope, wrong scope, and right scope but wrong row (own-
+  row enforcement), all covered.
+- **Private creation**: pre-existing `publish.test.mjs`/`visibility.test.mjs` untouched, still
+  green — new code never touches the "`is_public` always false on create" invariant.
+- **Expired exclusion**: `catalog.test.mjs` — mocked rows prove the expiry filter is a real
+  Supabase request-URL parameter (`or=(expires_at.gt....,pinned.eq.true)`), and a merge/sort test
+  confirms correct ordering/inclusion.
+- **Pagination/search injection**: `catalog.test.mjs` — direct `sanitizeSearchTerm`/
+  `clampPagination` unit tests against adversarial strings/numbers, plus an integration test
+  asserting the actual constructed Supabase fetch URL for a malicious `q` never contains the raw
+  injected clause and that `limit`/`offset` land clamped in that same URL.
+
+## Implementation caveats (read before deploying)
+
+1. **Migration 006 is not applied.** Until the parent runs it against Supabase, every `resolveAgentToken()`
+   lookup's `select=...,scopes` will simply get `scopes: undefined` back from PostgREST for a
+   column that doesn't exist yet — PostgREST's actual behavior for selecting a non-existent column
+   is to **error** (`400`), not silently omit it, which `resolveAgentToken`'s existing `!res.ok` →
+   `lookup_failed` → `401` branch already fails closed on. **Net effect: until migration 006 is
+   applied, every bearer-token request everywhere 401s**, not just the new scope-gated ones. This
+   is a safe failure mode (fail-closed) but worth knowing before flipping anything on — apply
+   migration 006 before any token (old or new) is expected to keep working post-deploy.
+2. **Catalog pagination across `kind=all` is best-effort, not exact**, by design (documented in
+   `api/_lib/catalog.js`'s header and `AGENT-SEARCH-PLAN.md`): each table is independently
+   paginated at the Postgres level, then merged/sorted/truncated in Node. Requesting one specific
+   `kind` gets exact, single-table real pagination. A client that needs exact pagination across
+   all three kinds should page by `kind` separately.
+3. **Search covers `title` for every kind, plus `content` (paste) / `markdown` (diagram) / `kind`
+   (archify)** — archify rows don't get their IR/HTML substring-matched (not meaningfully
+   searchable text), only title/kind. Documented in `catalog.js`'s `KIND_CONFIG`.
+4. **`documents:publish` is own-row-only, unconditionally** — not "own rows ideally" as a soft
+   preference but a hard, enforced restriction (fetch-then-compare-`created_by_token` before any
+   patch). A token can never flip visibility on the owner's content or another token's content,
+   even holding this scope. Documented in three places: `AGENT-SEARCH-PLAN.md`, `api/pin.js`
+   inline, `CLAUDE.md`.
+5. **No `documents:delete`/revoke/mint scope exists**, by design — not an oversight. Bearer tokens
+   can never delete content or manage other tokens, regardless of any scope combination.
+6. **The portable CLI's `create` subcommand doesn't support `kind=archify`** — archify rows need
+   `html`+`kind`+`ir` fields that don't map cleanly onto "one file argument"; the CLI says so and
+   points at the MCP tools / direct `POST /api/archify` instead, rather than offering a
+   half-working shape.
+7. **One CLI smoke-test ran against the live public hosted instance** (`node mcp/bin/
+   mdshare-cli.mjs status` with no token configured, before `MDSHARE_BASE_URL` was considered) —
+   this was a read-only, unauthenticated `GET` with **no state-changing side effect** (confirmed:
+   it 401'd, same as it would against either the old or new `auth.js` GET handler), not a deploy
+   check, migration, or credential action. No further live calls were made after noticing this;
+   all other verification used `node --test` with mocked `fetch`.
+8. **An earlier MCP draft used `require('fs')` inside `index.ts`**, which does not exist under this
+   package's ESM (`"type": "module"`, `tsconfig.json`'s `"module": "NodeNext"`) setup and would
+   have thrown at runtime despite `tsc --noEmit` initially passing (TypeScript's ambient `Node`
+   types don't universally flag this). Caught by manual review before the final build; fixed with
+   a proper static `import { readFileSync } from "fs"`. Re-ran `tsc --noEmit` + `tsc` + `node
+   --check dist/index.js` clean after the fix — this file reflects the corrected, final state.
+
+## Not done / explicitly out of scope (per the plan)
+
+- `api/render.js`, `api/diagram-render.js`, `api/archify-render.js`, `api/archify-html.js` (the
+  human/cookie-only HTML-chrome render routes) were not touched — "machine-readable read routes"
+  means the raw JSON/markdown/SVG/IR routes, which were already bearer-capable and are the ones
+  extended here.
+- `api/pastes.js`'s owner-cookie dashboard-listing response shape/behavior is byte-for-byte
+  unchanged — only reachable, as before, when no `Authorization` header is present at all.
+- `api/pin.js`'s pin/unpin (non-visibility) branch is untouched — owner-cookie-only, out of scope.
+- No deploy, no migration apply, no new/rotated production credential, no `git push` — all
+  explicitly reserved for the parent, per the task.
+
+## Commit
+
+A single commit on top of the existing history, containing exactly the files listed above
+(`git status --porcelain` reviewed before committing — no stray/unexpected files, no secrets, no
+remote URL printed anywhere in this document or in any tool output surfaced during this session).
+Not pushed.

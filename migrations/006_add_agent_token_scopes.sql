@@ -1,0 +1,24 @@
+-- Migration 006: explicit scopes for per-agent bearer tokens.
+-- Additive only. Adds a nullable `scopes text[]` column to mdshare_agent_tokens. Does NOT touch
+-- is_public, created_by_token, the owner password/cookie flow, or any existing row's visibility.
+--
+-- Semantics (enforced in application code, not DB constraints — see api/_lib/agent-tokens.js):
+--   scopes IS NULL   -> "legacy" token: unconditional create + own-row-read, exactly the
+--                       pre-migration behavior. Every row that already exists before this
+--                       migration runs reads back NULL here by construction (no backfill), so
+--                       no pre-existing token gains any new capability just because this column
+--                       now exists.
+--   scopes = '{}'::text[] or a populated array -> "scoped" token: capabilities come only from
+--                       the array contents (subset of 'documents:read', 'documents:write',
+--                       'documents:publish'), plus the same universal own-row-read floor every
+--                       token already had.
+-- Only ever written by the owner-only POST /api/auth {action:'create_token'} endpoint. A request
+-- to that endpoint that omits `scopes` entirely still produces NULL here (legacy token) — see
+-- api/auth.js. No CHECK constraint on array contents: validation of the allowed scope strings
+-- happens in application code (api/auth.js) before the insert, same convention as every other
+-- input-shape validation in this repo (not enforced redundantly at the DB layer).
+--
+-- Run this manually against Supabase (parent/owner applies it — not run by this change).
+-- ADD COLUMN IF NOT EXISTS is naturally idempotent — safe to re-run this file.
+
+ALTER TABLE mdshare_agent_tokens ADD COLUMN IF NOT EXISTS scopes text[];

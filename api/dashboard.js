@@ -406,8 +406,8 @@ export default async function handler(req, res) {
         <span class="section-title">API Tokens</span>
         <span class="section-count" id="tokens-count">0</span>
       </div>
-      <p style="font-size:12.5px;color:var(--ink-3);margin:-8px 0 16px;line-height:1.5">Bearer tokens for agents/scripts to call the API directly. A token can create private content and read back only what it itself created — it can never list, delete, publish, or read anyone else's rows. Treat a token like a password: anyone who has it can act as that agent.</p>
-      <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;align-items:center">
+      <p style="font-size:12.5px;color:var(--ink-3);margin:-8px 0 16px;line-height:1.5">Bearer tokens for agents/scripts to call the API directly. By default a new token can create private content and read back only what it itself created — check scopes below to grant more: <b>documents:read</b> (read the whole library, not just its own rows, incl. private; needed for catalog search), <b>documents:write</b> (create — required once any scope is checked), <b>documents:publish</b> (toggle public/private, own rows only). Leave all three unchecked for the classic simple token (create + own-row read, no catalog, no publish). No token can ever mint/revoke another token or delete anything.</p>
+      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
         <input class="search-input" id="new-token-name" type="text" placeholder="Token name (e.g. \"Kit\")" style="max-width:220px;padding:8px 12px">
         <select class="search-input" id="new-token-days" style="max-width:160px;padding:8px 12px;cursor:pointer">
           <option value="30">Expires in 30 days</option>
@@ -416,6 +416,11 @@ export default async function handler(req, res) {
           <option value="365">Expires in 365 days</option>
         </select>
         <button class="select-btn active" id="btn-create-token" onclick="createToken()" style="cursor:pointer">+ New token</button>
+      </div>
+      <div style="display:flex;gap:16px;margin-bottom:18px;flex-wrap:wrap;align-items:center;font-size:13px;color:var(--ink-2)">
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="scope-read"> documents:read</label>
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="scope-write"> documents:write</label>
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="scope-publish"> documents:publish</label>
       </div>
       <div id="new-token-reveal" style="display:none;margin-bottom:20px;padding:14px 16px;border:1px solid var(--success);background:var(--success-bg);border-radius:10px">
         <div style="font-size:12px;font-weight:600;color:var(--success);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:8px">Copy this now — it will not be shown again</div>
@@ -715,6 +720,16 @@ export default async function handler(req, res) {
       return '<span class="pin-badge" style="' + (colors[status] || colors.expired) + '">' + status + '</span>';
     }
 
+    function scopeBadges(scopes) {
+      if (!Array.isArray(scopes)) {
+        return '<span class="pin-badge" style="background:transparent;color:var(--ink-3);border-color:var(--border)">legacy (create + own-read)</span>';
+      }
+      if (!scopes.length) {
+        return '<span class="pin-badge" style="background:transparent;color:var(--ink-3);border-color:var(--border)">no scopes (own-read only)</span>';
+      }
+      return scopes.map(s => '<span class="pin-badge" style="background:oklch(96% 0.03 250);color:oklch(45% 0.15 250);border-color:color-mix(in oklch, oklch(45% 0.15 250) 25%, transparent)">' + escapeHtml(s) + '</span>').join(' ');
+    }
+
     function renderTokens(tokens) {
       document.getElementById('tokens-count').textContent = tokens.length;
       const list = document.getElementById('tokens-list');
@@ -736,6 +751,7 @@ export default async function handler(req, res) {
               '<span>\u00b7 expires ' + new Date(t.expires_at).toLocaleDateString() + '</span>' +
               (t.last_used_at ? '<span>\u00b7 last used ' + formatDate(t.last_used_at) + '</span>' : '<span>\u00b7 never used</span>') +
             '</div>' +
+            '<div class="paste-meta" style="margin-top:4px">' + scopeBadges(t.scopes) + '</div>' +
           '</div>' +
           (canRevoke ? '<button class="btn" style="flex-shrink:0" onclick="revokeToken(' + JSON.stringify(t.id) + ', this)">Revoke</button>' : '') +
         '</div>';
@@ -750,10 +766,24 @@ export default async function handler(req, res) {
       if (!name) { showToast('Name required', true); return; }
       btn.disabled = true;
       try {
+        // Scopes checkboxes: all unchecked -> omit the scopes field entirely from the request
+        // body, which the server treats as "give me the classic legacy token" (create +
+        // own-read, no catalog, no publish) — see api/auth.js / api/_lib/agent-tokens.js. Any
+        // box checked -> send the explicit array; the owner is now choosing exactly what this
+        // token can do.
+        const checked = [
+          ['documents:read', 'scope-read'],
+          ['documents:write', 'scope-write'],
+          ['documents:publish', 'scope-publish'],
+        ].filter(([, id]) => document.getElementById(id)?.checked).map(([scope]) => scope);
+
+        const payload = { action: 'create_token', name, expires_in_days: Number(daysSelect.value) };
+        if (checked.length) payload.scopes = checked;
+
         const res = await fetch('/api/auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'create_token', name, expires_in_days: Number(daysSelect.value) }),
+          body: JSON.stringify(payload),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Request failed');
@@ -761,6 +791,9 @@ export default async function handler(req, res) {
         document.getElementById('new-token-value').textContent = data.token;
         document.getElementById('new-token-reveal').style.display = '';
         nameInput.value = '';
+        document.getElementById('scope-read').checked = false;
+        document.getElementById('scope-write').checked = false;
+        document.getElementById('scope-publish').checked = false;
         showToast('Token created \u2014 copy it now');
         loadTokens();
       } catch (e) {

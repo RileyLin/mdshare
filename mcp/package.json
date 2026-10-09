@@ -4,7 +4,8 @@
   "description": "The output layer for AI agents \u2014 turn any markdown into a beautiful shareable link. MCP server for Claude Desktop & AI assistants.",
   "type": "module",
   "bin": {
-    "mdshare": "./dist/index.js"
+    "mdshare": "./dist/index.js",
+    "mdshare-cli": "./bin/mdshare-cli.mjs"
   },
   "main": "./dist/index.js",
   "scripts": {
@@ -40,6 +41,7 @@
   },
   "files": [
     "dist/",
+    "bin/",
     "README.md"
   ]
 }

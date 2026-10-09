@@ -6,7 +6,7 @@
 // PATCH /api/share — updates content for an existing paste (auth-gated). Never touches is_public.
 import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
 import { getRow, isVisible, setPrivacyHeaders } from './_lib/access.js';
-import { resolveAgentToken } from './_lib/agent-tokens.js';
+import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
 import { randomBytes } from 'crypto';
 
 // --- Rate Limiting (in-memory, per Vercel serverless instance) ---
@@ -133,6 +133,14 @@ export default async function handler(req, res) {
     if (agentAuth.present && !agentAuth.valid) {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
+    // Scoped tokens (added 2026-10-08): a token minted with an explicit `scopes` array needs
+    // documents:write to create. A legacy token (scopes === null, i.e. every token that predates
+    // this change, or a new one deliberately issued without a `scopes` field) is completely
+    // unaffected by this check — isLegacyToken() short-circuits it, preserving unconditional
+    // create exactly as before (AGENT-SEARCH-PLAN.md constraint 3).
+    if (agentAuth.valid && !isLegacyToken(agentAuth) && !hasScope(agentAuth, 'documents:write')) {
+      return res.status(403).json({ error: 'Token missing documents:write scope' });
+    }
 
     // Rate limit by IP
     const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
@@ -222,7 +230,10 @@ export default async function handler(req, res) {
     setPrivacyHeaders(res);
     const { row, dbError } = await getRow('mdshare_pastes', id, 'content,expires_at,is_public,created_by_token');
     if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
-    const agentOwns = !!(agentAuth.valid && row && row.created_by_token === agentAuth.id);
+    // documents:read (library-wide read, scoped tokens only) widens visibility to any row, not
+    // just rows this exact token created — a legacy token's hasScope() call is always false, so
+    // its agentOwns stays exactly the own-row-only check it always was.
+    const agentOwns = !!(agentAuth.valid && row && (hasScope(agentAuth, 'documents:read') || row.created_by_token === agentAuth.id));
     if (!row || !isVisible(row, req, res, { agentOwns })) return res.status(404).json({ error: 'Not found or expired' });
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');

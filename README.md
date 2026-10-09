@@ -87,6 +87,64 @@ Claude calls `share_diagram` with raw SVG markup for fully custom visuals.
 |------|-------------|
 | `share_markdown` | Share markdown (with optional Mermaid diagrams) as a rendered page |
 | `share_diagram` | Share a standalone SVG diagram with optional notes |
+| `auth_status` | Introspect this agent's own bearer token: legacy vs scoped, and which scopes it holds |
+| `search_documents` | Search/list the owner's document library (requires `documents:read`) |
+| `read_document` | Read a document's raw content back by id + kind |
+| `publish_document` | Toggle a document's public/private visibility (requires `documents:publish`, own rows only) |
+
+### Machine / Agent Setup (scoped bearer tokens)
+
+For cross-machine automation beyond simple one-shot sharing, the owner issues a named, scoped
+`Authorization: Bearer <token>` from the mdshare dashboard's "API Tokens" panel (`/dashboard` →
+🔑 API Tokens). A token with no scopes checked behaves like the classic simple token: it can
+create content and read back only what it itself created. Checking scopes grants more:
+
+| Scope | Grants |
+|---|---|
+| `documents:read` | Read **any** of the owner's documents (not just its own), and search/list the whole library |
+| `documents:write` | Create documents (required for a *scoped* token to `POST`; a token with zero scopes checked can still create — that's the legacy floor) |
+| `documents:publish` | Toggle a document's public/private visibility — **only on documents that exact token created** |
+
+There is no scope that can delete content or mint/revoke other tokens — a bearer token can never
+do either, regardless of scope.
+
+**Give the token to your agent/script** via an environment variable — never as a CLI argument or
+in a config file checked into source control:
+
+```bash
+export MDSHARE_AGENT_TOKEN="mds_..."
+# or, to keep it in a file instead of the environment:
+export MDSHARE_AGENT_TOKEN_FILE="/path/to/token"
+```
+
+**Portable CLI** (no MCP client needed — just Node ≥18):
+
+```bash
+npx mdshare-cli status                              # who am I / which scopes
+npx mdshare-cli search --q "roadmap" --kind paste    # real server-side search, bounded pagination
+npx mdshare-cli recent --kind diagram --limit 10
+npx mdshare-cli read abc123 --kind paste
+npx mdshare-cli create paste ./notes.md --ttl 604800
+npx mdshare-cli publish abc123 --kind paste --public true
+```
+
+The token is **only** ever read from `MDSHARE_AGENT_TOKEN` / `MDSHARE_AGENT_TOKEN_FILE` (env) or
+`--token-file <path>` — there is deliberately no `--token` flag, since a bare CLI argument is
+visible in `ps` and shell history on a shared machine. The CLI never prints the token value.
+
+**MCP client config** (same env vars, now also via `claude_desktop_config.json`'s `env` block or
+any MCP-compatible client's equivalent):
+
+```json
+{
+  "mcpServers": {
+    "mdshare": {
+      "command": "mdshare-mcp",
+      "env": { "MDSHARE_AGENT_TOKEN": "mds_..." }
+    }
+  }
+}
+```
 
 ---
 

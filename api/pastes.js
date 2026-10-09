@@ -1,10 +1,32 @@
 // GET /api/pastes — list all pastes for dashboard (auth-gated)
 // Returns: id, title, content preview (200 chars), created_at, pinned, expires_at
 // Sorted: pinned first, then by created_at desc. Limit 100.
+//
+// Bearer-token catalog mode (added 2026-10-08, AGENT-SEARCH-PLAN.md): when an Authorization
+// header is present at all, this route no longer means "owner dashboard listing" — it means
+// "agent catalog search/recent", gated on the documents:read scope, and is handled entirely
+// separately (see handleAgentCatalog below) before the owner-cookie branch is ever reached. The
+// owner-cookie dashboard-listing code beneath that is reached only when there is no Authorization
+// header at all, and is completely unchanged from before this file was touched.
 import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
+import { resolveAgentToken, hasScope } from './_lib/agent-tokens.js';
+import { searchCatalog } from './_lib/catalog.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
+
+async function handleAgentCatalog(req, res, agentAuth) {
+  res.setHeader('Cache-Control', 'no-store');
+  if (!hasScope(agentAuth, 'documents:read')) {
+    // Covers both a legacy token (hasScope always false for it) and a scoped token that was never
+    // granted documents:read — neither gets any catalog access, matching "no catalog" for every
+    // token that doesn't hold this exact scope (AGENT-SEARCH-PLAN.md constraint 2/4).
+    return res.status(403).json({ error: 'Token missing documents:read scope' });
+  }
+  const { q, kind, limit, offset } = req.query || {};
+  const result = await searchCatalog({ q, kind, limit, offset });
+  return res.status(200).json({ ok: true, ...result });
+}
 
 export default async function handler(req, res) {
   const origin = req.headers.origin;
@@ -18,6 +40,15 @@ export default async function handler(req, res) {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+
+  // Authorization header present at all -> agent-catalog path, never the owner-cookie path below,
+  // and never a fallback to anonymous/cookie behavior on an invalid token (fail-closed, same
+  // invariant as every other bearer-consuming route in this repo).
+  const agentAuth = await resolveAgentToken(req);
+  if (agentAuth.present) {
+    if (!agentAuth.valid) return res.status(401).json({ error: 'Invalid or expired token' });
+    return handleAgentCatalog(req, res, agentAuth);
+  }
 
   if (!checkAuthAndRefresh(req, res)) {
     return res.status(401).json({ error: 'Unauthorized' });

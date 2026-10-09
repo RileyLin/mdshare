@@ -15,6 +15,17 @@
 //     behavior.
 //   - Any Supabase lookup error fails closed (valid: false), same convention as
 //     access.js#getRow's dbError handling.
+//
+// Scopes (added 2026-10-08, migration 006, see AGENT-SEARCH-PLAN.md): a token's `scopes` column
+// is either `null` ("legacy" — every token that existed before migration 006, by construction,
+// since the column has no backfill) or a text[] array ("scoped" — only produced going forward by
+// api/auth.js's create_token when the owner explicitly passes a `scopes` array). Legacy tokens
+// keep the exact pre-scopes behavior: unconditional create + own-row-read, no catalog, no
+// publish — hasScope() always returns false for them, so no code path can accidentally grant a
+// legacy token a new capability by checking a scope it was never given. Scoped tokens'
+// capabilities come only from their array (plus the same universal own-row-read floor every
+// token has always had — that floor is not one of the three scopes below and is never gated by
+// them).
 import { randomBytes, createHash } from 'crypto';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -33,6 +44,27 @@ const TOKEN_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export function isValidTokenId(id) {
   return typeof id === 'string' && TOKEN_ID_PATTERN.test(id);
+}
+
+// The only three scope strings a scoped token may ever be issued with. Enforced in api/auth.js
+// before createToken() is ever called (reject unknown values there, 400, before any Supabase
+// write) — this constant is exported so that validation and this module's own usage never drift
+// out of sync.
+export const ALLOWED_SCOPES = ['documents:read', 'documents:write', 'documents:publish'];
+
+// true only for a token row whose `scopes` column is literally null — i.e. every token that
+// existed before migration 006 ran, by construction (no backfill), plus any new token created by
+// explicitly omitting `scopes` from the create_token request body (see api/auth.js). A legacy
+// token's capabilities never depend on hasScope() — they're the unconditional pre-scopes floor.
+export function isLegacyToken(tokenResult) {
+  return tokenResult?.valid === true && tokenResult.scopes == null;
+}
+
+// false for a legacy token (scopes == null) in every case, by construction — Array.isArray(null)
+// is false, so there is no way for a legacy token to accidentally pass a scope check. For a
+// scoped token, true only if the exact scope string is present in its array.
+export function hasScope(tokenResult, scope) {
+  return Array.isArray(tokenResult?.scopes) && tokenResult.scopes.includes(scope);
 }
 
 export function sha256Hex(input) {
@@ -95,7 +127,7 @@ export async function resolveAgentToken(req) {
   const hash = sha256Hex(raw);
   try {
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/${TABLE}?token_hash=eq.${encodeURIComponent(hash)}&select=id,name,expires_at,revoked_at`,
+      `${SUPABASE_URL}/rest/v1/${TABLE}?token_hash=eq.${encodeURIComponent(hash)}&select=id,name,expires_at,revoked_at,scopes`,
       { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
     );
     if (!res.ok) return { present: true, valid: false, reason: 'lookup_failed' };
@@ -105,7 +137,9 @@ export async function resolveAgentToken(req) {
     if (row.revoked_at) return { present: true, valid: false, reason: 'revoked' };
     if (row.expires_at && new Date(row.expires_at) < new Date()) return { present: true, valid: false, reason: 'expired' };
     touchLastUsed(row.id);
-    return { present: true, valid: true, id: row.id, name: row.name };
+    // row.scopes is `null` for a legacy (pre-migration-006 or scopes-omitted-at-creation) token,
+    // or an array for a scoped one — passed through verbatim; see isLegacyToken()/hasScope() above.
+    return { present: true, valid: true, id: row.id, name: row.name, scopes: row.scopes ?? null };
   } catch {
     return { present: true, valid: false, reason: 'lookup_error' };
   }
@@ -113,12 +147,19 @@ export async function resolveAgentToken(req) {
 
 // --- Owner-only management operations (called only from api/auth.js, itself owner-cookie-gated) ---
 
-export async function createToken({ name, expiresInDays }) {
+export async function createToken({ name, expiresInDays, scopes }) {
   const id = 'tok_' + nanoid(16);
   const raw = generateRawToken();
   const hash = sha256Hex(raw);
   const days = clampExpiresDays(expiresInDays);
   const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
+  // `scopes` is undefined unless the caller (api/auth.js) explicitly validated and passed an
+  // array — omitting the field entirely from this insert leaves the column at its DB default
+  // (null), producing a legacy token. Never defaulted to [] here: that would silently turn "owner
+  // didn't ask for scopes" into "scoped token with zero scopes" (create+own-read would then stop
+  // working for it), breaking the "omit scopes = old simple token" contract from the plan.
+  const insertBody = { id, name, token_hash: hash, expires_at: expiresAt };
+  if (Array.isArray(scopes)) insertBody.scopes = scopes;
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}`, {
     method: 'POST',
     headers: {
@@ -129,28 +170,30 @@ export async function createToken({ name, expiresInDays }) {
     },
     // Explicit field list — never a body spread. token_hash only, the raw value never touches
     // storage at all (it exists only in this function's local variables and the response below).
-    body: JSON.stringify({ id, name, token_hash: hash, expires_at: expiresAt }),
+    body: JSON.stringify(insertBody),
   });
   if (!res.ok) throw new Error(`Supabase insert failed: ${res.status} — ${await res.text()}`);
   const rows = await res.json().catch(() => []);
   const created_at = rows?.[0]?.created_at || new Date().toISOString();
   // token: raw is returned to the caller exactly once, here. Callers must send it straight to the
   // HTTP response and never log it.
-  return { id, name, token: raw, expires_at: expiresAt, created_at };
+  return { id, name, token: raw, expires_at: expiresAt, created_at, scopes: Array.isArray(scopes) ? scopes : null };
 }
 
 export async function listTokens() {
   const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/${TABLE}?select=id,name,created_at,expires_at,revoked_at,last_used_at&order=created_at.desc`,
+    `${SUPABASE_URL}/rest/v1/${TABLE}?select=id,name,created_at,expires_at,revoked_at,last_used_at,scopes&order=created_at.desc`,
     { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
   );
   if (!res.ok) throw new Error(`Supabase list failed: ${res.status} — ${await res.text()}`);
   const rows = await res.json();
   const now = new Date();
   // token_hash is never selected above, so there is nothing sensitive to strip — this map only
-  // adds a derived, human-readable status.
+  // adds a derived, human-readable status (and normalizes scopes to null for a legacy row, same
+  // shape resolveAgentToken() returns).
   return rows.map((r) => ({
     ...r,
+    scopes: r.scopes ?? null,
     status: r.revoked_at ? 'revoked' : r.expires_at && new Date(r.expires_at) < now ? 'expired' : 'active',
   }));
 }
