@@ -75,28 +75,43 @@ export default async function handler(req, res) {
 
     const ownerOk = checkAuthAndRefresh(req, res);
     if (!ownerOk) {
-      // No owner cookie — try a bearer token with the documents:publish scope (added 2026-10-08,
-      // AGENT-SEARCH-PLAN.md). Present-but-invalid -> 401, same fail-closed rule as every other
+      // No owner cookie — try a bearer token with a publish scope (added 2026-10-08,
+      // AGENT-SEARCH-PLAN.md; documents:publish:any added same evening per explicit security-UX
+      // requirement). Present-but-invalid -> 401, same fail-closed rule as every other
       // bearer-consuming route, before anything else is checked. A legacy token (scopes === null)
-      // or a scoped token without documents:publish is denied — hasScope() is false for both, so
-      // neither gains any new capability here (constraint 2/4). A valid, scoped, documents:publish
-      // token may ONLY toggle visibility on a row it itself created — the scope is intentionally
-      // NOT "publish anything in the owner's library" even though documents:read is library-wide;
-      // see the scope table in AGENT-SEARCH-PLAN.md and the CLAUDE.md auth-model paragraph for why.
+      // or a scoped token with neither publish scope is denied — hasScope() is false for both, so
+      // neither gains any new capability here.
+      //
+      // Two distinct, independently-granted scopes:
+      //   documents:publish      -> may ONLY toggle visibility on a row it itself created.
+      //   documents:publish:any  -> may toggle visibility on ANY row (library-wide), the same
+      //                             reach documents:read already has. This is a deliberately
+      //                             SEPARATE, strictly broader scope — never implied by
+      //                             documents:publish alone, and the owner must explicitly
+      //                             include this exact string when creating the token. Default
+      //                             publish grants stay scoped to a token's own content; the
+      //                             owner opts into the broader capability, never the reverse.
       const agentAuth = await resolveAgentToken(req);
       if (agentAuth.present && !agentAuth.valid) {
         return res.status(401).json({ error: 'Invalid or expired token' });
       }
-      if (!agentAuth.present || !hasScope(agentAuth, 'documents:publish')) {
+      const canPublishAny = hasScope(agentAuth, 'documents:publish:any');
+      const canPublishOwn = hasScope(agentAuth, 'documents:publish');
+      if (!agentAuth.present || (!canPublishAny && !canPublishOwn)) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
-      const { row, dbError } = await getRow(table, body.id, 'created_by_token');
-      if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
-      if (!row || row.created_by_token !== agentAuth.id) {
-        // Fail closed exactly like every other "not visible to you" case in this repo (same shape
-        // as a missing row) — never reveals whether the row exists but belongs to someone else.
-        return res.status(404).json({ error: 'Not found' });
+      if (!canPublishAny) {
+        const { row, dbError } = await getRow(table, body.id, 'created_by_token');
+        if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
+        if (!row || row.created_by_token !== agentAuth.id) {
+          // Fail closed exactly like every other "not visible to you" case in this repo (same shape
+          // as a missing row) — never reveals whether the row exists but belongs to someone else.
+          return res.status(404).json({ error: 'Not found' });
+        }
       }
+      // canPublishAny: no ownership check at all — this scope's entire point is library-wide
+      // reach, same as documents:read's. The row only needs to actually exist in this table;
+      // patchRow below 404s on its own if it doesn't.
     }
 
     const result = await patchRow(table, body.id, { is_public: body.is_public });

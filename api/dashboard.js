@@ -420,7 +420,8 @@ export default async function handler(req, res) {
       <div style="display:flex;gap:16px;margin-bottom:18px;flex-wrap:wrap;align-items:center;font-size:13px;color:var(--ink-2)">
         <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="scope-read"> documents:read</label>
         <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="scope-write"> documents:write</label>
-        <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="scope-publish"> documents:publish</label>
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="scope-publish"> documents:publish (own docs only)</label>
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer;color:oklch(52% 0.2 25)" title="Lets this token change public/private on ANY document in the library, not just ones it created. Only grant this if you specifically need that."><input type="checkbox" id="scope-publish-any"> ⚠️ documents:publish:any (ANY doc, use with caution)</label>
       </div>
       <div id="new-token-reveal" style="display:none;margin-bottom:20px;padding:14px 16px;border:1px solid var(--success);background:var(--success-bg);border-radius:10px">
         <div style="font-size:12px;font-weight:600;color:var(--success);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:8px">Copy this now — it will not be shown again</div>
@@ -775,6 +776,7 @@ export default async function handler(req, res) {
           ['documents:read', 'scope-read'],
           ['documents:write', 'scope-write'],
           ['documents:publish', 'scope-publish'],
+          ['documents:publish:any', 'scope-publish-any'],
         ].filter(([, id]) => document.getElementById(id)?.checked).map(([scope]) => scope);
 
         const payload = { action: 'create_token', name, expires_in_days: Number(daysSelect.value) };
@@ -794,6 +796,7 @@ export default async function handler(req, res) {
         document.getElementById('scope-read').checked = false;
         document.getElementById('scope-write').checked = false;
         document.getElementById('scope-publish').checked = false;
+        document.getElementById('scope-publish-any').checked = false;
         showToast('Token created \u2014 copy it now');
         loadTokens();
       } catch (e) {

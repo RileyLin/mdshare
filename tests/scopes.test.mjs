@@ -234,9 +234,52 @@ test('scoped token with ONLY documents:publish: 403 on create, 403 on catalog, c
 });
 
 // ============================================================================
+// documents:publish:any — deliberately SEPARATE, strictly broader scope (added 2026-10-08,
+// same-evening follow-up: "publish grant should be explicit and scoped to own-created docs
+// unless owner directly grants broader capability"). Never implied by documents:publish alone.
+// ============================================================================
+test('scoped token with documents:publish:any (and NOT documents:publish): can publish ANY row, not just its own', async () => {
+  const t = fakeToken('mds_publish_any_HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH', { id: 'tok_pub_any', scopes: ['documents:publish:any'] });
+  let patchedBody;
+  global.fetch = router([
+    t.lookupRule,
+    // Deliberately a row owned by a DIFFERENT token — documents:publish:any must not even check
+    // created_by_token, unlike plain documents:publish.
+    { method: 'GET', test: /mdshare_pastes\?id=eq\./, respond: async () => ({ ok: true, json: async () => [{ created_by_token: 'tok_someone_else_entirely' }] }) },
+    { method: 'PATCH', test: /mdshare_pastes\?id=eq\./, respond: async (u, o) => { patchedBody = JSON.parse(o.body); return { ok: true, json: async () => [{ id: 'xyz1234567', is_public: true }] }; } },
+  ]);
+  try {
+    const req = fakeReq({ method: 'PATCH', body: { id: 'xyz1234567', kind: 'paste', is_public: true }, headers: { authorization: `Bearer ${t.raw}` } });
+    const res = responseRecorder();
+    await pinHandler(req, res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(patchedBody.is_public, true);
+  } finally { restoreFetch(); }
+});
+
+test('documents:publish alone (without documents:publish:any) is NEVER broadened by holding other scopes — still denied on a non-own row', async () => {
+  // Guards against scope-combination creep: a token with documents:read + documents:publish
+  // together must still be own-rows-only for publish — documents:read's library-wide reach must
+  // never leak into publish just because both scopes are present on the same token.
+  const t = fakeToken('mds_combo_no_leak_IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII', { id: 'tok_combo', scopes: ['documents:read', 'documents:publish'] });
+  let patchCalled = false;
+  global.fetch = router([
+    t.lookupRule,
+    { method: 'GET', test: /mdshare_pastes\?id=eq\./, respond: async () => ({ ok: true, json: async () => [{ created_by_token: 'tok_someone_else_entirely' }] }) },
+    { method: 'PATCH', test: /mdshare_pastes\?id=eq\./, respond: async () => { patchCalled = true; return { ok: true, json: async () => [{}] }; } },
+  ]);
+  try {
+    const req = fakeReq({ method: 'PATCH', body: { id: 'xyz1234567', kind: 'paste', is_public: true }, headers: { authorization: `Bearer ${t.raw}` } });
+    const res = responseRecorder();
+    await pinHandler(req, res);
+    assert.equal(res.statusCode, 404);
+    assert.equal(patchCalled, false);
+  } finally { restoreFetch(); }
+});
+
+// ============================================================================
 // Cross-token read with explicit documents:read scope
 // ============================================================================
-
 test('cross-token read: a token with documents:read can read a DIFFERENT token\'s private row', async () => {
   const t = fakeToken('mds_cross_read_GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG', { id: 'tok_reader', scopes: ['documents:read'] });
   global.fetch = router([

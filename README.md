@@ -104,9 +104,25 @@ create content and read back only what it itself created. Checking scopes grants
 | `documents:read` | Read **any** of the owner's documents (not just its own), and search/list the whole library |
 | `documents:write` | Create documents (required for a *scoped* token to `POST`; a token with zero scopes checked can still create — that's the legacy floor) |
 | `documents:publish` | Toggle a document's public/private visibility — **only on documents that exact token created** |
+| `documents:publish:any` | ⚠️ Toggle visibility on **any** document in the library, not just its own. A separate, deliberately broader grant — never implied by `documents:publish` alone, and never implied by combining it with other scopes. Only ever active when explicitly checked at token creation. |
 
 There is no scope that can delete content or mint/revoke other tokens — a bearer token can never
 do either, regardless of scope.
+
+**New-machine setup via the portable CLI** — no need to open the dashboard at all:
+
+```bash
+npx mdshare-cli login --name "this-laptop" --scopes documents:read,documents:write
+# prompts for the owner password (hidden, never echoed, never a CLI argument) ->
+# logs in -> issues a scoped token -> writes it to ~/.mdshare/token with 0600 permissions.
+```
+
+`login` never writes or prints the password anywhere, and never prints the issued token in its
+default (file) mode. For scripted/non-interactive setup, set `MDSHARE_OWNER_PASSWORD` instead of
+typing it. To pipe the raw token straight into another program (e.g. a protected secrets-store
+CLI) instead of writing a file, add `--stdout`: it prints *only* the token to stdout (every status
+message goes to stderr instead), so `TOKEN=$(mdshare-cli login --stdout ...)` or a direct pipe
+both work cleanly. `--token-file <path>` overrides the default `~/.mdshare/token` location.
 
 **Give the token to your agent/script** via an environment variable — never as a CLI argument or
 in a config file checked into source control:

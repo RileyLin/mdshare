@@ -26,6 +26,14 @@
 // capabilities come only from their array (plus the same universal own-row-read floor every
 // token has always had — that floor is not one of the three scopes below and is never gated by
 // them).
+//
+// documents:publish:any (added 2026-10-08, same evening follow-up): a deliberately SEPARATE,
+// strictly broader scope — never implied by documents:publish alone, never implied by any
+// combination of the other scopes, only ever active when the owner explicitly includes this
+// exact string in a token's scopes array at creation time. documents:publish stays own-rows-only
+// by default (security UX requirement: explicit + scoped to own-created docs unless the owner
+// directly grants the broader capability) — see api/pin.js for the gate that checks this scope
+// before, not instead of, the own-row check.
 import { randomBytes, createHash } from 'crypto';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -46,11 +54,12 @@ export function isValidTokenId(id) {
   return typeof id === 'string' && TOKEN_ID_PATTERN.test(id);
 }
 
-// The only three scope strings a scoped token may ever be issued with. Enforced in api/auth.js
+// The only four scope strings a scoped token may ever be issued with. Enforced in api/auth.js
 // before createToken() is ever called (reject unknown values there, 400, before any Supabase
 // write) — this constant is exported so that validation and this module's own usage never drift
-// out of sync.
-export const ALLOWED_SCOPES = ['documents:read', 'documents:write', 'documents:publish'];
+// out of sync. documents:publish:any is intentionally separate from documents:publish (see the
+// comment above and api/pin.js) — it is never implied by it.
+export const ALLOWED_SCOPES = ['documents:read', 'documents:write', 'documents:publish', 'documents:publish:any'];
 
 // true only for a token row whose `scopes` column is literally null — i.e. every token that
 // existed before migration 006 ran, by construction (no backfill), plus any new token created by

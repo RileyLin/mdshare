@@ -200,3 +200,66 @@ files changed in each pass (`git status --porcelain` / `git status -sb` reviewed
 commit — no stray/unexpected files, no secrets, no remote URL printed anywhere in this document
 or in any tool output surfaced during either session). Neither pushed.
 
+## Round 3 (2026-10-08, same evening, second follow-up)
+
+Parent applied migration 005 (1273 pastes / 39 diagrams / 8 archify unchanged, all private;
+baseline 65/65) and confirmed via `git fetch` that `origin/main` is still behind local `main` —
+nothing reset. Three asks: (1) a portable-CLI login flow for new-machine setup (hidden password
+prompt -> `/api/auth` -> issue a scoped per-machine token -> `0600` file, no tokens in args or
+output; the dashboard-issued-token path still works too); (2) make sure "no extra serverless
+function" is needed; (3) `documents:publish` should stay explicit/own-docs-only *unless* the
+owner directly grants a broader capability — i.e. there should be a way to grant that broader
+capability, deliberately and separately.
+
+**`mdshare-cli.mjs login`** (new subcommand): hidden password prompt (interactive raw-mode stdin,
+no echo — or `MDSHARE_OWNER_PASSWORD` env var for non-interactive use; never a CLI flag) ->
+`POST /api/auth` (existing login route, unchanged) -> uses the returned `mdshare_auth` session
+cookie to `POST /api/auth {action:'create_token', scopes}` (existing route, unchanged) -> writes
+ONLY the raw token to a `0600` file (default `~/.mdshare/token`, `--token-file` to override).
+`--stdout` is an explicit opt-in that prints *only* the token to stdout (for piping into e.g. a
+protected secrets-store CLI) with every status line on stderr instead — this is exactly what the
+parent said they'll use for OpenClaw's own agent token (piped directly into the protected secrets
+store, no plaintext file, egress-proxy-restricted). **No new serverless function**: both requests
+hit the already-existing `api/auth.js` route; `api/` is still exactly 12 files.
+
+**Testability refactor + bug caught before commit**: to unit-test `cmdLogin` without a real
+network call, `fail()` was changed to throw a catchable `CliError` instead of calling
+`process.exit()`, and the script's real argv-parsing `main()` now only runs when the file is
+executed directly (an `isDirectRun` guard) — observable CLI behavior (stderr + exit 1 on failure)
+is unchanged; every `cmd*` function is now a plain importable async function. This refactor was
+necessary because a first attempt at an integration test (spawn the real CLI as a subprocess
+against a local HTTP server) failed with `fetch failed` / `SocketError: other side closed` —
+traced to this dev sandbox's exec environment routing *all* outbound traffic, including 127.0.0.1
+loopback, through an egress proxy that refuses unlisted hosts (confirmed directly: a plain
+`http.request` to a local server returned the literal body `"Secret egress proxy refused the
+request."`). Switched to the mocked-`global.fetch` unit-test pattern already used throughout this
+repo's suite instead — no network dependency, same coverage. While building the subprocess test
+first, syntax-checking caught an actual bug: an earlier edit of the `login` command had
+accidentally produced `const token = ***;` (invalid syntax) instead of `const token =
+createData.token;` — found via `node --check`, fixed before anything was committed. New tests:
+`tests/cli-login.test.mjs` (7 tests) — file-mode writes only the token to a 0600 file and never
+prints it, `--stdout` mode prints only the token (status goes to stderr), wrong password fails
+closed with no file/token created, confirms there is no `--password` flag read anywhere (only the
+env var or the hidden prompt), `cmdStatus` throws `CliError` rather than exiting, plus two small
+`parseArgs`/`resolveToken` checks.
+
+**`documents:publish:any`** (new, fourth scope in `ALLOWED_SCOPES`): deliberately separate from
+`documents:publish`, never implied by it or by any scope combination (a dedicated test confirms
+`documents:read` + `documents:publish` together still never leaks into library-wide publish).
+Only active when the owner explicitly includes this exact string in a token's `scopes` array.
+`api/pin.js`'s bearer path now checks both publish scopes: `documents:publish:any` skips the
+own-row check entirely (same library-wide reach `documents:read` already has); plain
+`documents:publish` keeps the original own-row-only behavior unchanged. Dashboard gained a
+fourth, cautionary-styled (⚠️, red-tinted) checkbox for it, unchecked by default, visually and
+functionally distinct from the plain `documents:publish` checkbox. New tests (added to
+`tests/scopes.test.mjs`, 2 more): a `documents:publish:any`-only token publishing a row it did
+NOT create; a token with `documents:read`+`documents:publish` (no `:any`) still denied on a
+non-own row.
+
+**Remote freshness**: re-confirmed via `git fetch origin` (parent's own report) that `origin/main`
+is unchanged and behind local `main` — consistent with nothing pushed from this side. No deploy,
+no migration apply, no production credential issuance, no push, in this round either.
+
+Full suite after round 3: **108/108** (99 from round 2 + 2 new scope tests + 7 new CLI tests).
+`api/` still exactly 12 files. MCP `tsc --noEmit` + `tsc` still build clean.
+

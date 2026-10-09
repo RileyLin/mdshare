@@ -22,9 +22,12 @@
 // Token resolution (first match wins): MDSHARE_AGENT_TOKEN env var, then MDSHARE_AGENT_TOKEN_FILE
 // env var, then --token-file <path> flag. Base URL: MDSHARE_BASE_URL env var, default the public
 // hosted instance (same default as mcp/src/index.ts).
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs';
+import { homedir, hostname } from 'node:os';
+import { join, dirname } from 'node:path';
 
 const BASE_URL = (process.env.MDSHARE_BASE_URL || 'https://mdshare-rileylins-projects.vercel.app').replace(/\/$/, '');
+const DEFAULT_TOKEN_FILE = join(homedir(), '.mdshare', 'token');
 
 const READ_WRITE_PATH = { paste: '/api/share', diagram: '/api/diagram', archify: '/api/archify' };
 
@@ -64,12 +67,117 @@ function authHeaders(flags) {
 }
 
 function fail(message) {
-  process.stderr.write(String(message) + '\n');
-  process.exit(1);
+  // Throws rather than calling process.exit() directly, so every cmd* function below is a plain
+  // async function that can be imported and unit-tested (mocked global.fetch, no real network—
+  // this sandbox's exec egress proxy blocks even loopback traffic, so a real spawned-subprocess-
+  // against-a-local-server test is not viable here; see tests/cli-login.test.mjs). Only the
+  // actual CLI entrypoint (main(), guarded below) converts this into a stderr message + exit
+  // code 1 — observable behavior for a real invocation is unchanged.
+  throw new CliError(String(message));
 }
+
+class CliError extends Error {}
 
 function printJson(value) {
   process.stdout.write(JSON.stringify(value, null, 2) + '\n');
+}
+
+// Hidden password prompt for `login`. Never a CLI argument/flag — either read from the
+// MDSHARE_OWNER_PASSWORD env var (for scripted/non-interactive setup), or typed interactively
+// with echo suppressed via raw-mode stdin (nothing is printed back, not even asterisks — same
+// convention as a typical `sudo`-style prompt). Prompt text and the trailing newline both go to
+// stderr, never stdout, so stdout stays clean for `--stdout` secret-piping mode even during
+// login. If stdin isn't a TTY (piped), reads the first line verbatim — masking a pipe is
+// meaningless, but this still keeps the password out of argv/ps.
+function readHiddenPassword(promptText) {
+  if (process.env.MDSHARE_OWNER_PASSWORD) return Promise.resolve(process.env.MDSHARE_OWNER_PASSWORD);
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    process.stderr.write(promptText);
+    if (!stdin.isTTY) {
+      let data = '';
+      stdin.setEncoding('utf8');
+      stdin.on('data', (c) => { data += c; });
+      stdin.on('end', () => resolve(data.split('\n')[0].trim()));
+      return;
+    }
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf8');
+    let input = '';
+    const onData = (char) => {
+      if (char === '\n' || char === '\r' || char === '\u0004') {
+        stdin.setRawMode(false);
+        stdin.pause();
+        stdin.removeListener('data', onData);
+        process.stderr.write('\n');
+        resolve(input);
+      } else if (char === '\u0003') { // Ctrl+C
+        stdin.setRawMode(false);
+        process.stderr.write('\n');
+        process.exit(130);
+      } else if (char === '\u007f' || char === '\b') { // backspace
+        input = input.slice(0, -1);
+      } else {
+        input += char;
+      }
+    };
+    stdin.on('data', onData);
+  });
+}
+
+// `login`: new-machine setup flow (added 2026-10-08, same-evening follow-up). Hidden password
+// prompt -> POST /api/auth (owner password login) -> use the resulting session cookie to POST
+// /api/auth {action:'create_token', scopes} -> write ONLY the raw token to a 0600 file (default
+// ~/.mdshare/token, overridable via --token-file). The owner password is never a CLI
+// argument/flag, never logged, never written anywhere; the issued token is never printed to
+// stdout/stderr in the default (file) mode. `--stdout` is an explicit opt-in for piping the raw
+// token straight into another program (e.g. a protected secrets-store CLI) instead of writing a
+// file — in that mode ONLY the token goes to stdout (newline-terminated), every other message
+// goes to stderr, so `TOKEN=$(mdshare-cli login --stdout ...)` or a direct pipe both work cleanly
+// without the secret ever touching a log line.
+async function cmdLogin(flags) {
+  const password = await readHiddenPassword('mdshare owner password: ');
+  if (!password) fail('No password provided');
+
+  const loginRes = await fetch(`${BASE_URL}/api/auth`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  const loginData = await loginRes.json().catch(() => ({}));
+  if (!loginRes.ok) fail(`login failed (${loginRes.status}): ${loginData.error || 'wrong password?'}`);
+  const setCookie = loginRes.headers.get('set-cookie');
+  if (!setCookie) fail('login succeeded but no session cookie was returned');
+  const cookie = setCookie.split(';')[0];
+
+  const name = flags.name || `cli-${hostname()}`;
+  const scopes = flags.scopes ? String(flags.scopes).split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+  const createBody = { action: 'create_token', name };
+  if (scopes && scopes.length) createBody.scopes = scopes;
+  if (flags.days) createBody.expires_in_days = Number(flags.days);
+
+  const createRes = await fetch(`${BASE_URL}/api/auth`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify(createBody),
+  });
+  const createData = await createRes.json().catch(() => ({}));
+  if (!createRes.ok) fail(`token creation failed (${createRes.status}): ${createData.error || 'unknown error'}`);
+  const token = createData.token;
+  if (!token) fail('server did not return a token');
+
+  if (flags.stdout) {
+    process.stderr.write(`Issued token "${createData.name}" (id ${createData.id}, scopes: ${JSON.stringify(createData.scopes ?? [])}, expires ${createData.expires_at}). Token on stdout for piping — nowhere else.\n`);
+    process.stdout.write(token + '\n');
+    return;
+  }
+
+  const tokenFile = flags['token-file'] || DEFAULT_TOKEN_FILE;
+  mkdirSync(dirname(tokenFile), { recursive: true, mode: 0o700 });
+  writeFileSync(tokenFile, token + '\n', { mode: 0o600 });
+  chmodSync(tokenFile, 0o600); // belt-and-suspenders against umask overriding the mode above
+  printJson({ ok: true, id: createData.id, name: createData.name, scopes: createData.scopes ?? [], expires_at: createData.expires_at, token_file: tokenFile });
 }
 
 async function cmdStatus(flags) {
@@ -148,6 +256,7 @@ async function main() {
   const { positional, flags } = parseArgs(rest);
 
   switch (command) {
+    case 'login': return cmdLogin(flags);
     case 'status': return cmdStatus(flags);
     case 'search': return cmdSearch(flags);
     case 'recent': return cmdSearch({ ...flags, q: undefined });
@@ -159,6 +268,13 @@ async function main() {
         'mdshare-cli — portable CLI for the mdshare agent API',
         '',
         'Commands:',
+        '  login [--name NAME] [--scopes documents:read,documents:write,...] [--days N]',
+        '        [--token-file PATH] [--stdout]',
+        '      New-machine setup: hidden password prompt -> owner login -> issues a scoped',
+        '      token -> writes it to a 0600 file (default ~/.mdshare/token). --stdout prints',
+        '      ONLY the token to stdout (for piping into e.g. a secrets-store CLI) instead of',
+        '      writing a file. Never pass the password as an argument — type it when prompted,',
+        '      or set MDSHARE_OWNER_PASSWORD for non-interactive use.',
         '  status',
         '  search [--q TERM] [--kind paste|diagram|archify|all] [--limit N] [--offset N]',
         '  recent [--kind K] [--limit N] [--offset N]',
@@ -173,4 +289,20 @@ async function main() {
   }
 }
 
-main().catch((err) => fail(err && err.message ? err.message : String(err)));
+// Only actually run as a CLI (parse real process.argv, call process.exit on error/usage) when
+// this file is the process entrypoint. Importing it as a module (tests/cli-login.test.mjs) must
+// never trigger argv parsing or process.exit — it only wants the exported functions below with
+// global.fetch mocked.
+const isDirectRun = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+if (isDirectRun) {
+  main().catch((err) => {
+    process.stderr.write((err && err.message ? err.message : String(err)) + '\n');
+    process.exit(1);
+  });
+}
+
+export {
+  parseArgs, resolveToken, authHeaders, readHiddenPassword,
+  cmdLogin, cmdStatus, cmdSearch, cmdRead, cmdCreate, cmdPublish, main,
+  DEFAULT_TOKEN_FILE, CliError,
+};
