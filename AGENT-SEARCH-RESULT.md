@@ -148,9 +148,55 @@ new in `catalog.test.mjs` = 94.
 - No deploy, no migration apply, no new/rotated production credential, no `git push` — all
   explicitly reserved for the parent, per the task.
 
+## Live-inspection follow-up (2026-10-08, same evening)
+
+Parent's live inspection found: production still on commit `0068952` (pre-agent-token), the
+`mdshare_agent_tokens` table doesn't exist yet (migration 005 not applied), and
+`GET /api/pastes` on production (the pre-existing owner-dashboard listing code) returned a
+stale-looking catalog — newest visible item from Oct 7 despite known Oct 8 content.
+
+**Root cause confirmed by reading the live code path** (`api/pastes.js`'s owner-cookie branch,
+unchanged since before this whole effort started): each of the three per-table Supabase queries
+used `order=pinned.desc,created_at.desc&limit=100` with **no expiry filter in the query at all**
+— the not-expired-or-pinned check (`.filter(p => !p.expired)`) ran in JS *after* that hardcoded
+100-row fetch. Any expired-but-not-yet-purged row still occupied one of those 100 slots in the
+DB's own ordering; once enough such rows sorted ahead of a given fresh row, that row simply never
+made it into the 100-row window to begin with — no amount of post-fetch JS filtering can recover
+a row the DB query never returned. This is a real latent bug in code that predates this entire
+change, now fixed as part of this follow-up.
+
+**Fix** (`api/pastes.js`, owner-cookie path only — the bearer-token catalog path in
+`api/_lib/catalog.js` already did this correctly from the start): the same
+`or=(expires_at.gt.<now>,pinned.eq.true)` real server-side filter now runs on all three per-table
+queries (pastes/diagrams/archify), in the same request as `limit=100`, so the limit now bounds
+100 *valid* rows. Added `?sort=latest` as a new, additive, backward-compatible query param on this
+same route: switches both the per-table SQL `order=` clause and the final JS merge-sort to pure
+`created_at.desc`, ignoring pinned priority — a genuine "what's actually newest" view, for
+diagnosing exactly this class of staleness going forward. Omitting `?sort` is byte-identical to
+the old default (pinned first, then recency); the response shape is unchanged. New tests:
+`tests/pastes.test.mjs` (5 tests) — confirms the filter is a real query-string parameter on all
+three table requests (not a post-fetch JS step), confirms a defense-in-depth JS filter still
+catches a stale-mock violation, confirms `?sort=latest` orders by pure recency including past a
+pinned row, confirms the default is unaffected, confirms the actual constructed order-by clause
+switches correctly. Full suite after this fix: **99/99** (94 from the first pass + 5 new).
+
+**Also re-verified per this follow-up's requests:**
+- Machine auth-status + token-argv-free CLI setup were already in place from the first pass
+  (`GET /api/auth?action=whoami`, the `auth_status` MCP tool, `mdshare-cli status`) — confirmed
+  present, no `--token`-style flag anywhere in the CLI or MCP tool surface; token resolution stays
+  env/file-only (`MDSHARE_AGENT_TOKEN` / `MDSHARE_AGENT_TOKEN_FILE` / `--token-file <path>`).
+- Remote freshness: checked via `git status -sb` only (cached remote-tracking ref, no network
+  fetch, no credential-bearing remote URL printed) — confirmed local `main` is ahead of
+  `origin/main` by the commits made in this and the prior pass, consistent with nothing having
+  been pushed, as instructed.
+- No deploy, no migration apply (005 or 006), no production credential issuance, no push, in this
+  follow-up either — parent is applying migrations and deploying separately after review, per
+  their message.
+
 ## Commit
 
-A single commit on top of the existing history, containing exactly the files listed above
-(`git status --porcelain` reviewed before committing — no stray/unexpected files, no secrets, no
-remote URL printed anywhere in this document or in any tool output surfaced during this session).
-Not pushed.
+Two commits total across both passes, on top of the existing history, containing exactly the
+files changed in each pass (`git status --porcelain` / `git status -sb` reviewed before each
+commit — no stray/unexpected files, no secrets, no remote URL printed anywhere in this document
+or in any tool output surfaced during either session). Neither pushed.
+
