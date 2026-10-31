@@ -12,13 +12,19 @@
 // no such dependency.)
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync, statSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 process.env.MDSHARE_BASE_URL = 'https://example.invalid';
+// Isolate DEFAULT_TOKEN_FILE (~/.mdshare/token) resolution from this machine's real $HOME --
+// mdshare-cli.mjs computes it once at module-load time via os.homedir(), which respects $HOME,
+// so setting this before the dynamic import below means these tests can never read or write a
+// developer's actual ~/.mdshare/token.
+const FAKE_HOME = mkdtempSync(join(tmpdir(), 'mdshare-cli-home-'));
+process.env.HOME = FAKE_HOME;
 
-const { cmdLogin, cmdStatus, parseArgs, resolveToken, CliError } = await import('../mcp/bin/mdshare-cli.mjs');
+const { cmdLogin, cmdStatus, parseArgs, resolveToken, DEFAULT_TOKEN_FILE, CliError } = await import('../mcp/bin/mdshare-cli.mjs');
 
 const FAKE_TOKEN = 'mds_fake_test_token_abcdefghijklmnopqrstuvwxyz';
 const CORRECT_PASSWORD = 'correct-owner-password';
@@ -176,11 +182,64 @@ test('parseArgs: never produces a token/password-shaped positional confusion for
   assert.equal(flags.kind, 'paste');
 });
 
-test('resolveToken: never reads a --password or --token flag; only MDSHARE_AGENT_TOKEN / MDSHARE_AGENT_TOKEN_FILE / --token-file', () => {
+test('resolveToken: never reads a --password or --token flag; only MDSHARE_AGENT_TOKEN / MDSHARE_AGENT_TOKEN_FILE / --token-file / default file', () => {
   delete process.env.MDSHARE_AGENT_TOKEN;
   delete process.env.MDSHARE_AGENT_TOKEN_FILE;
-  assert.equal(resolveToken({ token: 'should-be-ignored-no-such-flag-is-read' }), '', 'a bare --token flag (which this CLI does not define) must never be picked up as the token');
+  assert.equal(resolveToken({ token: 'should-be-ignored-no-such-flag-is-read' }), '', 'a bare --token flag (which this CLI does not define) must never be picked up as the token; with no default file present yet this is also the no-token-configured case');
   process.env.MDSHARE_AGENT_TOKEN = 'env-token-value';
   assert.equal(resolveToken({}), 'env-token-value');
   delete process.env.MDSHARE_AGENT_TOKEN;
+});
+
+test('resolveToken: falls back to DEFAULT_TOKEN_FILE (~/.mdshare/token) when nothing explicit is configured', () => {
+  delete process.env.MDSHARE_AGENT_TOKEN;
+  delete process.env.MDSHARE_AGENT_TOKEN_FILE;
+  // Nothing written yet at the (fake, isolated) default path -> still anonymous, not an error.
+  assert.equal(resolveToken({}), '', 'missing default file must resolve to anonymous, never throw');
+
+  // Simulates what `mdshare-cli login` (no --token-file) writes: 0600 file at DEFAULT_TOKEN_FILE.
+  mkdirSync(join(DEFAULT_TOKEN_FILE, '..'), { recursive: true });
+  writeFileSync(DEFAULT_TOKEN_FILE, 'mds_default_file_token_value\n', { mode: 0o600 });
+  assert.equal(resolveToken({}), 'mds_default_file_token_value', 'a post-login default file must now be picked up with zero flags/env vars');
+
+  rmSync(DEFAULT_TOKEN_FILE, { force: true });
+});
+
+test('resolveToken: precedence is env var > explicit file (env or flag) > default file > anonymous', () => {
+  delete process.env.MDSHARE_AGENT_TOKEN;
+  delete process.env.MDSHARE_AGENT_TOKEN_FILE;
+  mkdirSync(join(DEFAULT_TOKEN_FILE, '..'), { recursive: true });
+  writeFileSync(DEFAULT_TOKEN_FILE, 'default-file-token', { mode: 0o600 });
+
+  // Default file wins when nothing explicit is set.
+  assert.equal(resolveToken({}), 'default-file-token');
+
+  // An explicit --token-file wins over the default file.
+  const explicitPath = join(FAKE_HOME, 'explicit-flag-token');
+  writeFileSync(explicitPath, 'explicit-flag-token-value');
+  assert.equal(resolveToken({ 'token-file': explicitPath }), 'explicit-flag-token-value');
+
+  // MDSHARE_AGENT_TOKEN_FILE wins over --token-file (and the default file).
+  const explicitEnvPath = join(FAKE_HOME, 'explicit-env-token');
+  writeFileSync(explicitEnvPath, 'explicit-env-token-value');
+  process.env.MDSHARE_AGENT_TOKEN_FILE = explicitEnvPath;
+  assert.equal(resolveToken({ 'token-file': explicitPath }), 'explicit-env-token-value');
+
+  // MDSHARE_AGENT_TOKEN wins over everything, including the two explicit-file env/flag options.
+  process.env.MDSHARE_AGENT_TOKEN = 'top-priority-env-token';
+  assert.equal(resolveToken({ 'token-file': explicitPath }), 'top-priority-env-token');
+
+  delete process.env.MDSHARE_AGENT_TOKEN;
+  delete process.env.MDSHARE_AGENT_TOKEN_FILE;
+  rmSync(DEFAULT_TOKEN_FILE, { force: true });
+});
+
+test('resolveToken: an explicit but unreadable --token-file is still a hard error, never silently falls through to the default file', () => {
+  delete process.env.MDSHARE_AGENT_TOKEN;
+  delete process.env.MDSHARE_AGENT_TOKEN_FILE;
+  mkdirSync(join(DEFAULT_TOKEN_FILE, '..'), { recursive: true });
+  writeFileSync(DEFAULT_TOKEN_FILE, 'default-file-token-should-not-be-reached');
+  const missingPath = join(FAKE_HOME, 'does-not-exist-token-file');
+  assert.throws(() => resolveToken({ 'token-file': missingPath }), CliError);
+  rmSync(DEFAULT_TOKEN_FILE, { force: true });
 });

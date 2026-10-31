@@ -20,8 +20,10 @@
 //   mdshare-cli publish <id> --kind K --public true|false
 //
 // Token resolution (first match wins): MDSHARE_AGENT_TOKEN env var, then MDSHARE_AGENT_TOKEN_FILE
-// env var, then --token-file <path> flag. Base URL: MDSHARE_BASE_URL env var, default the public
-// hosted instance (same default as mcp/src/index.ts).
+// env var, then --token-file <path> flag, then DEFAULT_TOKEN_FILE (~/.mdshare/token, the file
+// `login` writes by default) if it exists. No match at any step -> '' (anonymous), same as
+// before this default-file fallback existed. Base URL: MDSHARE_BASE_URL env var, default the
+// public hosted instance (same default as mcp/src/index.ts).
 import { readFileSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -50,13 +52,18 @@ function parseArgs(argv) {
 
 function resolveToken(flags) {
   if (process.env.MDSHARE_AGENT_TOKEN) return process.env.MDSHARE_AGENT_TOKEN;
-  const filePath = process.env.MDSHARE_AGENT_TOKEN_FILE || flags['token-file'];
-  if (filePath && typeof filePath === 'string') {
-    try { return readFileSync(filePath, 'utf8').trim(); } catch (e) {
-      fail(`Could not read token file: ${filePath} (${e.code || e.message})`);
+  const explicitFilePath = process.env.MDSHARE_AGENT_TOKEN_FILE || flags['token-file'];
+  if (explicitFilePath && typeof explicitFilePath === 'string') {
+    try { return readFileSync(explicitFilePath, 'utf8').trim(); } catch (e) {
+      fail(`Could not read token file: ${explicitFilePath} (${e.code || e.message})`);
     }
   }
-  return '';
+  // No explicit token source given (no env var, no MDSHARE_AGENT_TOKEN_FILE, no --token-file) --
+  // fall back to the default file `login` writes to (DEFAULT_TOKEN_FILE, ~/.mdshare/token by
+  // default). Unlike an explicit path above, a missing/unreadable default file is NOT an error:
+  // it just means the owner never ran `login` (or ran it with a custom --token-file), so every
+  // command keeps working exactly as before this fallback existed -- anonymous, empty token.
+  try { return readFileSync(DEFAULT_TOKEN_FILE, 'utf8').trim(); } catch { return ''; }
 }
 
 function authHeaders(flags) {

@@ -406,30 +406,34 @@ export default async function handler(req, res) {
         <span class="section-title">API Tokens</span>
         <span class="section-count" id="tokens-count">0</span>
       </div>
-      <p style="font-size:12.5px;color:var(--ink-3);margin:-8px 0 16px;line-height:1.5">Bearer tokens for agents/scripts to call the API directly. By default a new token can create private content and read back only what it itself created — check scopes below to grant more: <b>documents:read</b> (read the whole library, not just its own rows, incl. private; needed for catalog search), <b>documents:write</b> (create — required once any scope is checked), <b>documents:publish</b> (toggle public/private, own rows only). Leave all three unchecked for the classic simple token (create + own-row read, no catalog, no publish). No token can ever mint/revoke another token or delete anything.</p>
+      <p style="font-size:12.5px;color:var(--ink-3);margin:-8px 0 16px;line-height:1.5">Bearer tokens for agents/scripts to call the API directly. A new token defaults to <b>read-only over your whole library</b> (<b>documents:read</b> — can read any document, including private ones, via the raw routes and the catalog/search endpoint; it cannot create, change, or delete anything). Opt in deliberately per-token to grant more: <b>documents:write</b> (create new content), <b>documents:publish</b> (toggle public/private, own-created rows only), <b>documents:publish:any</b> (toggle public/private on ANY row — broad, use with caution). No token can ever mint/revoke another token, enumerate other tokens, or delete anything.</p>
       <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
         <input class="search-input" id="new-token-name" type="text" placeholder="Token name (e.g. \"Kit\")" style="max-width:220px;padding:8px 12px">
         <select class="search-input" id="new-token-days" style="max-width:160px;padding:8px 12px;cursor:pointer">
-          <option value="30">Expires in 30 days</option>
-          <option value="90" selected>Expires in 90 days</option>
+          <option value="30" selected>Expires in 30 days</option>
+          <option value="90">Expires in 90 days</option>
           <option value="180">Expires in 180 days</option>
           <option value="365">Expires in 365 days</option>
         </select>
         <button class="select-btn active" id="btn-create-token" onclick="createToken()" style="cursor:pointer">+ New token</button>
       </div>
-      <div style="display:flex;gap:16px;margin-bottom:18px;flex-wrap:wrap;align-items:center;font-size:13px;color:var(--ink-2)">
-        <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="scope-read"> documents:read</label>
-        <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="scope-write"> documents:write</label>
-        <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="scope-publish"> documents:publish (own docs only)</label>
-        <label style="display:flex;gap:6px;align-items:center;cursor:pointer;color:oklch(52% 0.2 25)" title="Lets this token change public/private on ANY document in the library, not just ones it created. Only grant this if you specifically need that."><input type="checkbox" id="scope-publish-any"> ⚠️ documents:publish:any (ANY doc, use with caution)</label>
+      <div style="display:flex;gap:16px;margin-bottom:10px;flex-wrap:wrap;align-items:center;font-size:13px;color:var(--ink-2)" id="scope-row">
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="scope-read" checked> documents:read <span style="color:var(--ink-3)">(read the whole library — default)</span></label>
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="scope-write"> documents:write <span style="color:var(--ink-3)">(create)</span></label>
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="scope-publish"> documents:publish <span style="color:var(--ink-3)">(own docs only)</span></label>
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer;color:oklch(52% 0.2 25)" title="Lets this token change public/private on ANY document in the library, not just ones it created. Only grant this if you specifically need that."><input type="checkbox" id="scope-publish-any"> ⚠️ documents:publish:any <span style="color:var(--ink-3)">(ANY doc, use with caution)</span></label>
       </div>
-      <div id="new-token-reveal" style="display:none;margin-bottom:20px;padding:14px 16px;border:1px solid var(--success);background:var(--success-bg);border-radius:10px">
+      <div style="margin-bottom:18px">
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer;font-size:12.5px;color:var(--ink-3)" title="Omits the scopes field entirely instead of sending an explicit array. Only for the old pre-scopes contract: create + read-back-only-its-own-rows, no catalog, no publish. Disables the checkboxes above while checked."><input type="checkbox" id="scope-legacy" onchange="onLegacyToggle()"> Legacy token instead (create + own-row read only, no scopes array sent)</label>
+      </div>
+      <div id="new-token-reveal" style="display:none;margin-bottom:8px;padding:14px 16px;border:1px solid var(--success);background:var(--success-bg);border-radius:10px">
         <div style="font-size:12px;font-weight:600;color:var(--success);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:8px">Copy this now — it will not be shown again</div>
         <div style="display:flex;gap:8px;align-items:center">
           <code id="new-token-value" style="flex:1;font-size:12.5px;background:white;border:1px solid var(--border);border-radius:6px;padding:8px 10px;overflow-x:auto;white-space:nowrap"></code>
           <button class="select-btn" onclick="copyNewToken()">Copy</button>
         </div>
       </div>
+      <p style="font-size:11.5px;color:var(--ink-3);margin:0 0 20px;line-height:1.5">Use it as: <code style="background:var(--card-hover);border-radius:4px;padding:1px 5px">Authorization: Bearer &lt;token&gt;</code> against <code id="api-base-example" style="background:var(--card-hover);border-radius:4px;padding:1px 5px"></code> — <code>&lt;token&gt;</code> is always a placeholder here, never the real value; this UI never logs or displays a token after its one-time reveal above.</p>
       <div id="tokens-list" class="paste-list"></div>
     </div>
   </div>
@@ -686,6 +690,11 @@ export default async function handler(req, res) {
     // ===== API Tokens panel =====
     let tokensLoaded = false;
     let lastCreatedToken = '';
+    // Help-text example origin: computed from window.location, never from a token value. This is
+    // just where this app's own API lives, shown so a usage example has a real base URL instead
+    // of an abstract placeholder -- the <token> part next to it stays a literal placeholder.
+    const apiBaseExampleEl = document.getElementById('api-base-example');
+    if (apiBaseExampleEl) apiBaseExampleEl.textContent = window.location.origin + '/api/...';
 
     function toggleTokensPanel() {
       const panel = document.getElementById('tokens-panel');
@@ -767,11 +776,13 @@ export default async function handler(req, res) {
       if (!name) { showToast('Name required', true); return; }
       btn.disabled = true;
       try {
-        // Scopes checkboxes: all unchecked -> omit the scopes field entirely from the request
-        // body, which the server treats as "give me the classic legacy token" (create +
-        // own-read, no catalog, no publish) — see api/auth.js / api/_lib/agent-tokens.js. Any
-        // box checked -> send the explicit array; the owner is now choosing exactly what this
-        // token can do.
+        // Explicit-scopes-always contract: unless the separate "Legacy token" toggle is checked,
+        // this ALWAYS sends a real scopes array in the request body (empty [] if every box is
+        // unchecked) so a new token's capability is never decided by an accidental omission.
+        // The server (api/auth.js / api/_lib/agent-tokens.js) only produces a legacy
+        // (scopes === null, create + own-row-read, no catalog, no publish) token when the field
+        // is omitted entirely; that path is reached here only via the explicit #scope-legacy box.
+        const legacy = document.getElementById('scope-legacy')?.checked;
         const checked = [
           ['documents:read', 'scope-read'],
           ['documents:write', 'scope-write'],
@@ -780,7 +791,7 @@ export default async function handler(req, res) {
         ].filter(([, id]) => document.getElementById(id)?.checked).map(([scope]) => scope);
 
         const payload = { action: 'create_token', name, expires_in_days: Number(daysSelect.value) };
-        if (checked.length) payload.scopes = checked;
+        if (!legacy) payload.scopes = checked;
 
         const res = await fetch('/api/auth', {
           method: 'POST',
@@ -793,10 +804,14 @@ export default async function handler(req, res) {
         document.getElementById('new-token-value').textContent = data.token;
         document.getElementById('new-token-reveal').style.display = '';
         nameInput.value = '';
-        document.getElementById('scope-read').checked = false;
+        // Reset to the deliberate defaults (read-only, not legacy) rather than leaving the form
+        // in whatever state the previous creation left it.
+        document.getElementById('scope-legacy').checked = false;
+        document.getElementById('scope-read').checked = true;
         document.getElementById('scope-write').checked = false;
         document.getElementById('scope-publish').checked = false;
         document.getElementById('scope-publish-any').checked = false;
+        onLegacyToggle();
         showToast('Token created \u2014 copy it now');
         loadTokens();
       } catch (e) {
@@ -804,6 +819,20 @@ export default async function handler(req, res) {
       } finally {
         btn.disabled = false;
       }
+    }
+
+    // Legacy toggle disables (and visually dims) the scope checkboxes while checked, since
+    // checking it means "send no scopes field at all" and the checkbox states would otherwise be
+    // misleading. Never changes which field createToken() sends on its own -- it reads this
+    // checkbox fresh at submit time.
+    function onLegacyToggle() {
+      const legacy = document.getElementById('scope-legacy')?.checked;
+      ['scope-read', 'scope-write', 'scope-publish', 'scope-publish-any'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !!legacy;
+      });
+      const row = document.getElementById('scope-row');
+      if (row) row.style.opacity = legacy ? '0.45' : '1';
     }
 
     async function copyNewToken() {
