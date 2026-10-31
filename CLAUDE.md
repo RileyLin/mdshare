@@ -47,3 +47,6 @@ Single-owner, password-based — no per-user accounts. `MDSHARE_PASSWORD` env va
 node --test --test-force-exit tests/*.test.mjs
 ```
 No build step; Vercel deploys `api/` and `public/` directly. Deploys and Supabase migrations are run by the repo owner, not by agents.
+
+## Production verification — October 31, 2026
+Agent-token routes and migrations005/006 deployed and tested on the user-facing domain. Dashboard defaults full-library read-only and30days, explicit scopes array; CLI reads ~/.mdshare/token by default. Parent fixed Revoke button HTML quoting/mobile layout. Commit bc0f049.112 tests passed after deterministic legacy-cookie test dates (no server cutoff extension). Known private paste bearer read200, read-only create403, publish/mint denied, revoked401. Owner dashboard create/revoke exercised in Chromium; copy handler tested via clipboard stub. Secure handoff is owner one-time copy in Dashboard; do not send credential files from protected directories or expose keys in group chat.
