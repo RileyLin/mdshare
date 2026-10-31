@@ -381,7 +381,17 @@ export default async function handler(req, res) {
     .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
     .toast.err { background: var(--error, oklch(52% 0.2 25)); }
 
+    #tokens-panel .paste-title { white-space:normal; overflow-wrap:anywhere; }
+    #tokens-panel .paste-title-row { flex-wrap:wrap; }
+    #tokens-panel code { overflow-wrap:anywhere; }
     @media (max-width: 600px) {
+      #tokens-panel .paste-item { flex-wrap:wrap; gap:10px; }
+      #tokens-panel .paste-body { flex:1; min-width:0; }
+      #tokens-panel .paste-item > .btn { margin-left:46px; }
+      #tokens-panel .paste-meta { flex-wrap:wrap; }
+      #tokens-panel #scope-row { align-items:flex-start!important; gap:12px!important; }
+      #tokens-panel #scope-row label { flex-wrap:wrap; }
+
       .page-title { display: none; }
       .search-wrap { max-width: none; }
       .paste-preview { display: none; }
