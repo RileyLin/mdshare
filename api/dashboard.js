@@ -429,7 +429,7 @@ export default async function handler(req, res) {
       <div id="new-token-reveal" style="display:none;margin-bottom:8px;padding:14px 16px;border:1px solid var(--success);background:var(--success-bg);border-radius:10px">
         <div style="font-size:12px;font-weight:600;color:var(--success);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:8px">Copy this now — it will not be shown again</div>
         <div style="display:flex;gap:8px;align-items:center">
-          <code id="new-token-value" style="flex:1;font-size:12.5px;background:white;border:1px solid var(--border);border-radius:6px;padding:8px 10px;overflow-x:auto;white-space:nowrap"></code>
+          <code id="new-token-value" style="flex:1;min-width:0;font-size:12.5px;background:white;border:1px solid var(--border);border-radius:6px;padding:8px 10px;overflow-x:auto;white-space:nowrap"></code>
           <button class="select-btn" onclick="copyNewToken()">Copy</button>
         </div>
       </div>
@@ -763,7 +763,7 @@ export default async function handler(req, res) {
             '</div>' +
             '<div class="paste-meta" style="margin-top:4px">' + scopeBadges(t.scopes) + '</div>' +
           '</div>' +
-          (canRevoke ? '<button class="btn" style="flex-shrink:0" onclick="revokeToken(' + JSON.stringify(t.id) + ', this)">Revoke</button>' : '') +
+          (canRevoke ? '<button class="btn" style="flex-shrink:0" data-token-id="' + escapeHtml(t.id) + '" onclick="revokeToken(this.dataset.tokenId, this)">Revoke</button>' : '') +
         '</div>';
       }).join('');
     }
