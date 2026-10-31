@@ -143,13 +143,14 @@ test('checkAuthAndRefresh silently upgrades a valid legacy cookie to a fresh v2 
   const legacyToken = legacyTokenFor('test-password');
   const req = reqWithCookie(legacyToken);
   const res = responseRecorder();
-  const ok = checkAuthAndRefresh(req, res);
+  const beforeCutoff = new Date(LEGACY_COOKIE_CUTOFF.getTime() - 1000);
+  const ok = checkAuthAndRefresh(req, res, beforeCutoff);
   assert.equal(ok, true);
   const setCookie = res.headers['set-cookie'];
   assert.ok(setCookie, 'expected a Set-Cookie header on legacy-cookie upgrade');
   assert.match(setCookie, /Max-Age=15552000/); // fresh full 180-day lifetime, not a partial top-up
   const freshValue = setCookie.split(';')[0].split('=')[1];
-  assert.equal(verifySessionToken(decodeURIComponent(freshValue), Math.floor(Date.now() / 1000)), true);
+  assert.equal(verifySessionToken(decodeURIComponent(freshValue), Math.floor(beforeCutoff.getTime() / 1000)), true);
 });
 
 test('checkAuthAndRefresh does not re-issue a cookie for an already-v2 session', () => {
@@ -164,11 +165,20 @@ test('checkAuthAndRefresh does not re-issue a cookie for an already-v2 session',
 test('checkAuthAndRefresh with no res behaves exactly like isAuthenticated (no throw, same boolean)', () => {
   const legacyToken = legacyTokenFor('test-password');
   const req = reqWithCookie(legacyToken);
-  assert.equal(checkAuthAndRefresh(req, undefined), true);
+  const before = new Date(LEGACY_COOKIE_CUTOFF.getTime() - 1000);
+  const after = new Date(LEGACY_COOKIE_CUTOFF.getTime() + 1000);
+  assert.equal(checkAuthAndRefresh(req, undefined, before), true);
+  assert.equal(checkAuthAndRefresh(req, undefined, after), false);
 });
 
 test('checkAuthAndRefresh never upgrades an invalid/expired/garbage cookie', () => {
   const res = responseRecorder();
   assert.equal(checkAuthAndRefresh(reqWithCookie('garbage'), res), false);
   assert.equal(res.headers['set-cookie'], undefined);
+});
+
+test("checkAuthAndRefresh rejects legacy cookie after cutoff without refreshing", () => {
+ const res = responseRecorder();
+ assert.equal(checkAuthAndRefresh(reqWithCookie(legacyTokenFor("test-password")), res, new Date(LEGACY_COOKIE_CUTOFF.getTime()+1000)), false);
+ assert.equal(res.headers["set-cookie"], undefined);
 });
