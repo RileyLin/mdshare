@@ -1,0 +1,2 @@
+# Optional never-expiring tokens
+Requested owner option. Preserve existing finite expiry values/defaults and revocation. Add explicit boolean never_expires validated by auth; nullable expires_at only when true. UI dropdown never choice, display Never expires, CLI --never-expires optional. Migration007 only drops NOT NULL (no data update). Tests finite/null/revoked and invalid boolean. Live create via UI, read/revoke, compare pre-existing token digest. Files auth.js,agent-tokens.js,dashboard.js,CLI,tests,migration,CLAUDE.md.

@@ -50,3 +50,6 @@ No build step; Vercel deploys `api/` and `public/` directly. Deploys and Supabas
 
 ## Production verification — October 31, 2026
 Agent-token routes and migrations005/006 deployed and tested on the user-facing domain. Dashboard defaults full-library read-only and30days, explicit scopes array; CLI reads ~/.mdshare/token by default. Parent fixed Revoke button HTML quoting/mobile layout. Commit bc0f049.112 tests passed after deterministic legacy-cookie test dates (no server cutoff extension). Known private paste bearer read200, read-only create403, publish/mint denied, revoked401. Owner dashboard create/revoke exercised in Chromium; copy handler tested via clipboard stub. Secure handoff is owner one-time copy in Dashboard; do not send credential files from protected directories or expose keys in group chat.
+
+## Optional token expiry — October 31, 2026
+Owner create_token accepts explicit boolean never_expires:true -> expires_at:null; absent/false retains finite expiry. UI includes Never expires (until revoked), default30d unchanged. CLI login supports --never-expires. Migration007 drops expiry NOT NULL only; existing token dates/scopes unchanged. Revocation overrides no-expiry. No document TTL change.

@@ -249,8 +249,11 @@ export default async function handler(req, res) {
         scopes = deduped;
       }
 
+      if (body.never_expires !== undefined && typeof body.never_expires !== 'boolean') {
+        return res.status(400).json({ error: 'never_expires must be a boolean' });
+      }
       try {
-        const created = await createToken({ name, expiresInDays: body.expires_in_days, scopes });
+        const created = await createToken({ name, expiresInDays: body.expires_in_days, scopes, neverExpires: body.never_expires === true });
         return res.status(200).json({ ok: true, ...created });
       } catch (e) {
         return res.status(502).json({ error: 'Failed to create token' });

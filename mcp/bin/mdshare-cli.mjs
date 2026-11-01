@@ -162,7 +162,8 @@ async function cmdLogin(flags) {
   const scopes = flags.scopes ? String(flags.scopes).split(',').map((s) => s.trim()).filter(Boolean) : undefined;
   const createBody = { action: 'create_token', name };
   if (scopes && scopes.length) createBody.scopes = scopes;
-  if (flags.days) createBody.expires_in_days = Number(flags.days);
+  if (flags['never-expires']) createBody.never_expires = true;
+  else if (flags.days) createBody.expires_in_days = Number(flags.days);
 
   const createRes = await fetch(`${BASE_URL}/api/auth`, {
     method: 'POST',
@@ -276,7 +277,7 @@ async function main() {
         '',
         'Commands:',
         '  login [--name NAME] [--scopes documents:read,documents:write,...] [--days N]',
-        '        [--token-file PATH] [--stdout]',
+        '        [--token-file PATH] [--stdout] [--never-expires]',
         '      New-machine setup: hidden password prompt -> owner login -> issues a scoped',
         '      token -> writes it to a 0600 file (default ~/.mdshare/token). --stdout prints',
         '      ONLY the token to stdout (for piping into e.g. a secrets-store CLI) instead of',

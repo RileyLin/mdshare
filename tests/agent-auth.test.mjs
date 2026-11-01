@@ -408,3 +408,33 @@ test('owner GET/POST(password) status-check paths are completely unaffected by t
   assert.equal(okRes2.statusCode, 200);
   assert.deepEqual(okRes2.body, { ok: true });
 });
+
+test('owner may explicitly create a never-expiring token; false keeps finite expiry', async () => {
+  const cookie = await ownerCookie();
+  let inserted;
+  global.fetch = router([{method:'POST',test:/mdshare_agent_tokens$/,respond:async(u,o)=>{inserted=JSON.parse(o.body);return {ok:true,json:async()=>[{}]};}}]);
+  try {
+    for (const never of [true, false]) {
+      const res=responseRecorder();
+      await authHandler({method:'POST',headers:{cookie},body:{action:'create_token',name:'expiry-test',scopes:['documents:read'],expires_in_days:30,never_expires:never}},res);
+      assert.equal(res.statusCode,200);
+      if(never){assert.equal(res.body.expires_at,null);assert.equal(inserted.expires_at,null);}
+      else assert.ok(Date.parse(res.body.expires_at)>Date.now());
+      assert.deepEqual(inserted.scopes,['documents:read']);
+    }
+  } finally {restoreFetch();}
+});
+test('never_expires rejects non-boolean inputs', async()=>{
+ const cookie=await ownerCookie();
+ for(const invalid of ['true',1,null]){
+  const res=responseRecorder();await authHandler({method:'POST',headers:{cookie},body:{action:'create_token',name:'bad',never_expires:invalid}},res);assert.equal(res.statusCode,400);
+ }
+});
+test('no-expiry bearer authenticates but revocation still wins',async()=>{
+ const {resolveAgentToken}=await import('../api/_lib/agent-tokens.js');
+ for(const revokedAt of [null,'2026-01-01T00:00:00Z']){
+  const token=fakeToken('mds_never_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',{id:'tok_never',expiresAt:null,revokedAt});
+  global.fetch=router([token.lookupRule]);
+  try{const result=await resolveAgentToken({headers:{authorization:'Bearer '+token.raw}});assert.equal(result.valid,revokedAt===null);}finally{restoreFetch();}
+ }
+});

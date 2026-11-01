@@ -156,12 +156,12 @@ export async function resolveAgentToken(req) {
 
 // --- Owner-only management operations (called only from api/auth.js, itself owner-cookie-gated) ---
 
-export async function createToken({ name, expiresInDays, scopes }) {
+export async function createToken({ name, expiresInDays, scopes, neverExpires = false }) {
   const id = 'tok_' + nanoid(16);
   const raw = generateRawToken();
   const hash = sha256Hex(raw);
   const days = clampExpiresDays(expiresInDays);
-  const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
+  const expiresAt = neverExpires === true ? null : new Date(Date.now() + days * 86400000).toISOString();
   // `scopes` is undefined unless the caller (api/auth.js) explicitly validated and passed an
   // array — omitting the field entirely from this insert leaves the column at its DB default
   // (null), producing a legacy token. Never defaulted to [] here: that would silently turn "owner

@@ -424,6 +424,7 @@ export default async function handler(req, res) {
           <option value="90">Expires in 90 days</option>
           <option value="180">Expires in 180 days</option>
           <option value="365">Expires in 365 days</option>
+          <option value="never">Never expires (until revoked)</option>
         </select>
         <button class="select-btn active" id="btn-create-token" onclick="createToken()" style="cursor:pointer">+ New token</button>
       </div>
@@ -768,7 +769,7 @@ export default async function handler(req, res) {
             '</div>' +
             '<div class="paste-meta">' +
               '<span>created ' + formatDate(t.created_at) + '</span>' +
-              '<span>\u00b7 expires ' + new Date(t.expires_at).toLocaleDateString() + '</span>' +
+              '<span>\u00b7 ' + (t.expires_at ? 'expires ' + new Date(t.expires_at).toLocaleDateString() : 'Never expires') + '</span>' +
               (t.last_used_at ? '<span>\u00b7 last used ' + formatDate(t.last_used_at) + '</span>' : '<span>\u00b7 never used</span>') +
             '</div>' +
             '<div class="paste-meta" style="margin-top:4px">' + scopeBadges(t.scopes) + '</div>' +
@@ -800,7 +801,9 @@ export default async function handler(req, res) {
           ['documents:publish:any', 'scope-publish-any'],
         ].filter(([, id]) => document.getElementById(id)?.checked).map(([scope]) => scope);
 
-        const payload = { action: 'create_token', name, expires_in_days: Number(daysSelect.value) };
+        const payload = { action: 'create_token', name };
+        if (daysSelect.value === 'never') payload.never_expires = true;
+        else payload.expires_in_days = Number(daysSelect.value);
         if (!legacy) payload.scopes = checked;
 
         const res = await fetch('/api/auth', {
