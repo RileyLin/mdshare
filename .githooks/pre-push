@@ -1,0 +1,9 @@
+#!/bin/sh
+# Fast local gate. Enable once per clone:  git config core.hooksPath .githooks
+# CI runs the same checks plus e2e; this just saves a round trip.
+npm run --silent verify >/tmp/mdshare-pre-push.log 2>&1 || {
+  tail -40 /tmp/mdshare-pre-push.log
+  echo "pre-push: npm run verify failed. Fix the cause before pushing (CI would reject it)."
+  exit 1
+}
+echo "pre-push: verify passed"

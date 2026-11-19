@@ -1,0 +1,71 @@
+name: ci
+
+# Every push and PR runs the same gate agents run locally. Pushes to agent/* branches that pass
+# both jobs are fast-forwarded onto main, which Vercel deploys to production.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run lint
+      - run: npm test
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright-core install --with-deps chromium
+      - run: npm run e2e
+      - name: Upload proof screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-proof
+          path: e2e/proof/
+          retention-days: 14
+
+  promote:
+    needs: [verify, e2e]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/agent/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fast-forward main to the verified commit
+        run: |
+          git fetch origin main
+          if git merge-base --is-ancestor origin/main "$GITHUB_SHA"; then
+            git push origin "$GITHUB_SHA:refs/heads/main"
+            echo "main is now $GITHUB_SHA"
+          else
+            echo "::error::origin/main is not an ancestor of $GITHUB_SHA. Rebase this branch on origin/main and push again."
+            exit 1
+          fi
