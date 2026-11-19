@@ -330,6 +330,8 @@ async function runAgentTokenLifecycle(ctx, ok) {
     await gotoResilient(page, `${ctx.serverUrl}/dashboard`, { waitUntil: 'load' });
     await page.click('#tokens-toggle');
     await page.waitForSelector('#tokens-panel', { state: 'visible', timeout: 5000 });
+    const placeholder = await page.getAttribute('#new-token-name', 'placeholder');
+    ok(placeholder === 'Token name (e.g. "Kit")', `token-name placeholder renders intact (got ${JSON.stringify(placeholder)})`);
     await page.fill('#new-token-name', `E2E Token ${rand()}`);
     // Defaults: documents:read checked, write/publish unchecked, legacy unchecked — exactly the
     // "read-only over the whole library" default this UI documents.

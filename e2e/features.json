@@ -133,6 +133,7 @@
       "repeat the bearer GET and expect 401"
     ],
     "assertions": [
+      "token-name input placeholder reads 'Token name (e.g. \"Kit\")' (attribute quoting intact)",
       "token creation reveals a raw token value in the UI",
       "bearer GET with documents:read reads a private row it did not create (library-wide read)",
       "bearer GET after revoke returns 401"

@@ -19,8 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -33,17 +33,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npx playwright-core install --with-deps chromium
+      # The runner image ships Google Chrome; downloading Playwright's Chromium with apt deps took ~6 min.
+      - name: Use the preinstalled Chrome
+        run: echo "PLAYWRIGHT_CHROMIUM_PATH=$(command -v google-chrome || command -v google-chrome-stable || true)" >> "$GITHUB_ENV"
+      - name: Install Chromium only if the image has no Chrome
+        if: env.PLAYWRIGHT_CHROMIUM_PATH == ''
+        run: npx playwright-core install --with-deps chromium
       - run: npm run e2e
       - name: Upload proof screenshots
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-proof
           path: e2e/proof/
@@ -56,7 +61,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Fast-forward main to the verified commit

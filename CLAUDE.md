@@ -14,7 +14,6 @@ Put the verify/e2e output in your completion message, plus `e2e/proof/*.png` for
 1. Work on a branch named `agent/<task>` and push it.
 2. CI (`.github/workflows/ci.yml`) runs verify + e2e on every push. On an `agent/*` branch, when both pass, CI fast-forwards `main` to that commit and Vercel deploys it.
 3. If CI fails, fix forward on the same branch. Don't push unverified commits to `main`, don't `vercel --prod` from a local tree, don't force-push.
-4. Commits that change `.github/workflows/` can't be auto-promoted (GitHub blocks it). After a green run, the owner fast-forwards `main` to that commit.
 
 `git config core.hooksPath .githooks` once per clone runs `npm run verify` before every push.
 Migrations in `migrations/` are applied by hand by the owner. Agents write them, never run them.
