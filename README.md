@@ -181,16 +181,21 @@ Share a markdown document and get a short-lived URL.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `markdown` | string | ✅ | Markdown content to render |
-| `ttl` | number | ❌ | TTL in seconds. Default: `86400` (24h) |
+| `ttl` | number | ❌ | TTL in seconds. Default: `86400` (24h), max `604800` (7 days) |
+| `keep` | boolean | ❌ | `true` = never expires. Honoured for the owner session or a valid bearer token; ignored for anonymous calls |
 
 **Response:**
 ```json
 {
   "url": "https://mdshare-rileylins-projects.vercel.app/v/:id",
   "id": "string",
-  "expires_in": 86400
+  "expires_in": 86400,
+  "kept": false,
+  "format_guide": "https://mdshare-rileylins-projects.vercel.app/llms.txt"
 }
 ```
+
+`expires_in` is `null` when `kept` is true. Documents are always created private. Formatting beyond plain Markdown (callouts, number cards, timelines, comparisons, tabs, badges) is documented at [`/guide`](https://mdshare-rileylins-projects.vercel.app/guide), and for models at [`/llms.txt`](https://mdshare-rileylins-projects.vercel.app/llms.txt). `POST /api/diagram` and `POST /api/archify` accept `keep` too.
 
 #### Mermaid Diagrams in Markdown
 
