@@ -25,6 +25,7 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import { createToken, listTokens, revokeToken, resolveAgentToken, ALLOWED_SCOPES } from './_lib/agent-tokens.js';
 import { parseJsonBody } from './_lib/body.js';
+import { withErrors } from './_lib/events.js';
 
 const PASSWORD = process.env.MDSHARE_PASSWORD;
 const HMAC_KEY = process.env.MDSHARE_HMAC_SECRET || process.env.SUPABASE_SERVICE_KEY;
@@ -182,7 +183,7 @@ authRateLimitCleanup.unref?.();
 // See api/_lib/agent-tokens.js for the token model itself; this file only wires it to HTTP and
 // enforces that every one of these three routes requires the owner's cookie.
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method === 'GET') {
     if (req.query && req.query.action === 'tokens') {
       if (!checkAuthAndRefresh(req, res)) return res.status(401).json({ error: 'Unauthorized' });
@@ -312,3 +313,5 @@ export default async function handler(req, res) {
 
   return res.status(405).json({ error: 'Method not allowed' });
 }
+
+export default withErrors('auth', handler);

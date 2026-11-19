@@ -19,7 +19,7 @@
 // silently-wrong response.
 import http from 'node:http';
 
-const KNOWN_TABLES = ['mdshare_pastes', 'mdshare_diagrams', 'mdshare_archify', 'mdshare_agent_tokens'];
+const KNOWN_TABLES = ['mdshare_pastes', 'mdshare_diagrams', 'mdshare_archify', 'mdshare_agent_tokens', 'mdshare_events'];
 
 // Column defaults mirroring migrations/001-007 *.sql. Only applied to a field the insert body did
 // not already set (the app always sets most of these explicitly on create; this only covers what
@@ -29,6 +29,7 @@ const TABLE_DEFAULTS = {
   mdshare_diagrams: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, markdown: null }),
   mdshare_archify: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, ir: null, markdown: null }),
   mdshare_agent_tokens: () => ({ created_at: new Date().toISOString(), revoked_at: null, last_used_at: null, scopes: null, expires_at: null }),
+  mdshare_events: () => ({ created_at: new Date().toISOString(), detail: null, commit: null }),
 };
 
 class UnsupportedQueryError extends Error {}

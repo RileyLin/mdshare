@@ -7,6 +7,7 @@
 // (as the iframe's src), so it enforces visibility itself rather than relying only on the parent
 // page. No login UI here: the parent page (/a/:id) owns the sign-in flow.
 import { getRow, isVisible } from './_lib/access.js';
+import { withErrors } from './_lib/events.js';
 
 // Force archify's editorial (warm-paper) preset + light theme as the default view, matching
 // mdshare's house palette, unless the stored artifact already pins its own preset/theme.
@@ -27,7 +28,7 @@ export function applyWarmPaperDefault(html) {
   );
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   const { id } = req.query;
   if (!id) return res.status(400).send('Missing id');
 
@@ -49,3 +50,5 @@ export default async function handler(req, res) {
   res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'none'; frame-ancestors 'self'");
   return res.send(applyWarmPaperDefault(row.html));
 }
+
+export default withErrors('archify-html', handler);

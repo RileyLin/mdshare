@@ -4,6 +4,7 @@
 // /assets/library.js); this handler only renders the shell.
 import { checkAuthAndRefresh } from './auth.js';
 import { head, header, libraryNav, toast, scripts, loginPage, CSP_PAGE } from './_lib/ui.js';
+import { withErrors } from './_lib/events.js';
 
 function shell({ current, body, title }) {
   const right = '<a class="btn primary" href="/#new" id="btn-new">New</a>';
@@ -93,7 +94,7 @@ const SETTINGS = `<main class="page" id="settings">
   </div>
 </main>`;
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store');
   if (!checkAuthAndRefresh(req, res)) {
@@ -105,3 +106,5 @@ export default async function handler(req, res) {
     ? shell({ current: 'settings', title: 'Settings', body: SETTINGS })
     : shell({ current: 'library', title: 'Library', body: LIBRARY }));
 }
+
+export default withErrors('dashboard', handler);

@@ -17,6 +17,7 @@ import { checkAuthAndRefresh } from './auth.js';
 import { tableFor, isValidId, patchRow, getRow } from './_lib/access.js';
 import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope } from './_lib/agent-tokens.js';
+import { withErrors } from './_lib/events.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -45,7 +46,7 @@ async function setPinned(id, type, pinned) {
   return r.ok ? { id, ok: true, expires_at: expiresAt } : { id, ok: false, error: await r.text() };
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   const origin = req.headers.origin;
   const ALLOWED_ORIGINS = ['https://mdshare-rileylins-projects.vercel.app', 'http://localhost:3000', 'http://localhost:5173'];
   if (ALLOWED_ORIGINS.includes(origin)) {
@@ -171,3 +172,5 @@ export default async function handler(req, res) {
 
   return res.status(200).json({ ok: true, pinned, count: results.length, ...(results.length === 1 ? { expires_at: results[0].expires_at } : {}) });
 }
+
+export default withErrors('pin', handler);

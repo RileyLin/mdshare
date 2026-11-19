@@ -13,6 +13,7 @@
 import { checkAuthAndRefresh } from './auth.js';
 import { getRow, isVisible, isKept, setPrivacyHeaders, privateGateHtml } from './_lib/access.js';
 import { head, header, ownerControls, readerControls, toast, dataBlock, scripts, CSP_PAGE, notFoundPage, unavailablePage, messagePage, esc } from './_lib/ui.js';
+import { withErrors } from './_lib/events.js';
 
 function chrome({ id, row, owner }) {
   const title = row.title || 'Diagram';
@@ -45,7 +46,7 @@ function missingHtmlPage({ id, row }) {
   });
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   const { id } = req.query;
   if (!id) return res.status(400).send('Missing id');
 
@@ -70,3 +71,5 @@ export default async function handler(req, res) {
 
   return res.status(200).send(wrapperPage({ id, row, owner: authed && req.query.as !== 'reader' }));
 }
+
+export default withErrors('archify-render', handler);

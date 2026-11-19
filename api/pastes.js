@@ -24,6 +24,7 @@
 import { checkAuthAndRefresh } from './auth.js';
 import { resolveAgentToken, hasScope } from './_lib/agent-tokens.js';
 import { searchCatalog } from './_lib/catalog.js';
+import { withErrors } from './_lib/events.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -41,7 +42,7 @@ async function handleAgentCatalog(req, res, agentAuth) {
   return res.status(200).json({ ok: true, ...result });
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   const origin = req.headers.origin;
   const ALLOWED_ORIGINS = ['https://mdshare-rileylins-projects.vercel.app', 'http://localhost:3000', 'http://localhost:5173'];
   if (ALLOWED_ORIGINS.includes(origin)) {
@@ -213,3 +214,5 @@ export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   return res.status(200).json(merged);
 }
+
+export default withErrors('pastes', handler);

@@ -10,6 +10,7 @@ import { wantsKeep, expiryFields, baseUrl, deleteRow, FORMAT_GUIDE_PATH } from '
 import { getRow, isVisible, setPrivacyHeaders } from './_lib/access.js';
 import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
+import { withErrors } from './_lib/events.js';
 function nanoid(size = 10) {
   return randomBytes(size).toString('base64url').slice(0, size);
 }
@@ -37,7 +38,7 @@ async function supabaseSet(id, svg, title, markdown, ttlSeconds, createdByToken,
   }
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   const origin = req.headers.origin;
   const ALLOWED_ORIGINS = ['https://mdshare-rileylins-projects.vercel.app', 'http://localhost:3000', 'http://localhost:5173'];
   if (ALLOWED_ORIGINS.includes(origin)) {
@@ -113,3 +114,5 @@ export default async function handler(req, res) {
 
   return res.status(405).json({ error: 'Method not allowed' });
 }
+
+export default withErrors('diagram', handler);

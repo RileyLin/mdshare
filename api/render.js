@@ -7,6 +7,7 @@ import { checkAuthAndRefresh } from './auth.js';
 import { getRow, isVisible, isKept, setPrivacyHeaders, privateGateHtml } from './_lib/access.js';
 import { head, header, ownerControls, readerControls, toast, dataBlock, scripts, CSP_PAGE, notFoundPage, unavailablePage, esc } from './_lib/ui.js';
 import { classicDocHtml } from './_lib/classic.js';
+import { withErrors } from './_lib/events.js';
 
 const CLASSIC_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdnjs.cloudflare.com fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'self'";
 
@@ -44,7 +45,7 @@ ${scripts(['marked', 'purify', 'hljs', 'render', 'app'])}
 </body></html>`;
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   const { id } = req.query;
   if (!id) return res.status(400).send('Missing id');
 
@@ -70,3 +71,5 @@ export default async function handler(req, res) {
   const owner = authed && req.query.as !== 'reader';
   return res.status(200).send(docPage({ id, title, markdown, owner, row }));
 }
+
+export default withErrors('render', handler);

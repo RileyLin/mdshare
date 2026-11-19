@@ -10,6 +10,7 @@ import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
 import { randomBytes } from 'crypto';
 import { wantsKeep, expiryFields, baseUrl, FORMAT_GUIDE_PATH } from './_lib/content.js';
+import { withErrors } from './_lib/events.js';
 
 // --- Rate Limiting (in-memory, per Vercel serverless instance) ---
 // Vercel functions can be cold-started, so this is "best effort" rate limiting.
@@ -116,7 +117,7 @@ async function supabaseUpdate(id, content) {
   if (!res.ok) throw new Error(`Supabase update failed: ${res.status}`);
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   const origin = req.headers.origin;
   const ALLOWED_ORIGINS = ['https://mdshare-rileylins-projects.vercel.app', 'http://localhost:3000', 'http://localhost:5173'];
   if (ALLOWED_ORIGINS.includes(origin)) {
@@ -237,3 +238,5 @@ export default async function handler(req, res) {
 
   return res.status(405).json({ error: 'Method not allowed' });
 }
+
+export default withErrors('share', handler);
