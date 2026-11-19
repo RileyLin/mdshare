@@ -1,0 +1,154 @@
+[
+  {
+    "id": "home-page",
+    "name": "Home page paste box renders",
+    "path": "/",
+    "steps": ["GET / as an anonymous visitor"],
+    "assertions": [
+      "textarea#md is visible",
+      "a Share button is visible"
+    ]
+  },
+  {
+    "id": "create-paste-ui",
+    "name": "Creating a paste from the home page UI returns a share link",
+    "path": "/ -> fill #md -> click Share",
+    "steps": [
+      "type markdown into textarea#md",
+      "click the 'Share \u2192' button",
+      "wait for #result / #link to appear"
+    ],
+    "assertions": [
+      "#link href matches /v/<id>",
+      "#result becomes visible"
+    ]
+  },
+  {
+    "id": "anon-private-gate",
+    "name": "Anonymous visit to a private paste shows the login gate, no leak",
+    "path": "/v/:id",
+    "steps": [
+      "seed a private paste with a secret title+body via POST /api/share",
+      "anonymous browser context navigates to /v/:id"
+    ],
+    "assertions": [
+      "input#pwd (password gate) is visible",
+      "page does not contain the seeded secret title",
+      "page does not contain the seeded secret body"
+    ]
+  },
+  {
+    "id": "owner-view-markdown",
+    "name": "After owner login, the paste renders its markdown (heading/table)",
+    "path": "/dashboard (login) -> /v/:id",
+    "steps": [
+      "seed a private paste whose markdown has an H1 heading and a table",
+      "log in as owner via the real /dashboard login form",
+      "navigate to /v/:id"
+    ],
+    "assertions": [
+      "#content h1 text matches the seeded heading",
+      "#content contains a rendered <table>"
+    ]
+  },
+  {
+    "id": "raw-route",
+    "name": "Raw route (/raw/:id) follows the real anon-vs-owner contract",
+    "path": "/raw/:id",
+    "steps": [
+      "seed a private paste with known raw content",
+      "GET /raw/:id anonymously",
+      "log in as owner, GET /raw/:id again"
+    ],
+    "assertions": [
+      "anonymous GET /raw/:id is not 200 and does not return the content",
+      "owner GET /raw/:id is 200 with the exact raw content"
+    ]
+  },
+  {
+    "id": "dashboard-lists-paste",
+    "name": "Owner dashboard lists the paste",
+    "path": "/dashboard",
+    "steps": [
+      "seed a paste with a distinctive title",
+      "log in as owner, navigate to /dashboard"
+    ],
+    "assertions": [
+      "the seeded paste's title appears in the dashboard list"
+    ]
+  },
+  {
+    "id": "publish-unpublish",
+    "name": "Publish makes a paste anonymously viewable; unpublish restores the gate",
+    "path": "/v/:id -> Share publicly / Stop sharing",
+    "steps": [
+      "seed a private paste",
+      "owner opens /v/:id and clicks 'Share publicly' (confirm dialog accepted)",
+      "anonymous context loads /v/:id and sees content",
+      "owner clicks 'Stop sharing' (confirm dialog accepted)",
+      "anonymous context reloads /v/:id and sees the gate again"
+    ],
+    "assertions": [
+      "after publish, anonymous request sees the content, not the gate",
+      "after unpublish, anonymous request sees the gate again"
+    ]
+  },
+  {
+    "id": "diagram-create-render",
+    "name": "Diagram create (API) and render, owner vs anonymous",
+    "path": "POST /api/diagram -> /d/:id",
+    "steps": [
+      "POST /api/diagram with an SVG containing a marker string",
+      "anonymous browser visits /d/:id",
+      "owner (logged in) visits /d/:id"
+    ],
+    "assertions": [
+      "anonymous visit sees the login gate, not the marker",
+      "owner visit sees the SVG marker rendered on the page"
+    ]
+  },
+  {
+    "id": "archify-create-render",
+    "name": "Archify create (API) and render, sandboxed iframe without allow-same-origin",
+    "path": "POST /api/archify -> /a/:id",
+    "steps": [
+      "POST /api/archify with kind+html+markdown",
+      "anonymous browser visits /a/:id",
+      "owner (logged in) visits /a/:id"
+    ],
+    "assertions": [
+      "anonymous visit sees the login gate",
+      "owner visit's page HTML contains an <iframe sandbox=\"allow-scripts\" ...>",
+      "that sandbox attribute does NOT contain allow-same-origin"
+    ]
+  },
+  {
+    "id": "agent-token-lifecycle",
+    "name": "Agent token create via dashboard UI, bearer read per scope, then revoke -> 401",
+    "path": "/dashboard (API Tokens panel) + direct bearer requests",
+    "steps": [
+      "owner opens /dashboard, opens the API Tokens panel, creates a documents:read token",
+      "use the raw token as a Bearer header to GET a private paste's raw content",
+      "owner revokes the token via the dashboard",
+      "repeat the bearer GET and expect 401"
+    ],
+    "assertions": [
+      "token creation reveals a raw token value in the UI",
+      "bearer GET with documents:read reads a private row it did not create (library-wide read)",
+      "bearer GET after revoke returns 401"
+    ]
+  },
+  {
+    "id": "pin-delete",
+    "name": "Pin and delete, as exposed by the dashboard/render UI",
+    "path": "/dashboard (select + pin) and /v/:id (delete)",
+    "steps": [
+      "seed a paste, owner pins it from the dashboard's select/batch-pin UI",
+      "seed a second paste, owner deletes it from its /v/:id page"
+    ],
+    "assertions": [
+      "pinned paste shows a 'Pinned' badge on the dashboard after pinning",
+      "deleted paste's raw content 404s afterward"
+    ]
+  }
+]
