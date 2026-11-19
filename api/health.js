@@ -30,8 +30,11 @@ function keyOk(given) {
 }
 
 const clip = (v, n) => (v == null ? null : String(v).slice(0, n));
-// Keep the path only: query strings and fragments can carry tokens or search text.
-const pathOnly = (u) => { try { return new URL(String(u), 'https://x').pathname.slice(0, 200); } catch { return null; } };
+// Keep the path only: query strings and fragments can carry tokens or search text, and document
+// ids are replaced by :id so the error log never says which document someone was reading.
+const pathOnly = (u) => {
+  try { return new URL(String(u), 'https://x').pathname.replace(/^\/(v|d|a|raw)\/[^/]+/, '/$1/:id').slice(0, 200); } catch { return null; }
+};
 
 async function dbPing() {
   try {

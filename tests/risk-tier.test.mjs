@@ -17,6 +17,34 @@ test('privacy, auth, routes, deps, schema and the pipeline need the owner', () =
   }
 });
 
+test('path tricks, new server files and deletions need the owner (adversarial review findings)', () => {
+  for (const p of ['./api/auth.js', 'api/../api/auth.js', 'api//auth.js', '././scripts/risk-tier.mjs']) assert.equal(classify([f(p)]).tier, 'owner', p);
+  assert.equal(classify([{ path: 'api/_lib/new-helper.js', added: 10, deleted: 0, status: 'A' }]).tier, 'owner');
+  assert.equal(classify([{ path: 'api/render.js', added: 3, deleted: 1, status: 'M' }]).tier, 'auto');
+  assert.equal(classify([{ path: 'e2e/old-feature.mjs', added: 0, deleted: 0, status: 'D' }]).tier, 'owner');
+});
+
+test('a sensitive file renamed to an innocent path is still owner tier (git diff --no-renames)', async () => {
+  const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
+  const { execFileSync } = await import('node:child_process');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { changedFiles } = await import('../scripts/risk-tier.mjs');
+  const d = mkdtempSync(join(tmpdir(), 'tier-'));
+  const git = (...a) => execFileSync('git', ['-C', d, ...a], { encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });
+  git('init', '-q', '-b', 'main');
+  mkdirSync(join(d, 'api'));
+  writeFileSync(join(d, 'api', 'auth.js'), 'export const x = 1;\n'.repeat(20));
+  git('add', '.'); git('commit', '-q', '-m', 'base');
+  mkdirSync(join(d, 'lib')); git('mv', 'api/auth.js', 'lib/helper.js'); git('commit', '-q', '-m', 'rename');
+  const cwd = process.cwd(); process.chdir(d);
+  try {
+    const files = changedFiles('HEAD~1', 'HEAD');
+    assert.deepEqual(files.map((x) => `${x.status} ${x.path}`).sort(), ['A lib/helper.js', 'D api/auth.js']);
+    assert.equal(classify(files).tier, 'owner');
+  } finally { process.chdir(cwd); }
+});
+
 test('removing or rewriting test lines needs the owner, even in a UI change', () => {
   const r = classify([f('public/assets/app.js', 10, 2), f('e2e/run.mjs', 3, 1)]);
   assert.equal(r.tier, 'owner');

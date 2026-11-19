@@ -57,7 +57,7 @@ test('POST /api/health stores client errors without query strings, rejects junk,
     await health({ method: 'POST', headers: { 'x-forwarded-for': '10.1.1.1' }, body: { type: 'client_error', message: 'TypeError: a is null', source: 'https://x/assets/app.js?v=1', line: 10, col: 3, page: '/v/abc?token=secret#frag' } }, r);
     assert.equal(r.statusCode, 204);
     assert.equal(stored[0].kind, 'client_error');
-    assert.equal(stored[0].detail.page, '/v/abc');
+    assert.equal(stored[0].detail.page, '/v/:id', 'document ids are never stored');
     assert.equal(stored[0].detail.source, '/assets/app.js');
     assert.doesNotMatch(JSON.stringify(stored[0]), /secret/);
     const junk = rec(); await health({ method: 'POST', headers: { 'x-forwarded-for': '10.1.1.2' }, body: { type: 'other' } }, junk);

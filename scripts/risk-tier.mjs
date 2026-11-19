@@ -12,6 +12,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { posix } from 'node:path';
 
 export const SENSITIVE = [
   [/^\.github\//, 'CI / release pipeline'],
@@ -29,21 +30,31 @@ export const SENSITIVE = [
 ];
 const TEST_PATH = /^(tests\/|e2e\/(?!proof\/))/;
 
+// git already prints normalised paths; normalise anyway so "./api/auth.js" can't slip past.
+const norm = (p) => posix.normalize(String(p)).replace(/^(\.\/)+/, '');
+
 export function classify(files) {
   const reasons = [];
-  for (const f of files) {
+  for (const raw of files) {
+    const f = { ...raw, path: norm(raw.path) };
     const hit = SENSITIVE.find(([re]) => re.test(f.path));
     if (hit) reasons.push(`${f.path}: ${hit[1]}`);
     else if (TEST_PATH.test(f.path) && f.deleted > 0) reasons.push(`${f.path}: removes or rewrites ${f.deleted} line(s) of tests`);
+    else if (/^api\//.test(f.path) && f.status === 'A') reasons.push(`${f.path}: new server file (new endpoint or shared server logic)`);
+    else if (/^(api|tests|e2e)\//.test(f.path) && f.status === 'D') reasons.push(`${f.path}: deletes a server or test file`);
   }
   return { tier: reasons.length ? 'owner' : 'auto', reasons };
 }
 
+// --no-renames: a rename shows up as a delete of the old path plus an add of the new one, so a
+// sensitive file moved somewhere innocuous is still caught by its old path.
 export function changedFiles(base, head) {
-  const out = execFileSync('git', ['diff', '--numstat', '--no-renames', `${base}...${head}`], { encoding: 'utf8' });
-  return out.split('\n').filter(Boolean).map((l) => {
+  const range = `${base}...${head}`;
+  const status = Object.fromEntries(execFileSync('git', ['diff', '--name-status', '--no-renames', range], { encoding: 'utf8' })
+    .split('\n').filter(Boolean).map((l) => { const [s, p] = l.split('\t'); return [p, s[0]]; }));
+  return execFileSync('git', ['diff', '--numstat', '--no-renames', range], { encoding: 'utf8' }).split('\n').filter(Boolean).map((l) => {
     const [a, d, p] = l.split('\t');
-    return { path: p, added: a === '-' ? 0 : Number(a), deleted: d === '-' ? 0 : Number(d) };
+    return { path: p, added: a === '-' ? 0 : Number(a), deleted: d === '-' ? 0 : Number(d), status: status[p] || 'M' };
   });
 }
 

@@ -7,10 +7,11 @@ name: ci
 #   release  waits for Vercel to serve that commit, checks production for real, and rolls
 #            production back automatically if anything fails
 # main is protected: only commits that passed verify + e2e can land, and nobody force-pushes.
+# Pushes only: every change arrives as a push to a branch, and CI records the PR itself. (A
+# pull_request trigger re-ran CI on those bot-made PRs and produced failure emails.)
 on:
   push:
     branches: ['**']
-  pull_request:
 
 permissions:
   contents: read
