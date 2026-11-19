@@ -9,6 +9,7 @@ import { getRow, isVisible, setPrivacyHeaders } from './_lib/access.js';
 import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
 import { randomBytes } from 'crypto';
+import { wantsKeep, expiryFields, baseUrl, FORMAT_GUIDE_PATH } from './_lib/content.js';
 
 // --- Rate Limiting (in-memory, per Vercel serverless instance) ---
 // Vercel functions can be cold-started, so this is "best effort" rate limiting.
@@ -57,8 +58,8 @@ function extractTitle(markdown) {
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
-async function supabaseSet(id, content, ttlSeconds, createdByToken) {
-  const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+async function supabaseSet(id, content, ttlSeconds, createdByToken, keep) {
+  const { expires_at: expiresAt, pinned } = expiryFields(ttlSeconds, keep);
   const title = extractTitle(content);
   const res = await fetch(`${SUPABASE_URL}/rest/v1/mdshare_pastes`, {
     method: 'POST',
@@ -72,7 +73,7 @@ async function supabaseSet(id, content, ttlSeconds, createdByToken) {
     // of anything a caller puts in the request body. Making it public requires the authenticated
     // PATCH /api/visibility endpoint. created_by_token is set only from a server-validated bearer
     // token (see handler below) — never read from the request body either.
-    body: JSON.stringify({ id, content, expires_at: expiresAt, title, is_public: false, created_by_token: createdByToken || null }),
+    body: JSON.stringify({ id, content, expires_at: expiresAt, pinned, title, is_public: false, created_by_token: createdByToken || null }),
   });
   if (!res.ok) throw new Error(`Supabase insert failed: ${res.status}`);
 }
@@ -178,13 +179,11 @@ export default async function handler(req, res) {
     const ttl = Math.min(parseInt(body?.ttl) || 86400, 604800); // max 7 days
     const id = nanoid();
 
-    await supabaseSet(id, markdown, ttl, agentAuth.valid ? agentAuth.id : null);
+    const keep = wantsKeep(body, req, res, agentAuth);
+    await supabaseSet(id, markdown, ttl, agentAuth.valid ? agentAuth.id : null, keep);
 
-    const host = req.headers.host || 'mdshare.vercel.app';
-    const protocol = host.includes('localhost') ? 'http' : 'https';
-    const url = `${protocol}://${host}/v/${id}`;
-
-    return res.status(200).json({ url, id, expires_in: ttl });
+    const base = baseUrl(req);
+    return res.status(200).json({ url: `${base}/v/${id}`, id, expires_in: keep ? null : ttl, kept: keep, format_guide: `${base}${FORMAT_GUIDE_PATH}` });
   }
 
   if (req.method === 'PATCH') {

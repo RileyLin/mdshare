@@ -1,9 +1,11 @@
-// PATCH /api/pin — pin/unpin paste(s) or diagram(s) [auth-gated]
+// PATCH /api/pin — keep/unkeep ("pin") paste(s), diagram(s) or archify page(s) [auth-gated]
 // Supports:
 //   single:  { id, type, pinned? }            (pinned defaults true; backward compat)
 //   batch:   { items: [{ id, type }], pinned? }
-// Pinning extends expires_at to 2099 + sets pinned=true.
-// Unpinning sets pinned=false (expires_at left as-is; pinned items already pushed to 2099).
+// type is 'paste' (default when omitted), 'diagram' or 'archify'.
+// Keeping sets pinned=true and pushes expires_at to 2099. Unkeeping sets pinned=false and gives
+// the item a fresh 7-day expiry (the API maximum) so "not kept" always means a visible, finite
+// expiry instead of the old pinned=false-but-2099 state.
 //
 // Also handles PATCH /api/visibility's job (merged in here 2026-09-22 to stay under Vercel
 // Hobby's 12-serverless-function cap — same auth gate, same PATCH method, disjoint body shape:
@@ -19,11 +21,14 @@ import { resolveAgentToken, hasScope } from './_lib/agent-tokens.js';
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
+export const UNKEEP_TTL_MS = 7 * 24 * 3600 * 1000;
+export const KEEP_UNTIL = '2099-12-31T00:00:00Z';
+
 async function setPinned(id, type, pinned) {
-  const table = type === 'diagram' ? 'mdshare_diagrams' : 'mdshare_pastes';
-  const patch = pinned
-    ? { expires_at: '2099-12-31T00:00:00Z', pinned: true }
-    : { pinned: false };
+  const table = type === undefined || type === null ? 'mdshare_pastes' : tableFor(type);
+  if (!table) return { id, ok: false, error: 'Invalid type. Must be one of: paste, diagram, archify.' };
+  const expiresAt = pinned ? KEEP_UNTIL : new Date(Date.now() + UNKEEP_TTL_MS).toISOString();
+  const patch = { expires_at: expiresAt, pinned: !!pinned };
   const r = await fetch(
     `${SUPABASE_URL}/rest/v1/${table}?id=eq.${encodeURIComponent(id)}`,
     {
@@ -37,7 +42,7 @@ async function setPinned(id, type, pinned) {
       body: JSON.stringify(patch),
     }
   );
-  return r.ok ? { id, ok: true } : { id, ok: false, error: await r.text() };
+  return r.ok ? { id, ok: true, expires_at: expiresAt } : { id, ok: false, error: await r.text() };
 }
 
 export default async function handler(req, res) {
@@ -69,6 +74,9 @@ export default async function handler(req, res) {
     }
     if (typeof body.is_public !== 'boolean') {
       return res.status(400).json({ error: 'is_public must be a boolean' });
+    }
+    if (body.keep !== undefined && typeof body.keep !== 'boolean') {
+      return res.status(400).json({ error: 'keep must be a boolean' });
     }
 
     const ownerOk = checkAuthAndRefresh(req, res);
@@ -112,11 +120,15 @@ export default async function handler(req, res) {
       // patchRow below 404s on its own if it doesn't.
     }
 
-    const result = await patchRow(table, body.id, { is_public: body.is_public });
+    // keep: true (sent by the share panel when publishing with auto-keep on) keeps the item in the
+    // same write, so a published document can't silently expire.
+    const keep = body.keep === true;
+    const visPatch = keep ? { is_public: body.is_public, pinned: true, expires_at: KEEP_UNTIL } : { is_public: body.is_public };
+    const result = await patchRow(table, body.id, visPatch);
     if (!result.ok) {
       return res.status(result.status || 500).json({ error: result.error || 'Update failed' });
     }
-    return res.status(200).json({ ok: true, id: body.id, kind: body.kind, is_public: body.is_public });
+    return res.status(200).json({ ok: true, id: body.id, kind: body.kind, is_public: body.is_public, ...(keep ? { kept: true, expires_at: KEEP_UNTIL } : {}) });
   }
 
   // Every remaining branch below (pin/unpin, single + batch) stays owner-cookie-only — pin/unpin
@@ -157,5 +169,5 @@ export default async function handler(req, res) {
     });
   }
 
-  return res.status(200).json({ ok: true, pinned, count: results.length });
+  return res.status(200).json({ ok: true, pinned, count: results.length, ...(results.length === 1 ? { expires_at: results[0].expires_at } : {}) });
 }

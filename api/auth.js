@@ -258,6 +258,13 @@ export default async function handler(req, res) {
       }
     }
 
+    // Sign out: clears this browser's session cookie. Sessions are stateless HMAC tokens, so
+    // there is nothing server-side to revoke; no auth needed to drop your own cookie.
+    if (body && body.action === 'logout') {
+      res.setHeader('Set-Cookie', `${COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure`);
+      return res.status(200).json({ ok: true });
+    }
+
     // --- existing password login flow (unchanged) ---
     const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
     const rateCheck = checkAuthRateLimit(ip);

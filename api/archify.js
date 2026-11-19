@@ -14,6 +14,8 @@
 // markdown (the explainer rendered below), ir (source of truth, re-renderable), kind, title.
 
 import { randomBytes } from 'crypto';
+import { checkAuthAndRefresh } from './auth.js';
+import { wantsKeep, expiryFields, baseUrl, deleteRow, FORMAT_GUIDE_PATH } from './_lib/content.js';
 import { getRow, isVisible, setPrivacyHeaders } from './_lib/access.js';
 import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
@@ -26,8 +28,8 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KE
 
 const VALID_KINDS = ['architecture', 'workflow', 'sequence', 'dataflow', 'lifecycle'];
 
-async function supabaseSet({ id, kind, ir, html, markdown, title, ttlSeconds, createdByToken }) {
-  const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+async function supabaseSet({ id, kind, ir, html, markdown, title, ttlSeconds, createdByToken, keep }) {
+  const { expires_at: expiresAt, pinned } = expiryFields(ttlSeconds, keep);
   const res = await fetch(`${SUPABASE_URL}/rest/v1/mdshare_archify`, {
     method: 'POST',
     headers: {
@@ -40,7 +42,7 @@ async function supabaseSet({ id, kind, ir, html, markdown, title, ttlSeconds, cr
       id, kind, ir: ir || null, html, markdown: markdown || null,
       // is_public is always false on create, regardless of anything in the request body.
       // created_by_token comes only from a server-validated bearer token, never the request body.
-      title: title || 'Diagram', expires_at: expiresAt, is_public: false, created_by_token: createdByToken || null,
+      title: title || 'Diagram', expires_at: expiresAt, pinned, is_public: false, created_by_token: createdByToken || null,
     }),
   });
   if (!res.ok) {
@@ -56,7 +58,7 @@ export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -92,13 +94,19 @@ export default async function handler(req, res) {
     const ttl = Math.min(parseInt(body?.ttl) || 604800, 2592000); // default 7d, max 30d
     const id = nanoid();
 
-    await supabaseSet({ id, kind, ir, html, markdown, title, ttlSeconds: ttl, createdByToken: agentAuth.valid ? agentAuth.id : null });
+    const keep = wantsKeep(body, req, res, agentAuth);
+    await supabaseSet({ id, kind, ir, html, markdown, title, ttlSeconds: ttl, createdByToken: agentAuth.valid ? agentAuth.id : null, keep });
 
-    const host = req.headers.host || 'mdshare.vercel.app';
-    const protocol = host.includes('localhost') ? 'http' : 'https';
-    const url = `${protocol}://${host}/a/${id}`;
+    const base = baseUrl(req);
+    return res.status(200).json({ url: `${base}/a/${id}`, id, kind, expires_in: keep ? null : ttl, kept: keep, format_guide: `${base}${FORMAT_GUIDE_PATH}` });
+  }
 
-    return res.status(200).json({ url, id, kind, expires_in: ttl });
+  if (req.method === 'DELETE') {
+    if (!checkAuthAndRefresh(req, res)) return res.status(401).json({ error: 'Unauthorized' });
+    const id = req.query?.id;
+    if (!id || typeof id !== 'string') return res.status(400).json({ error: 'Missing id' });
+    await deleteRow('mdshare_archify', id);
+    return res.status(200).json({ ok: true, deleted: id });
   }
 
   if (req.method === 'GET') {
