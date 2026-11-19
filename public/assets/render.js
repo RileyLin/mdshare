@@ -69,7 +69,7 @@
             return '<div class="md-stat' + (tone ? ' ' + tone : '') + '"><span class="v">' + esc(v) + '</span>' +
               (lab ? '<span class="l">' + marked.parseInline(lab) + '</span>' : '') + '</div>';
           });
-          return '<div class="md-stats">' + cells.join('') + '</div>\n';
+          return (t.arg ? '<div class="md-block-title">' + esc(t.arg) + '</div>' : '') + '<div class="md-stats">' + cells.join('') + '</div>\n';
         }
         return '<div class="md-dir" data-dir="' + t.name + '" data-arg="' + esc(t.arg) + '">' + inner + '</div>\n';
       },
@@ -129,6 +129,9 @@
   function buildDirectives(root) {
     root.querySelectorAll('.md-dir').forEach(function (box) {
       var name = box.getAttribute('data-dir'), arg = box.getAttribute('data-arg') || '';
+      // Every block keeps its argument: summary uses it as the card label, the others show it as
+      // a small title above the block (the fuzzer caught ":::compare Pricing" dropping "Pricing").
+      if (arg && name !== 'summary') { var title = el('div', 'md-block-title', arg); box.parentNode.insertBefore(title, box); }
       if (name === 'summary') {
         box.className = 'md-summary';
         box.insertBefore(el('div', 'md-label', arg || 'Summary'), box.firstChild);
@@ -352,7 +355,15 @@
       try {
         window.mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'neutral', fontFamily: 'DM Sans, PingFang SC, sans-serif' });
         nodes.forEach(function (n) { n.setAttribute('data-done', '1'); });
-        window.mermaid.run({ nodes: nodes });
+        // mermaid.run rejects (with a plain object) on a diagram it can't parse. Catch it so a bad
+        // diagram never becomes an uncaught error, and show the source instead of a broken picture.
+        Promise.resolve(window.mermaid.run({ nodes: nodes, suppressErrors: true })).catch(function () {
+          nodes.forEach(function (n) {
+            if (n.querySelector('svg') && !/Syntax error|error-icon/i.test(n.innerHTML)) return;
+            n.classList.add('mermaid-failed');
+            n.textContent = n.getAttribute('data-src') || n.textContent;
+          });
+        });
       } catch (e) { /* the source text stays visible */ }
     };
     if (window.mermaid) return go();

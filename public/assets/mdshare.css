@@ -559,3 +559,7 @@ body.editing .view-actions { display: none; }
   .popover, .popover.wide { position: fixed; top: 62px; left: 10px; right: 10px; width: auto; min-width: 0; max-height: calc(100vh - 80px); overflow: auto; transform-origin: top center; }
   .doc-layout > article .prose { padding-top: 28px; }
 }
+
+.md-block-title { margin: 1.6em 0 -.6em; font: 600 11.5px var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+.mermaid.mermaid-failed { white-space: pre-wrap; text-align: left; font: 13px/1.6 var(--mono); color: var(--ink-3); }
+.mermaid.mermaid-failed::before { content: 'Diagram could not be drawn. Source:'; display: block; margin-bottom: 8px; font: 600 11px var(--sans); letter-spacing: .1em; text-transform: uppercase; color: var(--warn); }

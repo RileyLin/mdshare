@@ -94,7 +94,13 @@ const DOMPURIFY_STUB = `(function(){
 
 const MERMAID_STUB = `(function(){
   // Marks each node it was asked to render, so tests can see the page really invoked mermaid.
-  window.mermaid = { initialize: function(){}, run: function(o){ ((o && o.nodes) || []).forEach(function(n){ n.setAttribute('data-mermaid-stub', 'ran'); }); } };
+  // Like the real library, run() returns a promise that rejects with a plain object when a diagram
+  // doesn't parse (the release check found pages leaving that rejection unhandled).
+  window.mermaid = { initialize: function(){}, run: function(o){
+    var nodes = (o && o.nodes) || [], bad = false;
+    Array.prototype.forEach.call(nodes, function(n){ n.setAttribute('data-mermaid-stub', 'ran'); if (!/^\\s*(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|mindmap|timeline)\b/.test(n.getAttribute('data-src') || n.textContent)) bad = true; });
+    return bad ? Promise.reject({ str: 'Parse error', hash: {} }) : Promise.resolve();
+  } };
 })();`;
 
 // The classic page (/v/:id?classic=1) still loads marked / DOMPurify / highlight.js from cdnjs.
