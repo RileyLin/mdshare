@@ -58,6 +58,13 @@ for (const [p, marker, type] of [
   check(`page ${p}`, r.status === 200 && r.text.includes(marker) && r.type.includes(type), `status ${r.status}`);
 }
 
+// Rollback rehearsal: shipping public/release-drill.txt containing "fail" makes this check fail on
+// purpose, so the automatic rollback can be exercised for real. Absent in normal releases.
+{
+  const d = await get('/release-drill.txt').catch(() => ({ status: 0, text: '' }));
+  check('rollback drill marker absent', !(d.status === 200 && /fail/i.test(d.text)), d.status === 200 ? 'drill marker deployed' : '');
+}
+
 // 3. Gates and error pages.
 for (const [p, status, marker] of [['/dashboard', 401, 'Welcome back'], ['/settings', 401, 'Welcome back'], ['/v/zzzzzzzzz0', 404, 'This link has expired'], ['/d/zzzzzzzzz0', 404, 'This link has expired'], ['/a/zzzzzzzzz0', 404, 'This link has expired']]) {
   const r = await get(p);
