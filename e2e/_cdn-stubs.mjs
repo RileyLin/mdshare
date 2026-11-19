@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 // e2e/_cdn-stubs.mjs
 //
 // render.js / diagram-render.js / archify-render.js load marked.js, highlight.js, DOMPurify, and
@@ -90,14 +93,24 @@ const DOMPURIFY_STUB = `(function(){
 })();`;
 
 const MERMAID_STUB = `(function(){
-  window.mermaid = { initialize: function(){}, run: function(){} };
+  // Marks each node it was asked to render, so tests can see the page really invoked mermaid.
+  window.mermaid = { initialize: function(){}, run: function(o){ ((o && o.nodes) || []).forEach(function(n){ n.setAttribute('data-mermaid-stub', 'ran'); }); } };
 })();`;
 
+// The classic page (/v/:id?classic=1) still loads marked / DOMPurify / highlight.js from cdnjs.
+// Serve it the same real libraries the current pages self-host (public/vendor), so old-vs-new
+// comparisons parse Markdown with the same parser instead of the tiny stub above.
+const VENDOR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'vendor');
+function vendored(name) {
+  try { return fs.readFileSync(path.join(VENDOR, name), 'utf8'); } catch { return null; }
+}
+const REAL = { marked: vendored('marked-12.0.2.min.js'), purify: vendored('purify-3.4.18.min.js'), hljs: vendored('highlight-11.9.0.min.js') };
+
 function stubFor(url) {
-  if (/marked/i.test(url)) return { body: MARKED_STUB, type: 'application/javascript' };
-  if (/highlight\.js.*\.js$/i.test(url)) return { body: HLJS_STUB, type: 'application/javascript' };
+  if (/marked/i.test(url)) return { body: REAL.marked || MARKED_STUB, type: 'application/javascript' };
+  if (/highlight\.js.*\.js$/i.test(url)) return { body: REAL.hljs || HLJS_STUB, type: 'application/javascript' };
   if (/highlight\.js.*\.css$/i.test(url)) return { body: '', type: 'text/css' };
-  if (/dompurify/i.test(url)) return { body: DOMPURIFY_STUB, type: 'application/javascript' };
+  if (/dompurify/i.test(url)) return { body: REAL.purify || DOMPURIFY_STUB, type: 'application/javascript' };
   if (/mermaid/i.test(url)) return { body: MERMAID_STUB, type: 'application/javascript' };
   if (/\.css(\?|$)/i.test(url)) return { body: '', type: 'text/css' };
   return { body: '', type: 'application/javascript' };

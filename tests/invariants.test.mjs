@@ -2,7 +2,7 @@
 // dir, break exactly one invariant, and expect that check (and only a failure) to be reported.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, readFileSync, writeFileSync, rmSync, appendFileSync } from 'node:fs';
+import { readdirSync, cpSync, mkdtempSync, readFileSync, writeFileSync, rmSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -38,7 +38,11 @@ test('baseline copy passes every invariant', () => {
 });
 
 const mutations = {
-  'function-cap': (d) => writeFileSync(join(d, 'api', 'extra.js'), 'export default () => {};\n'),
+  'function-cap': (d) => {
+    // Add however many functions it takes to reach 13 (the cap is 12).
+    const have = readdirSync(join(d, 'api')).filter((f) => f.endsWith('.js')).length;
+    for (let i = have; i < 13; i++) writeFileSync(join(d, 'api', `extra${i}.js`), 'export default () => {};\n');
+  },
   rewrites: (d) => edit(d, 'vercel.json', (s) => {
     const v = JSON.parse(s); v.rewrites.push({ ...v.rewrites[0] }, { source: '/x/:id', destination: '/api/missing?id=:id' });
     return JSON.stringify(v);

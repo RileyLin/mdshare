@@ -1,155 +1,380 @@
 [
   {
     "id": "home-page",
-    "name": "Home page paste box renders",
+    "name": "Home page: editor, live preview and agent example",
     "path": "/",
-    "steps": ["GET / as an anonymous visitor"],
+    "steps": [
+      "open /",
+      "type Markdown"
+    ],
     "assertions": [
-      "textarea#md is visible",
-      "a Share button is visible"
+      "editor + Create link visible",
+      "live preview renders the sample and updates while typing",
+      "API example uses this site's origin"
     ]
   },
   {
     "id": "create-paste-ui",
-    "name": "Creating a paste from the home page UI returns a share link",
-    "path": "/ -> fill #md -> click Share",
+    "name": "Create a document from the home page",
+    "path": "/ -> /v/:id",
     "steps": [
-      "type markdown into textarea#md",
-      "click the 'Share \u2192' button",
-      "wait for #result / #link to appear"
+      "type Markdown",
+      "click Create link"
     ],
     "assertions": [
-      "#link href matches /v/<id>",
-      "#result becomes visible"
+      "a /v/:id link appears",
+      "the new document is private and not kept"
     ]
   },
   {
     "id": "anon-private-gate",
-    "name": "Anonymous visit to a private paste shows the login gate, no leak",
-    "path": "/v/:id",
+    "name": "Anonymous visit to a private document shows the sign-in card, no leak",
+    "path": "/v/:id (anon)",
     "steps": [
-      "seed a private paste with a secret title+body via POST /api/share",
-      "anonymous browser context navigates to /v/:id"
+      "seed private doc",
+      "open anonymously"
     ],
     "assertions": [
-      "input#pwd (password gate) is visible",
-      "page does not contain the seeded secret title",
-      "page does not contain the seeded secret body"
+      "password field shown",
+      "title and body absent from the HTML"
     ]
   },
   {
     "id": "owner-view-markdown",
-    "name": "After owner login, the paste renders its markdown (heading/table)",
-    "path": "/dashboard (login) -> /v/:id",
+    "name": "Owner sees the rendered document",
+    "path": "/v/:id (owner)",
     "steps": [
-      "seed a private paste whose markdown has an H1 heading and a table",
-      "log in as owner via the real /dashboard login form",
-      "navigate to /v/:id"
+      "seed doc with a table",
+      "open as owner"
     ],
     "assertions": [
-      "#content h1 text matches the seeded heading",
-      "#content contains a rendered <table>"
+      "h1 matches",
+      "table rendered",
+      "breadcrumb shows the title"
     ]
   },
   {
     "id": "raw-route",
-    "name": "Raw route (/raw/:id) follows the real anon-vs-owner contract",
+    "name": "Raw route follows the anon-vs-owner contract",
     "path": "/raw/:id",
     "steps": [
-      "seed a private paste with known raw content",
-      "GET /raw/:id anonymously",
-      "log in as owner, GET /raw/:id again"
+      "GET anonymously",
+      "GET as owner"
     ],
     "assertions": [
-      "anonymous GET /raw/:id is not 200 and does not return the content",
-      "owner GET /raw/:id is 200 with the exact raw content"
+      "anonymous denied",
+      "owner gets exact bytes"
     ]
   },
   {
     "id": "dashboard-lists-paste",
-    "name": "Owner dashboard lists the paste",
+    "name": "Library lists a new document",
     "path": "/dashboard",
     "steps": [
-      "seed a paste with a distinctive title",
-      "log in as owner, navigate to /dashboard"
+      "seed doc",
+      "open the library"
     ],
     "assertions": [
-      "the seeded paste's title appears in the dashboard list"
+      "title appears in the list"
     ]
   },
   {
     "id": "publish-unpublish",
-    "name": "Publish makes a paste anonymously viewable; unpublish restores the gate",
-    "path": "/v/:id -> Share publicly / Stop sharing",
+    "name": "Publish and unpublish from the share panel",
+    "path": "/v/:id share panel",
     "steps": [
-      "seed a private paste",
-      "owner opens /v/:id and clicks 'Share publicly' (confirm dialog accepted)",
-      "anonymous context loads /v/:id and sees content",
-      "owner clicks 'Stop sharing' (confirm dialog accepted)",
-      "anonymous context reloads /v/:id and sees the gate again"
+      "open share panel",
+      "switch Public on, then off"
     ],
     "assertions": [
-      "after publish, anonymous request sees the content, not the gate",
-      "after unpublish, anonymous request sees the gate again"
+      "anon sees content after publish",
+      "anon sees the gate again after unpublish"
     ]
   },
   {
     "id": "diagram-create-render",
-    "name": "Diagram create (API) and render, owner vs anonymous",
-    "path": "POST /api/diagram -> /d/:id",
+    "name": "Diagram page: gate, sanitised SVG, notes",
+    "path": "/d/:id",
     "steps": [
-      "POST /api/diagram with an SVG containing a marker string",
-      "anonymous browser visits /d/:id",
-      "owner (logged in) visits /d/:id"
+      "seed diagram with a <script> in the SVG",
+      "open anon, then owner"
     ],
     "assertions": [
-      "anonymous visit sees the login gate, not the marker",
-      "owner visit sees the SVG marker rendered on the page"
+      "anon gated",
+      "owner sees SVG, script stripped and never runs",
+      "light frame for light SVGs",
+      "notes render as Markdown"
     ]
   },
   {
     "id": "archify-create-render",
-    "name": "Archify create (API) and render, sandboxed iframe without allow-same-origin",
-    "path": "POST /api/archify -> /a/:id",
+    "name": "Archify page in a sandboxed iframe with the shared header",
+    "path": "/a/:id",
     "steps": [
-      "POST /api/archify with kind+html+markdown",
-      "anonymous browser visits /a/:id",
-      "owner (logged in) visits /a/:id"
+      "seed archify page",
+      "open anon, then owner"
     ],
     "assertions": [
-      "anonymous visit sees the login gate",
-      "owner visit's page HTML contains an <iframe sandbox=\"allow-scripts\" ...>",
-      "that sandbox attribute does NOT contain allow-same-origin"
+      "anon gated",
+      "sandbox=allow-scripts without allow-same-origin",
+      "document renders in the frame",
+      "owner header present"
     ]
   },
   {
     "id": "agent-token-lifecycle",
-    "name": "Agent token create via dashboard UI, bearer read per scope, then revoke -> 401",
-    "path": "/dashboard (API Tokens panel) + direct bearer requests",
+    "name": "Create, use and revoke an API token from Settings",
+    "path": "/settings + bearer API",
     "steps": [
-      "owner opens /dashboard, opens the API Tokens panel, creates a documents:read token",
-      "use the raw token as a Bearer header to GET a private paste's raw content",
-      "owner revokes the token via the dashboard",
-      "repeat the bearer GET and expect 401"
+      "create token in Settings",
+      "read with bearer",
+      "revoke in Settings"
     ],
     "assertions": [
-      "token-name input placeholder reads 'Token name (e.g. \"Kit\")' (attribute quoting intact)",
-      "token creation reveals a raw token value in the UI",
-      "bearer GET with documents:read reads a private row it did not create (library-wide read)",
-      "bearer GET after revoke returns 401"
+      "placeholder intact",
+      "raw token shown once and listed with its scope",
+      "bearer read works, then 401 after revoke"
     ]
   },
   {
     "id": "pin-delete",
-    "name": "Pin and delete, as exposed by the dashboard/render UI",
-    "path": "/dashboard (select + pin) and /v/:id (delete)",
+    "name": "Keep from the library and delete from the ⋯ menu",
+    "path": "/dashboard, /v/:id ⋯",
     "steps": [
-      "seed a paste, owner pins it from the dashboard's select/batch-pin UI",
-      "seed a second paste, owner deletes it from its /v/:id page"
+      "select a row, batch Keep",
+      "open another doc, ⋯ → Delete"
     ],
     "assertions": [
-      "pinned paste shows a 'Pinned' badge on the dashboard after pinning",
-      "deleted paste's raw content 404s afterward"
+      "Kept tag shown and persisted",
+      "delete returns to the library and the raw route 404s"
+    ]
+  },
+  {
+    "id": "reader-header",
+    "name": "Reader header cleanup: owner vs public reader",
+    "path": "/v/:id",
+    "steps": [
+      "open as owner",
+      "publish, open anonymously"
+    ],
+    "assertions": [
+      "owner header is exactly status, Share, Edit, Aa, ⋯",
+      "Save ▾ / Notion / rendered / zoom row are gone",
+      "reader header is only Aa and Copy link"
+    ]
+  },
+  {
+    "id": "auto-keep-on-publish",
+    "name": "Publishing keeps the document (switchable in Settings)",
+    "path": "/v/:id share panel, /settings",
+    "steps": [
+      "publish with the default",
+      "turn the setting off and publish another"
+    ],
+    "assertions": [
+      "default: public and kept",
+      "setting off: public, expiry unchanged"
+    ]
+  },
+  {
+    "id": "keep-toggle",
+    "name": "Keep forever on/off with a visible expiry",
+    "path": "/v/:id share panel",
+    "steps": [
+      "switch Keep on",
+      "switch Keep off"
+    ],
+    "assertions": [
+      "kept in storage",
+      "off gives a 7-day expiry shown in the pill and panel"
+    ]
+  },
+  {
+    "id": "api-keep",
+    "name": "API keep:true for owner and tokens, ignored for anonymous",
+    "path": "POST /api/share",
+    "steps": [
+      "create anonymously, as owner, with a token"
+    ],
+    "assertions": [
+      "anonymous ignored",
+      "owner and token kept, still private",
+      "response links the agent guide"
+    ]
+  },
+  {
+    "id": "auto-format",
+    "name": "Automatic formatting of an existing-style Chinese document",
+    "path": "/v/:id",
+    "steps": [
+      "seed a document written the way Kit writes"
+    ],
+    "assertions": [
+      "summary card, small headings, step cards with continued numbering",
+      "key points, numeric columns, tinted cells, callout",
+      "code label + copy, anchors, external links, contents, reading time"
+    ]
+  },
+  {
+    "id": "retrofit-counterexamples",
+    "name": "Patterns that must NOT be reformatted",
+    "path": "/v/:id",
+    "steps": [
+      "seed the edge-case document"
+    ],
+    "assertions": [
+      "leading --- stays a rule",
+      "deep Summary heading, long bold lines, mixed lists, plain quotes, == text unchanged",
+      "unknown :::block shown as text"
+    ]
+  },
+  {
+    "id": "text-equivalence",
+    "name": "Old reader vs new reader show the same content",
+    "path": "/v/:id?classic=1 vs /v/:id",
+    "steps": [
+      "render three documents in both readers"
+    ],
+    "assertions": [
+      "identical readable text",
+      "same tables, rows, code blocks, images, list items and links"
+    ]
+  },
+  {
+    "id": "directives",
+    "name": "Optional syntax for agents",
+    "path": "/v/:id",
+    "steps": [
+      "seed a document using every block"
+    ],
+    "assertions": [
+      "frontmatter accent + toc:false",
+      "summary, stats, callouts, timeline, compare, cards, tabs, highlight, badges",
+      "tabs switch; numbers end at exact values; no raw syntax"
+    ]
+  },
+  {
+    "id": "xss-safety",
+    "name": "Hostile Markdown is neutralised in every view",
+    "path": "/v/:id anon, owner, classic",
+    "steps": [
+      "seed script/img/svg/iframe/javascript: probes"
+    ],
+    "assertions": [
+      "nothing executes",
+      "no event-handler attributes or javascript: links",
+      "the rest of the page renders"
+    ]
+  },
+  {
+    "id": "reading-settings",
+    "name": "Aa reading settings persist",
+    "path": "/v/:id Aa panel",
+    "steps": [
+      "change size, theme, width, term hints",
+      "reload"
+    ],
+    "assertions": [
+      "each setting applies",
+      "term hints off by default, on shows hover terms",
+      "all persist; Ctrl/Cmd+0 resets size"
+    ]
+  },
+  {
+    "id": "edit-save",
+    "name": "Edit with live preview and save",
+    "path": "/v/:id editor",
+    "steps": [
+      "Edit, type, Ctrl/Cmd+S"
+    ],
+    "assertions": [
+      "split editor + header swap",
+      "preview uses the same renderer",
+      "saved, re-rendered, persisted"
+    ]
+  },
+  {
+    "id": "library",
+    "name": "Library filters, search, batch and row actions",
+    "path": "/dashboard",
+    "steps": [
+      "seed docs, diagram, archify",
+      "filter, search, select, publish, keep, delete"
+    ],
+    "assertions": [
+      "counts right",
+      "filters and search work",
+      "batch publish keeps; row Keep; batch delete; row opens doc"
+    ]
+  },
+  {
+    "id": "settings-signout",
+    "name": "Settings and sign out",
+    "path": "/settings",
+    "steps": [
+      "check defaults",
+      "change theme",
+      "sign out"
+    ],
+    "assertions": [
+      "auto-keep on by default",
+      "theme control shows and applies",
+      "sign out clears the cookie and gates the library"
+    ]
+  },
+  {
+    "id": "guide-llms",
+    "name": "Format guide and llms.txt",
+    "path": "/guide, /llms.txt",
+    "steps": [
+      "fetch llms.txt",
+      "open /guide"
+    ],
+    "assertions": [
+      "llms.txt served as text",
+      "guide renders through mdshare with every example",
+      "mermaid handed off"
+    ]
+  },
+  {
+    "id": "shells-and-errors",
+    "name": "Diagram share panel, anonymous view, designed 404s",
+    "path": "/d/:id, /v|d|a/missing",
+    "steps": [
+      "publish a diagram from its page",
+      "open anonymously",
+      "request missing ids"
+    ],
+    "assertions": [
+      "diagram publishes and keeps",
+      "reader has no owner controls",
+      "404 page on all three routes"
+    ]
+  },
+  {
+    "id": "mobile",
+    "name": "Phone layout",
+    "path": "/v/:id, /dashboard at 390px",
+    "steps": [
+      "open reader and library on a phone viewport"
+    ],
+    "assertions": [
+      "no horizontal scroll",
+      "collapsible contents",
+      "header fits; share panel opens"
+    ]
+  },
+  {
+    "id": "classic-view",
+    "name": "Classic view stays available",
+    "path": "/v/:id?classic=1",
+    "steps": [
+      "open classic view",
+      "click back"
+    ],
+    "assertions": [
+      "labelled, no Notion, renders",
+      "one click back to the new reader"
     ]
   }
 ]

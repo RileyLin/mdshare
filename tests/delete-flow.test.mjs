@@ -84,13 +84,16 @@ test('authenticated DELETE removes the requested paste', async () => {
   }
 });
 
-test('rendered delete button has a complete browser-side handler', () => {
-  const source = fs.readFileSync(new URL('../api/render.js', import.meta.url), 'utf8');
-  assert.match(source, /id="btn-delete" onclick="deletePaste\(\)"/);
-  assert.match(source, /async function deletePaste\(\)/);
-  assert.match(source, /window\.confirm\('Delete this paste permanently\? This cannot be undone\.'\)/);
-  assert.match(source, /method: 'DELETE'/);
-  assert.match(source, /encodeURIComponent\(pasteId\)/);
-  assert.match(source, /window\.location\.replace\('\/dashboard\?deleted=1'\)/);
-  assert.match(source, /⚠ Failed — retry/);
+test('reader delete control has a complete browser-side handler', () => {
+  const ui = fs.readFileSync(new URL('../api/_lib/ui.js', import.meta.url), 'utf8');
+  const app = fs.readFileSync(new URL('../public/assets/app.js', import.meta.url), 'utf8');
+  // The owner ⋯ menu renders the Delete item; app.js wires it.
+  assert.match(ui, /id="btn-delete"/);
+  assert.match(app, /\$\('btn-delete'\)/);
+  assert.match(app, /async function deleteItem\(\)/);
+  assert.match(app, /window\.confirm\('Delete this ' \+ what \+ ' permanently\? This cannot be undone\.'\)/);
+  assert.match(app, /method: 'DELETE'/);
+  assert.match(app, /encodeURIComponent\(D\.id\)/);
+  assert.match(app, /window\.location\.replace\('\/dashboard\?deleted=1'\)/);
+  assert.match(app, /paste: '\/api\/share\?id='/);
 });

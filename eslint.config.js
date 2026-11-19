@@ -25,7 +25,7 @@ const ourRules = {
 };
 
 export default [
-  { ignores: ['node_modules/**', 'mcp/**', 'public/**', 'e2e/proof/**', '.vercel/**', 'docs/**'] },
+  { ignores: ['node_modules/**', 'mcp/**', 'public/vendor/**', 'e2e/proof/**', '.vercel/**', 'docs/**'] },
   js.configs.recommended,
   {
     files: ['**/*.js', '**/*.mjs'],
@@ -36,5 +36,10 @@ export default [
     // Playwright page.evaluate callbacks run in the browser.
     files: ['e2e/**/*.mjs'],
     languageOptions: { globals: { ...globals.node, ...globals.browser } },
+  },
+  {
+    // Browser scripts served from public/ (classic scripts, not modules).
+    files: ['public/**/*.js'],
+    languageOptions: { sourceType: 'script', globals: { ...globals.browser, marked: 'readonly', DOMPurify: 'readonly', hljs: 'readonly', MDShareRender: 'readonly' } },
   },
 ];
