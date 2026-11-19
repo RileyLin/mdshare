@@ -177,6 +177,25 @@ const checks = [
     },
   },
   {
+    id: 'error-reporting',
+    why: 'An uncaught exception in a function used to vanish into Vercel logs that nobody reads; every handler must record it (api/_lib/events.js) so the monitor can alert.',
+    run() {
+      return apiTopLevel().filter((f) => !/export default withErrors\('[\w-]+', handler\);/.test(read(`api/${f}`)))
+        .map((f) => `api/${f}: export the handler as \`export default withErrors('<route>', handler);\` (import from ./_lib/events.js).`);
+    },
+  },
+  {
+    id: 'no-redacted-placeholders',
+    why: 'Tool output redaction once wrote a literal "***" in place of a credential expression; the code looked fine and failed only against the real database (2026-11-19).',
+    run() {
+      const errs = [];
+      for (const f of walk('api', (p) => p.endsWith('.js')).concat(walk('public/assets', (p) => p.endsWith('.js')))) {
+        if (read(f).includes('***')) errs.push(`${f}: contains a literal "***" (a redacted value). Rebuild the expression from source, never from tool output.`);
+      }
+      return errs;
+    },
+  },
+  {
     id: 'root-markdown',
     why: 'Stale agent plan/result docs get copied as "established patterns" (Lauren Tan, "stop agents from writing unsolicited Markdown").',
     run() {
