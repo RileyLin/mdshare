@@ -2,6 +2,7 @@
 // Underscore-prefixed directory: Vercel does not expose files under api/_lib/* as their own
 // routes, so this is safe to import from without creating an extra public endpoint.
 import { isAuthenticated, checkAuthAndRefresh } from '../auth.js';
+import { privateGatePage } from './ui.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -117,74 +118,16 @@ export function setPrivacyHeaders(res) {
 // owner. Reloads the exact same URL after a successful login — same-origin by construction,
 // since it never takes a redirect target from the client. No title/content is ever included.
 export function privateGateHtml() {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Private — mdshare</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" rel="stylesheet">
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'DM Sans', sans-serif; background: oklch(97.5% 0.005 80); color: oklch(16% 0.01 260); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
-    .card { width: 100%; max-width: 360px; background: #fff; border: 1px solid oklch(86% 0.01 80); border-radius: 16px; padding: 40px 36px; box-shadow: 0 2px 8px oklch(0% 0 0 / 0.05), 0 12px 40px oklch(0% 0 0 / 0.07); }
-    .wordmark { font-family: 'Instrument Serif', serif; font-size: 1.3rem; display: flex; align-items: center; gap: 8px; margin-bottom: 12px; text-decoration: none; color: inherit; }
-    .wordmark-dot { width: 7px; height: 7px; border-radius: 50%; background: oklch(52% 0.18 250); display: inline-block; }
-    h1 { font-size: 1rem; font-weight: 600; margin-bottom: 6px; }
-    p { font-size: 13px; color: oklch(38% 0.015 260); margin-bottom: 20px; line-height: 1.5; }
-    .label { display: block; font-size: 12px; font-weight: 500; color: oklch(56% 0.01 260); letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 8px; }
-    .input { width: 100%; padding: 10px 14px; font-size: 15px; background: oklch(97.5% 0.005 80); border: 1px solid oklch(86% 0.01 80); border-radius: 9px; outline: none; }
-    .input:focus { border-color: oklch(52% 0.18 250); }
-    .btn { width: 100%; margin-top: 16px; padding: 11px 20px; font-size: 14px; font-weight: 500; color: #fff; background: oklch(52% 0.18 250); border: none; border-radius: 9px; cursor: pointer; }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-    .error-msg { margin-top: 12px; font-size: 13px; color: oklch(52% 0.2 25); text-align: center; min-height: 18px; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <a class="wordmark" href="/"><span class="wordmark-dot"></span>mdshare</a>
-    <h1>This content is private</h1>
-    <p>Sign in as the owner to view it. If it's ever shared publicly, this link will work for anyone without signing in.</p>
-    <label class="label" for="pwd">Password</label>
-    <input class="input" type="password" id="pwd" placeholder="••••••••" autocomplete="current-password" autofocus>
-    <button class="btn" id="submit-btn" onclick="login()">Sign in</button>
-    <p class="error-msg" id="err"></p>
-  </div>
-  <script>
-    document.getElementById('pwd').addEventListener('keydown', function (e) { if (e.key === 'Enter') login(); });
-    async function login() {
-      const pwd = document.getElementById('pwd').value;
-      const btn = document.getElementById('submit-btn');
-      const err = document.getElementById('err');
-      if (!pwd) return;
-      btn.disabled = true; btn.textContent = 'Signing in…'; err.textContent = '';
-      try {
-        const res = await fetch('/api/auth', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: pwd }),
-        });
-        if (res.ok) {
-          window.location.reload();
-        } else {
-          err.textContent = 'Wrong password';
-          btn.disabled = false; btn.textContent = 'Sign in';
-          document.getElementById('pwd').select();
-        }
-      } catch (e) {
-        err.textContent = 'Network error — try again';
-        btn.disabled = false; btn.textContent = 'Sign in';
-      }
-    }
-  </script>
-</body>
-</html>`;
+  return privateGatePage();
 }
 
-// Owner-only "Share publicly / Stop sharing" control, shared verbatim across render.js,
-// diagram-render.js, and archify-render.js so the three pages behave identically.
+// A row is "kept" (never expires) when pinned; legacy pinned rows were pushed to 2099.
+export function isKept(row) {
+  return !!row && (row.pinned === true || (typeof row.expires_at === 'string' && row.expires_at >= '2099'));
+}
+
+// Pre-redesign "Share publicly / Stop sharing" control. Only the classic view still uses it
+// (api/_lib/classic.js); the current pages use the share panel in /assets/app.js.
 export function visibilityControlHtml(isPublic) {
   return `<span class="badge" id="visibility-badge" style="${isPublic ? '' : 'color:var(--ink-3);background:transparent;border-color:var(--border)'}">${isPublic ? 'public' : 'private'}</span>
       <button class="btn" id="btn-visibility" onclick="toggleVisibility()">${isPublic ? '🌐 Stop sharing' : '🔒 Share publicly'}</button>`;
