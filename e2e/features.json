@@ -376,5 +376,31 @@
       "labelled, no Notion, renders",
       "one click back to the new reader"
     ]
+  },
+  {
+    "id": "renderer-fuzz",
+    "name": "Renderer fuzzing: 450 random documents (3 fixed seeds)",
+    "path": "/ (MDShareRender in the page)",
+    "steps": [
+      "generate documents mixing every construct, CJK, emoji, = runs and hostile HTML",
+      "render each in the browser"
+    ],
+    "assertions": [
+      "no exceptions",
+      "every marker word placed in visible text survives",
+      "no script/iframe/event-handler/javascript: survives; injected script never runs",
+      "each render under 400ms"
+    ]
+  },
+  {
+    "id": "ui-monkey",
+    "name": "Random clicks and keys on every page",
+    "path": "/v/:id, /dashboard, /settings, /, /guide",
+    "steps": [
+      "25 random interactions per page, staying on this site, skipping Delete and Sign out"
+    ],
+    "assertions": [
+      "no JS errors on any page"
+    ]
   }
 ]

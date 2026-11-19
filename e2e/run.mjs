@@ -17,6 +17,7 @@ import { chromium } from 'playwright-core';
 import { startFakeSupabase } from './fake-supabase.mjs';
 import { startServer } from './server.mjs';
 import { installCdnStubs } from './_cdn-stubs.mjs';
+import { makeDocs, checkInPage, monkey } from './fuzz.mjs';
 
 const OWNER_PASSWORD = 'e2e-test-password';
 const E2E_DIR = path.resolve(new URL('.', import.meta.url).pathname);
@@ -875,6 +876,34 @@ async function runClassicView(ctx, ok) {
   });
 }
 
+// Fixed seeds before merge (deterministic: a red build always reproduces). The release check and
+// the scheduled monitor use fresh random seeds against production to keep discovering new inputs.
+async function runRendererFuzz(ctx, ok) {
+  await withContext(ctx, async (context) => {
+    const page = await openAnon(ctx, context, '/');
+    await page.waitForFunction(() => window.MDShareRender, null, { timeout: 5000 });
+    for (const seed of [11, 2026, 90210]) {
+      const docs = makeDocs(seed, 150);
+      const r = await page.evaluate(checkInPage, docs);
+      ok(r.failures.length === 0, `seed ${seed}: ${r.checked} random documents render safely with every word kept (slowest ${r.slowestMs}ms)${r.failures.length ? `; ${r.failures.length} failed, first: #${r.failures[0].index} ${r.failures[0].problem}` : ''}`);
+    }
+    await page.screenshot({ path: ctx.proofPath });
+  });
+}
+
+async function runUiMonkey(ctx, ok) {
+  const { id } = await seedPaste(ctx.serverUrl, fixture('directives.md'));
+  for (const [who, url] of [['owner', `/v/${id}`], ['owner', '/dashboard'], ['owner', '/settings'], ['anon', '/'], ['anon', '/guide']]) {
+    await withContext(ctx, async (context) => {
+      const page = who === 'owner' ? await openOwner(ctx, context, url) : await openAnon(ctx, context, url);
+      await page.waitForTimeout(300);
+      const n = await monkey(page, { steps: 25, seed: url.length * 31, origin: ctx.serverUrl });
+      ok(n > 10 && ctx.jsErrors.length === 0, `${who} ${url}: ${n} random clicks and keys, no JS errors${ctx.jsErrors.length ? ` (got: ${ctx.jsErrors.slice(0, 2).join(' | ')})` : ''}`);
+      if (url === '/') await page.screenshot({ path: ctx.proofPath });
+    });
+  }
+}
+
 const RUNNERS = {
   'home-page': runHomePage,
   'create-paste-ui': runCreatePasteUi,
@@ -904,6 +933,8 @@ const RUNNERS = {
   'shells-and-errors': runShells,
   'mobile': runMobile,
   'classic-view': runClassicView,
+  'renderer-fuzz': runRendererFuzz,
+  'ui-monkey': runUiMonkey,
 };
 
 async function main() {
