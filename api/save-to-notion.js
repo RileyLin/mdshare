@@ -1,5 +1,6 @@
 // POST /api/save-to-notion — saves a paste as a Notion page [auth-gated]
-import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
+import { checkAuthAndRefresh } from './auth.js';
+import { parseJsonBody } from './_lib/body.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -144,10 +145,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  let body = req.body;
-  if (typeof body === 'string') {
-    try { body = JSON.parse(body); } catch {}
-  }
+  let body = parseJsonBody(req.body);
 
   const { id, type } = body || {};
   if (!id || typeof id !== 'string') {

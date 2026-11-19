@@ -1,5 +1,5 @@
 // GET /api/dashboard — returns the dashboard HTML page (auth-gated)
-import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
+import { checkAuthAndRefresh } from './auth.js';
 
 const LOGIN_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -150,7 +150,7 @@ const LOGIN_HTML = `<!DOCTYPE html>
         btn.textContent = 'Sign in';
       }
     }
-  <\/script>
+  </script>
 </body>
 </html>`;
 
@@ -418,7 +418,7 @@ export default async function handler(req, res) {
       </div>
       <p style="font-size:12.5px;color:var(--ink-3);margin:-8px 0 16px;line-height:1.5">Bearer tokens for agents/scripts to call the API directly. A new token defaults to <b>read-only over your whole library</b> (<b>documents:read</b> — can read any document, including private ones, via the raw routes and the catalog/search endpoint; it cannot create, change, or delete anything). Opt in deliberately per-token to grant more: <b>documents:write</b> (create new content), <b>documents:publish</b> (toggle public/private, own-created rows only), <b>documents:publish:any</b> (toggle public/private on ANY row — broad, use with caution). No token can ever mint/revoke another token, enumerate other tokens, or delete anything.</p>
       <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
-        <input class="search-input" id="new-token-name" type="text" placeholder="Token name (e.g. \"Kit\")" style="max-width:220px;padding:8px 12px">
+        <input class="search-input" id="new-token-name" type="text" placeholder="Token name (e.g. &quot;Kit&quot;)" style="max-width:220px;padding:8px 12px">
         <select class="search-input" id="new-token-days" style="max-width:160px;padding:8px 12px;cursor:pointer">
           <option value="30" selected>Expires in 30 days</option>
           <option value="90">Expires in 90 days</option>

@@ -1,7 +1,7 @@
 // GET /d/:id — renders SVG diagram, with optional markdown writeup below. Private unless the
 // owner is authenticated or the row has is_public: true. Unauthenticated requests to a private id
 // get a same-URL login prompt instead of the diagram's title/content.
-import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
+import { checkAuthAndRefresh } from './auth.js';
 import { getRow, isVisible, setPrivacyHeaders, privateGateHtml, visibilityControlHtml, visibilityControlScript } from './_lib/access.js';
 
 const DIAGRAM_TEMPLATE = (svg, title, markdown, id, authed = false, isPublic = false) => `<!DOCTYPE html>
@@ -15,8 +15,8 @@ const DIAGRAM_TEMPLATE = (svg, title, markdown, id, authed = false, isPublic = f
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" rel="stylesheet">
   ${markdown ? `
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"><\/script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"><\/script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   ` : ''}
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -322,10 +322,10 @@ const DIAGRAM_TEMPLATE = (svg, title, markdown, id, authed = false, isPublic = f
     });
     document.getElementById('md-content').innerHTML = marked.parse(raw);
     hljs.highlightAll();
-  <\/script>
+  </script>
   ` : ''}
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.8/purify.min.js"><\/script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.8/purify.min.js"></script>
   <script>
     // Auto-detect light SVG backgrounds and adjust frame
     const frame = document.getElementById('svg-frame');
@@ -340,7 +340,7 @@ const DIAGRAM_TEMPLATE = (svg, title, markdown, id, authed = false, isPublic = f
         frame.classList.add('light-bg');
       }
     }
-  <\/script>
+  </script>
 
   <script>
     const diagramId = ${JSON.stringify(id)};
@@ -417,7 +417,7 @@ const DIAGRAM_TEMPLATE = (svg, title, markdown, id, authed = false, isPublic = f
     }
 
     ${authed ? visibilityControlScript(id, 'diagram', isPublic) : ''}
-  <\/script>
+  </script>
 </body>
 </html>`;
 

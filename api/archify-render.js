@@ -10,7 +10,7 @@
 // allow-same-origin keeps it in an opaque, unique origin that can still run its own client-side
 // interactivity (pan/zoom/hover/theme-toggle — all local DOM work) but cannot read mdshare cookies
 // or call mdshare APIs with the owner's session. Do not change this back to inlining HTML.
-import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
+import { checkAuthAndRefresh } from './auth.js';
 import { getRow, isVisible, setPrivacyHeaders, privateGateHtml, visibilityControlHtml, visibilityControlScript } from './_lib/access.js';
 
 const MISSING_HTML_PAGE = (title, id, kind) => `<!DOCTYPE html>
@@ -71,7 +71,7 @@ function wrapperPage({ id, title, kind, authed, isPublic }) {
   <iframe id="diagram-frame" src="/api/archify-html?id=${id}" sandbox="allow-scripts" referrerpolicy="no-referrer" loading="lazy" title="${safeTitle}"></iframe>
   <script>
     ${authed ? visibilityControlScript(id, 'archify', isPublic) : ''}
-  <\/script>
+  </script>
 </body>
 </html>`;
 }

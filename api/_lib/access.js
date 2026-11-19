@@ -178,7 +178,7 @@ export function privateGateHtml() {
         btn.disabled = false; btn.textContent = 'Sign in';
       }
     }
-  <\/script>
+  </script>
 </body>
 </html>`;
 }

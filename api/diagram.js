@@ -6,6 +6,7 @@
 
 import { randomBytes } from 'crypto';
 import { getRow, isVisible, setPrivacyHeaders } from './_lib/access.js';
+import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
 function nanoid(size = 10) {
   return randomBytes(size).toString('base64url').slice(0, size);
@@ -57,10 +58,7 @@ export default async function handler(req, res) {
       return res.status(403).json({ error: 'Token missing documents:write scope' });
     }
 
-    let body = req.body;
-    if (typeof body === 'string') {
-      try { body = JSON.parse(body); } catch {}
-    }
+    let body = parseJsonBody(req.body);
 
     const svg = body?.svg;
     if (!svg || typeof svg !== 'string') {

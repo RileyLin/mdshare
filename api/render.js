@@ -1,7 +1,7 @@
 // GET /api/render?id=xxx — returns rendered HTML (redesigned UI + all actions + inline edit)
 // Private unless the owner is authenticated or the row has is_public: true. Unauthenticated
 // requests to a private id get a same-URL login prompt instead of the paste's title/content.
-import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
+import { checkAuthAndRefresh } from './auth.js';
 import { getRow, isVisible, setPrivacyHeaders, privateGateHtml, visibilityControlHtml, visibilityControlScript } from './_lib/access.js';
 
 const HTML_TEMPLATE = (content, title, id, authed = false, isPublic = false) => `<!DOCTYPE html>

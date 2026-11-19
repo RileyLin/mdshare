@@ -11,8 +11,9 @@
 // carry { id|items, type, pinned } (no `kind`/`is_public`), so dispatch-by-shape is unambiguous.
 // This is the ONLY code path that may set is_public; POST create routes never read it from the
 // request body (see api/share.js, api/diagram.js, api/archify.js).
-import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
+import { checkAuthAndRefresh } from './auth.js';
 import { tableFor, isValidId, patchRow, getRow } from './_lib/access.js';
+import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope } from './_lib/agent-tokens.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -52,10 +53,7 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'PATCH') return res.status(405).json({ error: 'Method not allowed' });
 
-  let body = req.body;
-  if (typeof body === 'string') {
-    try { body = JSON.parse(body); } catch {}
-  }
+  let body = parseJsonBody(req.body);
   body = body || {};
 
   // Visibility-toggle shape: { id, kind, is_public } — formerly api/visibility.js. Dispatch on

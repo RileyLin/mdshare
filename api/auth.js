@@ -24,6 +24,7 @@
 
 import { createHmac, timingSafeEqual } from 'crypto';
 import { createToken, listTokens, revokeToken, resolveAgentToken, ALLOWED_SCOPES } from './_lib/agent-tokens.js';
+import { parseJsonBody } from './_lib/body.js';
 
 const PASSWORD = process.env.MDSHARE_PASSWORD;
 const HMAC_KEY = process.env.MDSHARE_HMAC_SECRET || process.env.SUPABASE_SERVICE_KEY;
@@ -216,10 +217,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'POST') {
-    let body = req.body;
-    if (typeof body === 'string') {
-      try { body = JSON.parse(body); } catch {}
-    }
+    let body = parseJsonBody(req.body);
 
     // Owner-only agent-token creation. Requires an already-valid owner cookie — issuing a new
     // credential is never itself a way to authenticate. Raw token is returned exactly once, in
@@ -290,10 +288,7 @@ export default async function handler(req, res) {
   if (req.method === 'DELETE') {
     if (!checkAuthAndRefresh(req, res)) return res.status(401).json({ error: 'Unauthorized' });
 
-    let body = req.body;
-    if (typeof body === 'string') {
-      try { body = JSON.parse(body); } catch {}
-    }
+    let body = parseJsonBody(req.body);
     body = body || {};
 
     if (body.action && body.action !== 'revoke_token') {

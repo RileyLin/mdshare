@@ -21,7 +21,7 @@
 // separately (see handleAgentCatalog below) before the owner-cookie branch is ever reached. The
 // owner-cookie dashboard-listing code beneath that is reached only when there is no Authorization
 // header at all.
-import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
+import { checkAuthAndRefresh } from './auth.js';
 import { resolveAgentToken, hasScope } from './_lib/agent-tokens.js';
 import { searchCatalog } from './_lib/catalog.js';
 
