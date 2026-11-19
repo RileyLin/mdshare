@@ -1,7 +1,12 @@
 name: ci
 
-# Every push and PR runs the same gate agents run locally. Pushes to agent/* branches that pass
-# both jobs are fast-forwarded onto main, which Vercel deploys to production.
+# Every push and PR runs the same gate agents run locally. On an agent/* branch:
+#   tier     decides whether the change ships on green checks alone or needs the owner
+#   promote  runs in the "auto-release" or "owner-approval" environment (the latter waits for
+#            Riley to click Approve), records a PR, and fast-forwards main to the exact commit
+#   release  waits for Vercel to serve that commit, checks production for real, and rolls
+#            production back automatically if anything fails
+# main is protected: only commits that passed verify + e2e can land, and nobody force-pushes.
 on:
   push:
     branches: ['**']
@@ -12,7 +17,13 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel an agent branch run: it may be mid-release or mid-rollback.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/heads/agent/') }}
+
+env:
+  SITE_URL: https://mdshare-rileylins-projects.vercel.app
+  VERCEL_PROJECT_ID: prj_Ds2SO8grYWn9c8LwESN04QVcr28P
+  VERCEL_TEAM_ID: team_LVaHJxu5IBnbppmuwYrYbcWf
 
 jobs:
   verify:
@@ -54,16 +65,47 @@ jobs:
           path: e2e/proof/
           retention-days: 14
 
-  promote:
-    needs: [verify, e2e]
+  tier:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/agent/')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    outputs:
+      tier: ${{ steps.classify.outputs.tier }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - id: classify
+        run: |
+          git fetch origin main
+          node scripts/risk-tier.mjs origin/main "$GITHUB_SHA"
+
+  promote:
+    needs: [verify, e2e, tier]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.tier.outputs.tier == 'owner' && 'owner-approval' || 'auto-release' }}
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Record the change as a pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TIER: ${{ needs.tier.outputs.tier }}
+        run: |
+          branch="${GITHUB_REF#refs/heads/}"
+          if [ -z "$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')" ]; then
+            gh pr create --head "$branch" --base main --title "$(git log -1 --format=%s "$GITHUB_SHA")" \
+              --body "Shipped by CI after verify + e2e passed. Risk tier: **$TIER** ($([ "$TIER" = owner ] && echo 'approved by the owner' || echo 'automatic')). Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || true
+          fi
       - name: Fast-forward main to the verified commit
         run: |
           git fetch origin main
@@ -74,3 +116,48 @@ jobs:
             echo "::error::origin/main is not an ancestor of $GITHUB_SHA. Rebase this branch on origin/main and push again."
             exit 1
           fi
+
+  release:
+    needs: [promote]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      MDSHARE_MONITOR_KEY: ${{ secrets.MDSHARE_MONITOR_KEY }}
+      MDSHARE_CANARY_TOKEN: ${{ secrets.MDSHARE_CANARY_TOKEN }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: echo "PLAYWRIGHT_CHROMIUM_PATH=$(command -v google-chrome || command -v google-chrome-stable)" >> "$GITHUB_ENV"
+      - name: Wait until production serves this commit
+        run: node scripts/vercel-release.mjs ensure-live "$GITHUB_SHA"
+      - name: Check production
+        id: check
+        run: node e2e/release-check.mjs --url "$SITE_URL" --mode release --expect-commit "$GITHUB_SHA" --out release-proof
+      - name: Roll production back
+        if: failure()
+        run: |
+          node scripts/vercel-release.mjs rollback "$GITHUB_SHA" | tee rollback.json
+          { echo "Release \`${GITHUB_SHA::7}\` failed its production check and was rolled back automatically."; echo; cat release-proof/summary.md 2>/dev/null; echo; echo "Rollback: \`$(cat rollback.json)\`"; echo; echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"; echo; echo "Production stays on the previous version until a fixed commit passes this check (Vercel pauses auto-promotion after a rollback; the next release promotes itself)."; } > alert.md
+          node scripts/alert.mjs open release "Release ${GITHUB_SHA::7} rolled back" alert.md
+      - name: Close any open release alert
+        if: success()
+        run: node scripts/alert.mjs resolve release "Release ${GITHUB_SHA::7} passed its production check."
+      - name: Upload release proof
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-proof
+          path: release-proof/
+          retention-days: 30

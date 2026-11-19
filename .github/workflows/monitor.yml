@@ -1,0 +1,51 @@
+name: monitor
+
+# Every 30 minutes: check production the way a visitor would (pages, gates, renderer fuzzing with a
+# fresh seed, random clicks) and read the error log. Failures open a GitHub issue (emailed to the
+# owner); recovery closes it. Run it by hand from the Actions tab too.
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SITE_URL: https://mdshare-rileylins-projects.vercel.app
+      MDSHARE_MONITOR_KEY: ${{ secrets.MDSHARE_MONITOR_KEY }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: echo "PLAYWRIGHT_CHROMIUM_PATH=$(command -v google-chrome || command -v google-chrome-stable)" >> "$GITHUB_ENV"
+      - name: Check production
+        run: node e2e/release-check.mjs --url "$SITE_URL" --mode monitor --out monitor-proof
+      - name: Alert
+        if: failure()
+        run: |
+          { echo "The production monitor failed."; echo; cat monitor-proof/summary.md 2>/dev/null; echo; echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"; } > alert.md
+          node scripts/alert.mjs open monitor "Production monitor failing" alert.md
+      - name: Resolve
+        if: success()
+        run: node scripts/alert.mjs resolve monitor "Production monitor is passing again."
+      - name: Upload proof
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: monitor-proof
+          path: monitor-proof/
+          retention-days: 14

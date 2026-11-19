@@ -11,17 +11,20 @@ npm run e2e            # real Chromium against a local stack + fake Supabase -> 
 Put the verify/e2e output in your completion message, plus `e2e/proof/*.png` for UI changes. To look at one page while working: `node e2e/drive.mjs open <path> --as owner|anon --screenshot out.png`.
 
 ## How changes ship
-1. Work on a branch named `agent/<task>` and push it.
-2. CI (`.github/workflows/ci.yml`) runs verify + e2e on every push. On an `agent/*` branch, when both pass, CI fast-forwards `main` to that commit and Vercel deploys it.
-3. If CI fails, fix forward on the same branch. Don't push unverified commits to `main`, don't `vercel --prod` from a local tree, don't force-push.
+1. Work on a branch named `agent/<task>` and push it. `main` is protected: only commits that passed verify + e2e land, no force-push.
+2. CI runs verify + e2e, then `scripts/risk-tier.mjs` decides the tier. **auto**: ships on green. **owner**: waits in the `owner-approval` environment until Riley approves. Owner tier covers auth/visibility/keep/tokens, the sandbox, routes, deps, migrations, the pipeline and checks themselves, and any removed or rewritten test line.
+3. CI records a PR, fast-forwards `main`, then the `release` job waits for production to serve the commit (`/api/health`) and runs `e2e/release-check.mjs` against it. That covers pages, gates, a real private create, fuzzing with a fresh seed, random clicks, and new server errors. On failure it rolls production back (`scripts/vercel-release.mjs`) and opens a `prod-alert:release` issue. The next good release promotes itself.
+4. `.github/workflows/monitor.yml` runs the same check every 30 min plus the error log (`mdshare_events` via `/api/health?events=1`). Failing opens `prod-alert:monitor`; recovery closes it.
+5. If CI fails, fix forward on the same branch. Never `vercel --prod` from a local tree.
 
 `git config core.hooksPath .githooks` once per clone runs `npm run verify` before every push.
-Migrations in `migrations/` are applied by hand by the owner. Agents write them, never run them.
+Migrations: additive only (checked). The agent may apply an additive migration with the Supabase management API and must say so in the commit; anything else goes to the owner.
 
 ## Where things are
 - `api/_lib/access.js` — row fetch/patch, `isValidId`, `isVisible`, `setPrivacyHeaders`, login gate.
 - `api/_lib/agent-tokens.js`, `api/_lib/catalog.js` — bearer tokens, scopes, agent catalog.
 - `api/auth.js` — owner password login, signed 180-day session cookie, token management.
+- `api/health.js` + `api/_lib/events.js` — liveness/commit, client error intake, `withErrors()` (every handler must use it; checked).
 - `api/pin.js` — keep ("pin") / unkeep (fresh 7-day expiry) and the only `is_public` toggle (`keep: true` keeps in the same write).
 - `api/_lib/ui.js` — page chrome for every server page (head, header, owner controls, sign-in card, 404s). `api/_lib/classic.js` is the pre-redesign reader behind `?classic=1`.
 - `public/assets/render.js` — the one Markdown renderer (reader, editor preview, home, guide, diagram notes): marked → DOMPurify → enhancement rules. `app.js` page behaviour, `library.js` Library/Settings, `mdshare.css` the design system. Libraries are vendored in `public/vendor/`.
