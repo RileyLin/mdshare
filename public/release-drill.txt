@@ -1,0 +1,2 @@
+fail
+Rollback rehearsal marker. See e2e/release-check.mjs.
