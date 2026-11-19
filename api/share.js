@@ -4,8 +4,9 @@
 // GET  /api/share?id=xxx — returns raw markdown. Private unless the owner is authenticated or the
 //   row has is_public: true.
 // PATCH /api/share — updates content for an existing paste (auth-gated). Never touches is_public.
-import { isAuthenticated, checkAuthAndRefresh } from './auth.js';
+import { checkAuthAndRefresh } from './auth.js';
 import { getRow, isVisible, setPrivacyHeaders } from './_lib/access.js';
+import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
 import { randomBytes } from 'crypto';
 
@@ -36,12 +37,13 @@ function checkRateLimit(ip) {
 }
 
 // Clean up stale entries periodically (prevent memory leak in long-lived instances)
-setInterval(() => {
+const rateLimitCleanup = setInterval(() => {
   const now = Date.now();
   for (const [ip, entry] of rateLimitMap) {
     if (now > entry.resetAt) rateLimitMap.delete(ip);
   }
 }, 5 * 60 * 1000); // every 5 min
+rateLimitCleanup.unref?.();
 
 function nanoid(size = 10) {
   return randomBytes(size).toString('base64url').slice(0, size);
@@ -158,10 +160,7 @@ export default async function handler(req, res) {
       });
     }
 
-    let body = req.body;
-    if (typeof body === 'string') {
-      try { body = JSON.parse(body); } catch {}
-    }
+    let body = parseJsonBody(req.body);
 
     const markdown = body?.markdown || body?.content || body?.md;
     if (!markdown || typeof markdown !== 'string') {
@@ -193,10 +192,7 @@ export default async function handler(req, res) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    let body = req.body;
-    if (typeof body === 'string') {
-      try { body = JSON.parse(body); } catch {}
-    }
+    let body = parseJsonBody(req.body);
 
     const { id, content } = body || {};
     if (!id || typeof id !== 'string') return res.status(400).json({ error: 'Missing id' });
