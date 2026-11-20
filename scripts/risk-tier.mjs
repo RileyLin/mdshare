@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Decides whether a change may ship on green checks alone ("auto") or needs the owner's
-// approval first ("owner"). CI runs it on every agent/* push; the promote job then uses the
-// GitHub environment of the same name (owner-approval requires Riley to click Approve).
+// Labels a change's risk: "owner" (sensitive) or "auto" (normal). CI records it on the PR and
+// in the run summary. It no longer blocks anything: everything ships on green, and a change
+// waits for Riley only when he asks for it (see the gate step in .github/workflows/ci.yml).
+// Agents use a sensitive label as the cue for an adversarial review before pushing.
 //
 //   node scripts/risk-tier.mjs <base-ref> <head-ref>      -> prints {"tier", "reasons", "files"}
 //

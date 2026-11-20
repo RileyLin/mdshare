@@ -1,9 +1,11 @@
 name: ci
 
 # Every push and PR runs the same gate agents run locally. On an agent/* branch:
-#   tier     decides whether the change ships on green checks alone or needs the owner
-#   promote  runs in the "auto-release" or "owner-approval" environment (the latter waits for
-#            Riley to click Approve), records a PR, and fast-forwards main to the exact commit
+#   tier     labels the change's risk (scripts/risk-tier.mjs) for the PR record. Everything ships
+#            on green checks. It waits for Riley only when he asked for that change to wait: the
+#            commit message has a line "Owner-Approval: required", or the branch is agent/review-*
+#   promote  runs in "auto-release" or, for those opt-in changes, "owner-approval" (Riley clicks
+#            Approve); records a PR and fast-forwards main to the exact commit
 #   release  waits for Vercel to serve that commit, checks production for real, and rolls
 #            production back automatically if anything fails
 # main is protected: only commits that passed verify + e2e can land, and nobody force-pushes.
@@ -71,6 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tier: ${{ steps.classify.outputs.tier }}
+      gate: ${{ steps.gate.outputs.gate }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -82,11 +85,19 @@ jobs:
         run: |
           git fetch origin main
           node scripts/risk-tier.mjs origin/main "$GITHUB_SHA"
+      - id: gate
+        name: Wait for the owner only if asked
+        run: |
+          if git log -1 --format=%B "$GITHUB_SHA" | grep -qiE '^Owner-Approval:[[:space:]]*required' || [[ "$GITHUB_REF" == refs/heads/agent/review-* ]]; then
+            echo "gate=owner" >> "$GITHUB_OUTPUT"; echo "### Waiting for owner approval (requested for this change)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "gate=auto" >> "$GITHUB_OUTPUT"
+          fi
 
   promote:
     needs: [verify, e2e, tier]
     runs-on: ubuntu-latest
-    environment: ${{ needs.tier.outputs.tier == 'owner' && 'owner-approval' || 'auto-release' }}
+    environment: ${{ needs.tier.outputs.gate == 'owner' && 'owner-approval' || 'auto-release' }}
     concurrency:
       group: production
       cancel-in-progress: false
@@ -101,11 +112,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TIER: ${{ needs.tier.outputs.tier }}
+          GATE: ${{ needs.tier.outputs.gate }}
         run: |
           branch="${GITHUB_REF#refs/heads/}"
           if [ -z "$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')" ]; then
             gh pr create --head "$branch" --base main --title "$(git log -1 --format=%s "$GITHUB_SHA")" \
-              --body "Shipped by CI after verify + e2e passed. Risk tier: **$TIER** ($([ "$TIER" = owner ] && echo 'approved by the owner' || echo 'automatic')). Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || true
+              --body "Shipped by CI after verify + e2e passed. Risk: **$([ "$TIER" = owner ] && echo sensitive || echo normal)** (see the tier job summary). $([ "$GATE" = owner ] && echo 'Approved by the owner on request.' || echo 'Merged automatically.') Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || true
           fi
       - name: Fast-forward main to the verified commit
         run: |
