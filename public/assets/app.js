@@ -53,6 +53,10 @@
     bindSeg('theme-seg', 'mdshare-theme', 'system', applyTheme);
     bindSeg('width-seg', 'mdshare-width', 'standard', function (v) { if (v === 'wide') root.setAttribute('data-width', 'wide'); else root.removeAttribute('data-width'); });
     bindSeg('font-seg', 'mdshare-font', 'sans', function (v) { if (v === 'serif') root.setAttribute('data-font', 'serif'); else root.removeAttribute('data-font'); });
+    bindSeg('tables-seg', 'mdshare-tables', 'auto', function () {
+      Array.prototype.forEach.call(document.querySelectorAll('.table-block[data-view-user]'), function (b) { b.removeAttribute('data-view-user'); });
+      if (layoutTables.run) layoutTables.run();
+    });
     var zi = $('zoom-in'), zo = $('zoom-out'), zr = $('zoom-reset');
     if (zi) zi.addEventListener('click', function () { setZoom(zoom() + 0.1); });
     if (zo) zo.addEventListener('click', function () { setZoom(zoom() - 0.1); });
@@ -234,6 +238,154 @@
       var mob = chrome.mob || $('toc-mobile'); if (mob && meta.parentNode) meta.parentNode.insertBefore(mob, meta.nextSibling);
     }
     buildToc(c);
+    layoutTables(c);
+  }
+
+  // ---------- Tables: widen, scroll, cards, expand, copy ----------
+  // render.js measured each table (data-ideal in cell-em, data-cols, text-heavy, data-pref).
+  // Here we use the real page: widen a table into free space beside the column, decide Table vs
+  // Cards, and add a small toolbar. Reader choices win over the author's; nothing is persisted per
+  // table, the Aa setting is.
+  var tableSeq = 0;
+  function tablePref() { return store.get('mdshare-tables') || 'auto'; }
+  function cellPx(wrap) {
+    var t = wrap.querySelector('table'); if (!t) return 15;
+    return parseFloat(getComputedStyle(t).fontSize) || 15;
+  }
+  function chooseView(block, wrap, avail) {
+    block.removeAttribute('data-auto');
+    if (block.getAttribute('data-view-user')) return block.getAttribute('data-view-user');
+    var g = tablePref(); if (g !== 'auto') return g;
+    var author = block.getAttribute('data-pref'); if (author) return author;
+    block.setAttribute('data-auto', '1');
+    var cols = +wrap.getAttribute('data-cols') || 0;
+    if (avail < 600 && cols >= 3 && (wrap.classList.contains('text-heavy') || cols >= 4)) return 'cards';
+    return 'table';
+  }
+  function placeTable(block, art) {
+    var wrap = block.querySelector('.table-wrap'); if (!wrap) return;
+    block.style.marginLeft = block.style.marginRight = '';
+    block.classList.remove('is-wide');
+    var artBox = art.getBoundingClientRect(), vw = document.documentElement.clientWidth;
+    var view = chooseView(block, wrap, artBox.width);
+    wrap.setAttribute('data-view', view);
+    setPressed(block, view);
+    if (view === 'table' && !block.getAttribute('data-nested') && !block.closest('.table-overlay')) {
+      var want = (+wrap.getAttribute('data-ideal') || 0) * cellPx(wrap) + 2;
+      if (block.getAttribute('data-force-wide')) want = Math.max(want, vw);
+      var extra = want - artBox.width;
+      if (extra > 24) {
+        var toc = $('toc'), side = toc && getComputedStyle(toc).display !== 'none';
+        var gutter = Math.max(16, Math.min(40, vw * 0.03));
+        var right = Math.max(0, vw - artBox.right - gutter), left = side ? 0 : Math.max(0, artBox.left - gutter);
+        var cap = Math.max(0, 1600 - artBox.width);
+        extra = Math.min(extra, cap, side ? right : left + right);
+        if (extra > 24) {
+          var r = side ? extra : Math.min(right, extra / 2 + Math.max(0, extra / 2 - left));
+          var l = side ? 0 : extra - r;
+          block.style.marginRight = -Math.round(r) + 'px';
+          block.style.marginLeft = -Math.round(l) + 'px';
+          block.classList.add('is-wide');
+        }
+      }
+    }
+    var scrolls = view === 'table' && wrap.scrollWidth > wrap.clientWidth + 2;
+    // A text-heavy table that still doesn't fit (it would scroll, or some cell needs 5+ lines)
+    // reads better as cards. Only when the view was chosen automatically; data tables keep scrolling.
+    if (block.getAttribute('data-auto') && wrap.classList.contains('text-heavy') && !wrap.classList.contains('matrix') && !block.closest('.table-overlay') && view === 'table' && (scrolls || maxCellLines(wrap) >= 5)) {
+      view = 'cards'; scrolls = false;
+      wrap.setAttribute('data-view', view); setPressed(block, view);
+      block.style.marginLeft = block.style.marginRight = ''; block.classList.remove('is-wide');
+    }
+    wrap.classList.toggle('scrolls', scrolls);
+    wrap.classList.toggle('at-end', !scrolls || wrap.scrollLeft + wrap.clientWidth >= wrap.scrollWidth - 2);
+  }
+  function maxCellLines(wrap) {
+    var worst = 0, rg = document.createRange();
+    Array.prototype.forEach.call(wrap.querySelectorAll('tbody td'), function (td) {
+      rg.selectNodeContents(td);
+      var tops = {}, n = 0;
+      Array.prototype.forEach.call(rg.getClientRects(), function (r) { var k = Math.round(r.top); if (r.width > 0 && !tops[k]) { tops[k] = 1; n++; } });
+      if (n > worst) worst = n;
+    });
+    return worst;
+  }
+  function setPressed(block, view) {
+    Array.prototype.forEach.call(block.querySelectorAll('.table-tools [data-view]'), function (b) { b.setAttribute('aria-pressed', b.getAttribute('data-view') === view ? 'true' : 'false'); });
+  }
+  function tableTsv(t) {
+    return Array.prototype.map.call(t.querySelectorAll('tr'), function (tr) {
+      return Array.prototype.map.call(tr.children, function (cell) { return (cell.textContent || '').replace(/[\t\r\n]+/g, ' ').trim(); }).join('\t');
+    }).join('\n');
+  }
+  // Small, simple tables are already easy to read; a toolbar would only be noise.
+  function isSmallTable(block, wrap, t) {
+    if (block.getAttribute('data-pref') || block.getAttribute('data-force-wide') || wrap.classList.contains('text-heavy')) return false;
+    return (+wrap.getAttribute('data-cols') || 0) <= 3 && t.querySelectorAll('tbody tr').length <= 8;
+  }
+  function addTableTools(block) {
+    if (block.querySelector('.table-tools')) return;
+    var wrap = block.querySelector('.table-wrap'), t = wrap && wrap.querySelector('table'); if (!t) return;
+    if (isSmallTable(block, wrap, t)) return;
+    var id = 'tbl-' + (++tableSeq);
+    wrap.id = id;
+    var bar = document.createElement('div');
+    bar.className = 'table-tools';
+    bar.innerHTML = '<div class="seg sm" role="group" aria-label="Table view"><button type="button" data-view="table" aria-controls="' + id + '">Table</button><button type="button" data-view="cards" aria-controls="' + id + '">Cards</button></div>' +
+      '<button type="button" class="tt-btn" data-act="expand" aria-controls="' + id + '" title="Open full screen">⤢ Expand</button>' +
+      '<button type="button" class="tt-btn" data-act="copy" title="Copy for a spreadsheet">Copy</button>';
+    var cap = block.querySelector('.table-caption');
+    if (cap) { cap.parentNode.insertBefore(bar, cap.nextSibling); block.classList.add('has-caption'); } else block.insertBefore(bar, wrap);
+    bar.addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      if (b.getAttribute('data-view')) { block.setAttribute('data-view-user', b.getAttribute('data-view')); placeTable(block, articleOf(block)); return; }
+      if (b.getAttribute('data-act') === 'copy') { copyText(tableTsv(t), 'Table copied. Paste it into a spreadsheet.'); return; }
+      if (b.getAttribute('data-act') === 'expand') expandTable(block);
+    });
+    wrap.addEventListener('scroll', function () { wrap.classList.toggle('at-end', wrap.scrollLeft + wrap.clientWidth >= wrap.scrollWidth - 2); }, { passive: true });
+  }
+  function articleOf(block) { return block.closest('.prose') || block.parentElement; }
+  function expandTable(block) {
+    var ph = document.createComment('table'), overlay = document.createElement('div');
+    overlay.className = 'table-overlay';
+    overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-modal', 'true'); overlay.setAttribute('aria-label', 'Table');
+    overlay.innerHTML = '<div class="to-bar"><span class="to-title"></span><button type="button" class="btn sm" data-act="close">Close  Esc</button></div><div class="to-body prose"></div>';
+    var cap = block.querySelector('.table-caption'), h = null;
+    if (!cap) { var n = block.previousElementSibling; while (n && !/^H[1-4]$/.test(n.tagName)) n = n.previousElementSibling; h = n; }
+    var hText = '';
+    if (h) { var hc = h.cloneNode(true); Array.prototype.forEach.call(hc.querySelectorAll('.anchor'), function (a) { a.remove(); }); hText = hc.textContent.trim(); }
+    overlay.querySelector('.to-title').textContent = cap ? cap.textContent : (hText || 'Table');
+    block.parentNode.insertBefore(ph, block);
+    overlay.querySelector('.to-body').appendChild(block);
+    document.body.appendChild(overlay);
+    document.body.classList.add('overlay-open');
+    var prev = block.getAttribute('data-view-user');
+    block.setAttribute('data-view-user', 'table');
+    placeTable(block, overlay.querySelector('.to-body'));
+    function close() {
+      document.removeEventListener('keydown', onKey);
+      if (prev) block.setAttribute('data-view-user', prev); else block.removeAttribute('data-view-user');
+      ph.parentNode.insertBefore(block, ph); ph.remove(); overlay.remove();
+      document.body.classList.remove('overlay-open');
+      placeTable(block, articleOf(block));
+      var b = block.querySelector('[data-act="expand"]'); if (b) b.focus();
+    }
+    function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(); } }
+    document.addEventListener('keydown', onKey);
+    overlay.addEventListener('click', function (e) { if (e.target === overlay || e.target.closest('[data-act="close"]')) close(); });
+    overlay.querySelector('[data-act="close"]').focus();
+  }
+  var tableRO = null;
+  function layoutTables(c) {
+    var blocks = Array.prototype.slice.call(c.querySelectorAll('.table-block'));
+    if (!blocks.length) return;
+    blocks.forEach(function (b) { if (!b.getAttribute('data-nested')) addTableTools(b); });
+    var run = function () { blocks.forEach(function (b) { if (b.isConnected && !b.closest('.table-overlay')) placeTable(b, articleOf(b)); }); };
+    run();
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(run);
+    if (tableRO) tableRO.disconnect();
+    if (window.ResizeObserver) { var pending = 0; tableRO = new ResizeObserver(function () { cancelAnimationFrame(pending); pending = requestAnimationFrame(run); }); tableRO.observe(c); tableRO.observe(document.documentElement); }
+    layoutTables.run = run;
   }
   var spy = null;
   function buildToc(c) {

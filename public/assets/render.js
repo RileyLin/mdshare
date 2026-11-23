@@ -9,9 +9,9 @@
 (function () {
   'use strict';
   var CJK = '\u3400-\u9fff\uf900-\ufaff';
-  var DIRECTIVES = ['summary', 'stats', 'steps', 'compare', 'cards', 'tabs', 'note', 'tip', 'warning', 'important', 'caution'];
+  var DIRECTIVES = ['summary', 'stats', 'steps', 'compare', 'cards', 'tabs', 'note', 'tip', 'warning', 'important', 'caution', 'table'];
   var CALLOUT_LABELS = { note: 'Note', tip: 'Tip', warning: 'Warning', important: 'Important', caution: 'Caution' };
-  var FRONT_KEYS = { accent: /^(amber|terracotta|teal|indigo)$/, toc: /^(true|false)$/, layout: /^(wide|standard)$/ };
+  var FRONT_KEYS = { accent: /^(amber|terracotta|teal|indigo)$/, toc: /^(true|false)$/, layout: /^(wide|standard)$/, tables: /^(auto|table|cards|compact)$/ };
 
   function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -131,6 +131,7 @@
       var name = box.getAttribute('data-dir'), arg = box.getAttribute('data-arg') || '';
       // Every block keeps its argument: summary uses it as the card label, the others show it as
       // a small title above the block (the fuzzer caught ":::compare Pricing" dropping "Pricing").
+      if (name === 'table') { tableDirective(box, arg); return; }
       if (arg && name !== 'summary') { var title = el('div', 'md-block-title', arg); box.parentNode.insertBefore(title, box); }
       if (name === 'summary') {
         box.className = 'md-summary';
@@ -289,11 +290,51 @@
     });
   }
 
+  // :::table [cards|table|wide|compact ...] [caption] around one Markdown table. Option words set
+  // how the table is shown; every other word is kept as the caption (blocks never drop their text).
+  var TABLE_OPTS = { cards: 1, table: 1, wide: 1, compact: 1 };
+  function tableDirective(box, arg) {
+    var words = arg.split(/\s+/).filter(Boolean), opts = [], caption = [];
+    words.forEach(function (w) { (TABLE_OPTS[w.toLowerCase()] ? opts : caption).push(w); });
+    var t = box.querySelector('table');
+    if (t) {
+      opts.forEach(function (o) {
+        o = o.toLowerCase();
+        if (o === 'cards' || o === 'table') t.setAttribute('data-view', o);
+        else t.setAttribute('data-' + o, '1');
+      });
+      if (caption.length) t.setAttribute('data-caption', caption.join(' '));
+    } else if (caption.length || opts.length) {
+      box.parentNode.insertBefore(el('div', 'md-block-title', arg), box);
+    }
+    while (box.firstChild) box.parentNode.insertBefore(box.firstChild, box);
+    box.remove();
+  }
+
+  // Visual width of text in em: CJK and full-width characters are ~1em, everything else ~0.55em.
+  function vlen(s) {
+    var n = 0;
+    for (var i = 0; i < s.length; i++) { var c = s.charCodeAt(i); n += (c >= 0x2e80 && c <= 0x9fff) || (c >= 0xac00 && c <= 0xd7af) || (c >= 0xff00 && c <= 0xffef) ? 1 : 0.55; }
+    return n;
+  }
+  // Longest piece the browser can't break: a Latin word, or a short run of CJK (we don't want
+  // fewer than ~4 characters on a line, so a CJK run counts as up to 4em).
+  function longestChunk(s) {
+    var best = 0;
+    (s.match(/[A-Za-z0-9$€£%.,:/@#+_()'’-]+/g) || []).forEach(function (w) { best = Math.max(best, w.length * 0.55); });
+    if (/[\u2e80-\u9fff]/.test(s)) best = Math.max(best, Math.min(4, vlen(s)));
+    return best;
+  }
+
   var NUM_RE = /^[-+−~≈]?\s?[$¥€£]?\s?\d[\d,.\s]*(%|[kKmMbB]|万|亿|x|×|倍|ms|s|GB|TB|MB)?\+?$/;
-  function tables(root) {
+  function tables(root, meta) {
     root.querySelectorAll('table').forEach(function (t) {
       if (!t.parentElement.classList.contains('table-wrap')) {
         var w = el('div', 'table-wrap'); t.parentNode.insertBefore(w, t); w.appendChild(t);
+      }
+      var wrap = t.parentElement;
+      if (!wrap.parentElement.classList.contains('table-block')) {
+        var block = el('div', 'table-block'); wrap.parentNode.insertBefore(block, wrap); block.appendChild(wrap);
       }
       var rows = Array.prototype.slice.call(t.querySelectorAll('tbody tr'));
       var heads = Array.prototype.slice.call(t.querySelectorAll('thead th'));
@@ -313,7 +354,65 @@
         else if (/^(❌|✖️?|⛔)/.test(s)) td.classList.add('t-bad');
         else if (/^(⚠️?|🟡)/.test(s)) td.classList.add('t-warn');
       });
+      shapeTable(t, rows, heads, ncol, meta || {});
     });
+  }
+
+  // Readability: measure each column, give it a sensible minimum and ideal width, keep short
+  // columns on one line, label every cell with its header (for the Cards view), and record the
+  // table's shape so the page layer (app.js) can widen it, scroll it or show it as cards.
+  function shapeTable(t, rows, heads, ncol, meta) {
+    var wrap = t.parentElement, block = wrap.parentElement;
+    var labels = heads.map(textOf), ideal = 0, textCols = 0, textAvg = 0;
+    rows.forEach(function (r) {
+      kids(r).forEach(function (td, i) { if (labels[i]) td.setAttribute('data-label', labels[i]); });
+    });
+    for (var c = 0; c < ncol; c++) {
+      var texts = rows.map(function (r) { return r.children[c] ? textOf(r.children[c]) : ''; });
+      var lens = texts.map(vlen), max = Math.max.apply(null, lens.concat([0]));
+      var avg = lens.reduce(function (a, b) { return a + b; }, 0) / Math.max(1, lens.length);
+      var head = heads[c] ? vlen(textOf(heads[c])) * 0.85 : 0; // header font is smaller
+      var chunk = Math.max.apply(null, texts.map(longestChunk).concat([0]));
+      var isNum = heads[c] ? heads[c].classList.contains('num') : false;
+      // short (≤ 8em): never wraps. medium (≤ 16em): at most two lines. long: wraps, but never
+      // narrower than a readable chunk; its ideal is about a third of its longest cell.
+      var short = max <= 8 || isNum, colIdeal, colMin;
+      if (short) { colIdeal = Math.max(max, head); colMin = colIdeal; }
+      else if (max <= 16) { colIdeal = Math.max(max, head); colMin = Math.max(max / 2 + 0.6, chunk, head); }
+      else {
+        colIdeal = Math.min(24, Math.max(12, max / 3, head));
+        colMin = Math.min(14, Math.max(7, chunk, head, max / 5));
+      }
+      if (!short && !isNum) { textCols++; textAvg += avg; }
+      if (heads[c]) {
+        heads[c].style.setProperty('--min', colMin.toFixed(1));
+        heads[c].setAttribute('data-ideal', colIdeal.toFixed(1));
+      }
+      if (short) {
+        if (heads[c]) heads[c].classList.add('nowrap');
+        rows.forEach(function (r) { if (r.children[c]) r.children[c].classList.add('nowrap'); });
+      }
+      ideal += colIdeal + 2; // + cell padding (≈ 28px)
+    }
+    var firstShort = rows.length && heads[0] && heads[0].classList.contains('nowrap');
+    if (firstShort && ncol >= 3) wrap.classList.add('rowhead');
+    var textHeavy = textCols >= 2 && textAvg / textCols > 6;
+    if (textHeavy) wrap.classList.add('text-heavy');
+    // A comparison matrix (features × options, values like "tested", "refused", "✅") repeats a few
+    // values across the grid; it's for scanning across, so it stays a table on wide screens.
+    var counts = {}, body = [];
+    rows.forEach(function (r) { kids(r).slice(1).forEach(function (td) { var k = (textOf(td).split(/[\s(（,，;；]/)[0] || '').toLowerCase(); if (k) { body.push(k); counts[k] = (counts[k] || 0) + 1; } }); });
+    var repeated = body.filter(function (k) { return counts[k] >= 3; }).length;
+    if (ncol >= 4 && body.length >= 8 && repeated / body.length >= 0.4) wrap.classList.add('matrix');
+    if (rows.length > 12 || t.getAttribute('data-compact') || meta.tables === 'compact') wrap.classList.add('compact');
+    wrap.setAttribute('data-ideal', ideal.toFixed(1));
+    wrap.setAttribute('data-cols', String(ncol));
+    var pref = t.getAttribute('data-view') || (meta.tables === 'cards' || meta.tables === 'table' ? meta.tables : '');
+    if (pref) block.setAttribute('data-pref', pref);
+    if (t.getAttribute('data-wide')) block.setAttribute('data-force-wide', '1');
+    if (block.closest('.md-compare, .md-cards, .md-tabs, .md-callout, .md-summary, li, .md-steps-block')) block.setAttribute('data-nested', '1');
+    var cap = t.getAttribute('data-caption');
+    if (cap && !block.querySelector('.table-caption')) block.insertBefore(el('div', 'table-caption md-block-title', cap), wrap);
   }
 
   function codeBlocks(root, opts) {
@@ -491,7 +590,7 @@
     subheads(root);
     summaryCard(root);
     listRules(root);
-    tables(root);
+    tables(root, opts.meta);
     codeBlocks(root, opts);
     links(root);
     if (opts.gloss) glosses(root);
@@ -506,7 +605,7 @@
     var out = toHtml(md);
     target.innerHTML = out.html;
     if (opts.classic) return out.meta;
-    enhance(target, opts);
+    enhance(target, Object.assign({ meta: out.meta }, opts));
     return out.meta;
   }
 

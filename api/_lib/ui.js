@@ -2,7 +2,7 @@
 // card, and message pages. Visual styles live in /assets/mdshare.css; behaviour in /assets/app.js.
 // Underscore directory: not a Vercel function.
 
-export const ASSET_V = '20261119b';
+export const ASSET_V = '20261123';
 
 export function esc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -80,6 +80,7 @@ export function aaControl() {
   <div class="aa-group"><div class="aa-label">Text size</div><div class="aa-row"><div class="aa-size"><button type="button" id="zoom-out" aria-label="Smaller text">A−</button><output id="zoom-val">100%</output><button type="button" id="zoom-in" aria-label="Larger text">A+</button></div><button class="btn sm ghost" type="button" id="zoom-reset">Reset</button></div></div>
   <div class="aa-group"><div class="aa-label">Theme</div><div class="seg" id="theme-seg"><button type="button" data-v="light">Light</button><button type="button" data-v="dark">Dark</button><button type="button" data-v="system">System</button></div></div>
   <div class="aa-group"><div class="aa-label">Layout</div><div class="aa-row"><div class="seg" id="width-seg"><button type="button" data-v="standard">Standard</button><button type="button" data-v="wide">Wide</button></div><div class="seg" id="font-seg"><button type="button" data-v="sans">Sans</button><button type="button" data-v="serif">Serif</button></div></div></div>
+  <div class="aa-group"><div class="aa-label">Tables</div><div class="seg" id="tables-seg"><button type="button" data-v="auto">Auto</button><button type="button" data-v="table">Table</button><button type="button" data-v="cards">Cards</button></div></div>
   <div class="aa-group"><div class="aa-row"><span class="lbl" style="font-size:13.5px">Term hints<small style="display:block;font-size:12px;color:var(--ink-3)">Show 术语（解释） as hover hints</small></span><label class="switch"><input type="checkbox" id="gloss-toggle"><span></span></label></div></div>
 </div></div>`;
 }
