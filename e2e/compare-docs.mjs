@@ -49,7 +49,7 @@ try {
     page.on('pageerror', (e) => errors.push(e.message));
     const grab = (fresh) => page.evaluate((isNew) => {
       const c = document.getElementById('content').cloneNode(true);
-      if (isNew) c.querySelectorAll('.doc-meta, .toc-mobile, .anchor, .code-head').forEach((e) => e.remove());
+      if (isNew) c.querySelectorAll('.doc-meta, .toc-mobile, .anchor, .code-head, .table-tools').forEach((e) => e.remove());
       const links = [...c.querySelectorAll('a[href]')].map((a) => a.getAttribute('href')).sort();
       return {
         text: c.textContent.replace(/\s+/g, '').replace(/[：:]/g, ''),

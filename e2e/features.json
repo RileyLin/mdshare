@@ -402,5 +402,26 @@
     "assertions": [
       "no JS errors on any page"
     ]
+  },
+  {
+    "id": "table-readability",
+    "name": "Readable tables: widen, scroll, cards, expand, copy",
+    "path": "/v/:id (fixture wide-tables.md)",
+    "steps": [
+      "open a doc with a 7-column CJK table, a small table, a 12-column data table, :::table cards compact and a table inside :::compare",
+      "toggle Cards/Table, Expand + Esc, Copy, Aa → Tables, reload",
+      "repeat at 1000px, on a phone, and with frontmatter tables: cards"
+    ],
+    "assertions": [
+      "wide table grows into free space, not over the sidebar, inside the window",
+      "no column below its minimum; row labels and short columns on one line; rows ≤ ~2 lines",
+      "small and nested tables unchanged, no toolbar",
+      "Cards: labels from headers, identical text; Table restores",
+      "Expand overlay titled by its section; Esc restores, no duplicate",
+      "Copy gives TSV",
+      "Aa setting persists; Auto restores",
+      "12 columns scroll inside with sticky first column; no page sideways scroll",
+      "phone: text-heavy → cards; frontmatter tables: cards works"
+    ]
   }
 ]

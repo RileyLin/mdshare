@@ -56,11 +56,13 @@ export function makeDocs(seed, n) {
       } else if (t < 0.53) blocks.push(`> ${pick(['[!NOTE]', '[!WARNING]', '[!TIP]', '注意：', 'Warning:', '', '[!BOGUS]'])} ${text(4)}`);
       else if (t < 0.6) blocks.push('```' + pick(LANGS) + '\n' + text(4) + '\nconst a = 1 < 2 && "</script>";\n```');
       else if (t < 0.7) {
-        const name = pick(['summary', 'stats', 'steps', 'compare', 'cards', 'tabs', 'note', 'tip', 'warning', 'important', 'caution', 'unknownthing']);
+        const name = pick(['summary', 'stats', 'steps', 'compare', 'cards', 'tabs', 'note', 'tip', 'warning', 'important', 'caution', 'table', 'unknownthing']);
         const body = name === 'stats' ? `${Math.floor(r() * 1000)} | ${text(2)} {up}\n${W()} | ${text(1)}`
           : ['compare', 'cards', 'tabs'].includes(name) ? `### ${text(1)}\n${text(3)}\n### ${text(1)}\n- ${text(2)}`
-          : name === 'steps' ? `- [x] **${text(1)}**: ${text(2)}\n- [ ] ${text(2)}` : text(4);
-        blocks.push(`:::${name}${r() < 0.4 ? ' ' + text(1) : ''}\n${body}${r() < 0.85 ? '\n:::' : ''}`);
+          : name === 'steps' ? `- [x] **${text(1)}**: ${text(2)}\n- [ ] ${text(2)}`
+          : name === 'table' ? `| ${W()} | ${W()} | ${text(1)} |\n| --- | --- | --- |\n| ${text(2)} | ${W()} | ${text(1)} |` : text(4);
+        const opt = name === 'table' && r() < 0.6 ? ' ' + pick(['cards', 'table', 'wide', 'compact', 'cards compact']) : '';
+        blocks.push(`:::${name}${opt}${r() < 0.4 ? ' ' + text(1) : ''}\n${body}${r() < 0.85 ? '\n:::' : ''}`);
       } else if (t < 0.76) blocks.push(`${text(2)} ==${text(1)}== ${pick(['===CHAT===', 'a == b', '$5 == $5', '=='])} :badge[${pick(['shipped', 'blocked', 'beta', '进行中'])}]${pick(['', '{blue}', '{nope}'])} ${text(1)}`);
       else if (t < 0.84) blocks.push(pick(HOSTILE) + `\n\n${text(3)}`);
       else if (t < 0.88) blocks.push('---');

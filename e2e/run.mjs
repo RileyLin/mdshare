@@ -596,7 +596,7 @@ async function runTextEquivalence(ctx, ok) {
       const neu = await page.evaluate(() => {
         const c = document.getElementById('content').cloneNode(true);
         // Page chrome placed inside the article (date/reading time, # anchors, code labels).
-        c.querySelectorAll('.doc-meta, .toc-mobile, .anchor, .code-head').forEach((e) => e.remove());
+        c.querySelectorAll('.doc-meta, .toc-mobile, .anchor, .code-head, .table-tools').forEach((e) => e.remove());
         return { text: c.textContent.replace(/\s+/g, ''), tables: c.querySelectorAll('table').length, rows: c.querySelectorAll('tr').length, code: c.querySelectorAll('pre').length, links: [...c.querySelectorAll('a[href]:not(.anchor)')].map((a) => a.getAttribute('href')).sort(), imgs: c.querySelectorAll('img').length, items: c.querySelectorAll('li').length };
       });
       // A summary card's label is the heading/bold line it came from, so the text lines up. The
@@ -904,6 +904,114 @@ async function runUiMonkey(ctx, ok) {
   }
 }
 
+// Tables: measure, widen, scroll, cards, expand, copy, settings and author control.
+async function runTableReadability(ctx, ok) {
+  const { id } = await seedPaste(ctx.serverUrl, fixture('wide-tables.md'));
+  const blocks = (page) => page.evaluate(() => [...document.querySelectorAll('#content .table-block')].map((b) => {
+    const w = b.querySelector('.table-wrap'), t = w.querySelector('table'), r = b.getBoundingClientRect();
+    const art = document.getElementById('content').getBoundingClientRect(), toc = document.getElementById('toc');
+    const tocBox = toc && getComputedStyle(toc).display !== 'none' && toc.children.length ? toc.getBoundingClientRect() : null;
+    const rows = [...t.querySelectorAll('tbody tr')].map((tr) => tr.getBoundingClientRect().height);
+    const lines = (td) => { const rg = document.createRange(); rg.selectNodeContents(td); return new Set([...rg.getClientRects()].filter((x) => x.width > 0).map((x) => Math.round(x.top))).size; };
+    const oneLine = (sel) => [...t.querySelectorAll(sel)].every((td) => lines(td) <= 1);
+    const maxLines = Math.max(...[...t.querySelectorAll('tbody td')].map(lines));
+    const heads = [...t.querySelectorAll('thead th')].map((th) => ({ w: th.getBoundingClientRect().width, min: parseFloat(getComputedStyle(th).minWidth) || 0 }));
+    return { left: r.left, right: r.right, width: r.width, art: { left: art.left, right: art.right, width: art.width }, tocRight: tocBox ? tocBox.right : null,
+      vw: document.documentElement.clientWidth, view: w.dataset.view, scrolls: w.classList.contains('scrolls'), tools: !!b.querySelector('.table-tools'),
+      maxRow: Math.max(...rows), maxLines, heads, colsOk: heads.every((h) => h.w + 0.5 >= h.min), firstOneLine: oneLine('tbody td:first-child'),
+      nowrapOneLine: oneLine('td.nowrap'), caption: (b.querySelector('.table-caption') || {}).textContent || '', compact: w.classList.contains('compact'),
+      nested: b.getAttribute('data-nested') === '1', sticky: getComputedStyle(t.querySelector('td')).position, overflow: document.documentElement.scrollWidth - innerWidth };
+  }));
+  const text = (page) => page.evaluate(() => { const c = document.getElementById('content').cloneNode(true); c.querySelectorAll('.table-tools, .doc-meta, .toc-mobile, .anchor, .code-head').forEach((e) => e.remove()); return c.textContent.replace(/\s+/g, ''); });
+
+  // Desktop with the contents sidebar on the left.
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${id}`); await waitRendered(page); await page.waitForTimeout(300);
+    const [wide, small, data, cards, nested] = await blocks(page);
+    ok(wide.tocRight !== null && wide.width > wide.art.width + 200 && wide.left >= wide.art.left - 1 && wide.right <= wide.vw && wide.left >= wide.tocRight, `the 7-column table grows to the right into free space (${Math.round(wide.width)}px vs column ${Math.round(wide.art.width)}px), not over the sidebar, inside the window`);
+    ok(wide.colsOk, `no column is squeezed below its readable minimum (${wide.heads.map((h) => Math.round(h.w)).join('/')})`);
+    ok(wide.firstOneLine && wide.nowrapOneLine, 'the row labels and the short columns ("S3、S5", "所有客户") stay on one line');
+    ok(wide.maxLines <= 3, `no cell needs more than 3 lines (worst ${wide.maxLines}; tallest row ${Math.round(wide.maxRow)}px, was 140px and 5 lines before this change)`);
+    ok(wide.view === 'table' && wide.tools, 'wide tables show as a table with a toolbar');
+    ok(!small.tools && Math.abs(small.width - small.art.width) < 2, 'a small 3-column table keeps its place and gets no toolbar');
+    ok(cards.view === 'cards' && cards.compact && cards.caption === '训练方式速查', ':::table cards compact <caption> shows cards, compact, with its caption');
+    ok(nested.nested && !nested.tools && nested.width <= nested.art.width, 'tables inside a compare block never widen and get no toolbar');
+    ok(data.view === 'table', 'the 12-column data table stays a table');
+    ok(wide.overflow <= 0, 'nothing pushes the page sideways');
+    const before = await text(page);
+
+    // Cards toggle and back: same text, labels from the headers.
+    await page.click('#content .table-block >> nth=0 >> button[data-view="cards"]');
+    const c1 = await page.evaluate(() => { const w = document.querySelector('#content .table-wrap'), td = w.querySelector('tbody td:nth-child(2)'); return { view: w.dataset.view, display: getComputedStyle(w.querySelector('tr')).display, label: getComputedStyle(td, '::before').content, width: w.parentElement.getBoundingClientRect().width, art: document.getElementById('content').getBoundingClientRect().width }; });
+    ok(c1.view === 'cards' && c1.display === 'block' && c1.label === '"白话解释"' && Math.abs(c1.width - c1.art) < 2, `Cards turns each row into a card labelled from the header (label ${c1.label}), back inside the column`);
+    ok((await text(page)) === before, 'Cards shows exactly the same text (labels are drawn, not added)');
+    await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-cards.png') });
+    await page.click('#content .table-block >> nth=0 >> button[data-view="table"]');
+    const back = (await blocks(page))[0];
+    ok(back.view === 'table' && back.width > back.art.width + 200, 'Table brings the wide layout back');
+
+    // Expand: overlay, Esc closes, the table returns to the same place, no duplicate.
+    const n0 = await page.evaluate(() => document.querySelectorAll('#content .table-block').length);
+    await page.click('#content .table-block >> nth=0 >> button[data-act="expand"]');
+    const ov = await page.evaluate(() => { const o = document.querySelector('.table-overlay'); return o && { title: o.querySelector('.to-title').textContent, w: o.querySelector('.table-wrap').getBoundingClientRect().width, inDoc: document.querySelectorAll('#content .table-block').length }; });
+    ok(ov && ov.title === '五种做法' && ov.w > 1200 && ov.inDoc === n0 - 1, `Expand opens the table full screen under its section title (${ov && ov.title}, ${ov && Math.round(ov.w)}px)`);
+    await page.keyboard.press('Escape');
+    const after = await page.evaluate(() => ({ overlay: !!document.querySelector('.table-overlay'), n: document.querySelectorAll('#content .table-block').length, first: document.querySelector('#content .table-block th').textContent }));
+    ok(!after.overlay && after.n === n0 && after.first === '类型' && (await text(page)) === before, 'Esc closes it and the table is back in place, once');
+
+    // Copy as TSV.
+    await page.click('#content .table-block >> nth=0 >> button[data-act="copy"]');
+    const clip = await page.evaluate(() => navigator.clipboard.readText());
+    ok(clip.split('\n')[0] === '类型\t白话解释\t什么时候适合\t主要客户\t谁来做\t厂商怎么赚钱\t先例' && clip.split('\n').length === 6, 'Copy puts the table on the clipboard as tab-separated rows (pastes into a spreadsheet)');
+
+    // Aa setting: Cards everywhere, remembered after reload; Auto restores.
+    await page.click('#btn-aa'); await page.click('#tables-seg button[data-v="cards"]');
+    await page.reload(); await waitRendered(page); await page.waitForTimeout(300);
+    const pref = await blocks(page);
+    ok(pref.filter((b) => !b.nested).every((b) => b.view === 'cards'), 'Aa → Tables: Cards applies to every table and is remembered after reload');
+    await page.click('#btn-aa'); await page.click('#tables-seg button[data-v="auto"]');
+    ok((await blocks(page))[0].view === 'table', 'Aa → Tables: Auto goes back to the automatic choice');
+    await page.screenshot({ path: ctx.proofPath });
+  }, { viewport: { width: 1440, height: 1000 }, permissions: ['clipboard-read', 'clipboard-write'] });
+
+  // Narrower desktop: the 12-column table scrolls inside with a sticky first column.
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${id}`); await waitRendered(page); await page.waitForTimeout(300);
+    const data = (await blocks(page))[2];
+    ok(data.scrolls && data.sticky === 'sticky' && data.overflow <= 0, `at 760px the 12-column table scrolls inside itself with a sticky first column (page doesn't scroll sideways)`);
+    const wideAt760 = (await blocks(page))[0];
+    ok(wideAt760.view === 'cards', 'a text-heavy table that cannot fit without scrolling switches to cards automatically');
+    const matrix = (await blocks(page))[6];
+    ok(matrix.view === 'table', 'a comparison matrix (repeated values like tested/refused) stays a table to scan across');
+    const inline = await page.evaluate(() => {
+      const w = document.querySelectorAll('#content .table-wrap')[7];
+      return [...w.querySelectorAll('tbody td:not(:first-child) a, tbody td:not(:first-child) em, tbody td:not(:first-child) code, tbody td:not(:first-child) strong')].map((e) => {
+        const td = e.closest('td'), pad = parseFloat(getComputedStyle(td).paddingLeft);
+        return e.getBoundingClientRect().left - td.getBoundingClientRect().left >= pad - 1;
+      });
+    });
+    ok(inline.length === 4 && inline.every(Boolean), 'in Cards, links, italics, code and bold stay in the value column (no grid splitting)');
+    // The value is one word, the label wraps to several lines: the row must be as tall as the label.
+    const labelFits = await page.evaluate(() => [...document.querySelectorAll('#content .table-wrap')[7].querySelectorAll('tbody td:nth-child(2)')].every((td) => td.getBoundingClientRect().height >= 60));
+    ok(labelFits, 'a long card label wraps inside its own row instead of running into the next one');
+  }, { viewport: { width: 760, height: 900 } });
+
+  // Phone: text-heavy tables become cards automatically; small ones stay tables.
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${id}`); await waitRendered(page); await page.waitForTimeout(300);
+    const [wide, small] = await blocks(page);
+    ok(wide.view === 'cards' && small.view === 'table' && wide.overflow <= 0, 'on a phone the 7-column table is cards and the small table stays a table, with no sideways scroll');
+    await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-phone.png'), fullPage: true });
+  }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+
+  // Frontmatter tables: cards.
+  const fm = await seedPaste(ctx.serverUrl, '---\ntables: cards\n---\n# FM\n\n| 方式 | 说明 | 成本 | 适合 |\n| --- | --- | --- | --- |\n| A | 很长的一段说明文字用来测试卡片 | 低 | 小团队 |\n| B | 另一段说明 | 高 | 大客户 |\n');
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${fm.id}`); await waitRendered(page); await page.waitForTimeout(200);
+    ok((await blocks(page))[0].view === 'cards', 'frontmatter `tables: cards` shows the document\'s tables as cards');
+  }, { viewport: { width: 1440, height: 900 } });
+}
+
 const RUNNERS = {
   'home-page': runHomePage,
   'create-paste-ui': runCreatePasteUi,
@@ -935,6 +1043,7 @@ const RUNNERS = {
   'classic-view': runClassicView,
   'renderer-fuzz': runRendererFuzz,
   'ui-monkey': runUiMonkey,
+  'table-readability': runTableReadability,
 };
 
 async function main() {
