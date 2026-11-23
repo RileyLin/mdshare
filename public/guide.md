@@ -203,7 +203,7 @@ layout: wide
 # My document
 ```
 
-`accent` is one of `terracotta` (default), `amber`, `teal` or `indigo`. `toc` is `true` or `false`; `layout` is `standard` or `wide`. Unknown keys are ignored as plain text, so an ordinary document that starts with a horizontal rule is never affected.
+`accent` is one of `terracotta` (default), `amber`, `teal` or `indigo`. `toc` is `true` or `false`; `layout` is `standard` or `wide`; `tables` is `auto` (default), `table`, `cards` or `compact`. Unknown keys are ignored as plain text, so an ordinary document that starts with a horizontal rule is never affected.
 
 ## Tables, code and diagrams
 
@@ -218,6 +218,29 @@ layout: wide
 flowchart LR
   A[Write] --> B[Share privately] --> C[Publish and keep]
 ```
+
+## Tables
+
+Plain Markdown tables need nothing extra. The reader measures every table:
+- short columns stay on one line, and no column gets squeezed below a readable width;
+- a wide table grows into the free space beside the text;
+- a very wide one scrolls inside itself, with the first column fixed.
+
+On a phone, tables with a lot of text turn into cards.
+
+Readers can switch any table between **Table** and **Cards**, open it full screen with **Expand**, or **Copy** it into a spreadsheet. Aa → Tables sets the default for every document.
+
+To choose the view yourself, wrap one table in `:::table` with any of `cards`, `table`, `wide` or `compact`. Any other words become the table's caption:
+
+```markdown
+:::table cards 训练方式速查
+| 方式 | 数据要求 | 成本 |
+| --- | --- | --- |
+| 微调 | 几百到几千条示范 | 中 |
+:::
+```
+
+Or set it for the whole document with `tables: cards` (or `table`, `compact`, `auto`) in the page settings block.
 
 ## For agents
 

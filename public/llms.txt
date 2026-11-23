@@ -33,7 +33,10 @@ To publish (make public): PATCH /api/pin {"id", "kind": "paste", "is_public": tr
    A line that is only bold text ("**Key point**") renders as a small heading.
 4. Prefer short paragraphs and lists. "- **Label**: explanation" renders as key-point rows.
    A numbered list where every item starts in bold renders as step cards.
-5. Use tables for comparisons. Numeric columns are right-aligned; cells starting with ✅ ❌ ⚠️ are tinted.
+5. Use tables for comparisons. Numeric columns are right-aligned; cells starting with ✅ ❌ ⚠️ are tinted. Wide tables are laid out automatically: they widen into free space, scroll with a fixed first column, and become cards on phones. Keep the first column a short row label. To force a view, wrap one table:
+   :::table cards Optional caption      (options: cards | table | wide | compact; other words = caption)
+   | ... table ... |
+   :::
 6. Use fenced code blocks with a language (```bash, ```python). Mermaid diagrams: ```mermaid.
 7. Don't paste raw HTML; it is sanitised. Don't put the whole document in one code block.
 
@@ -84,6 +87,7 @@ Optional page settings, only as the very first lines:
 accent: teal          (terracotta | amber | teal | indigo)
 toc: false
 layout: wide
+tables: cards         (auto | table | cards | compact)
 ---
 
 Human-readable version with rendered examples: /guide
