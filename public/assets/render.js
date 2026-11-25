@@ -505,6 +505,7 @@
     });
     n.appendChild(b);
   }
+  function turnFlow(src) { return src.replace(/^(\s*(?:%%[^\n]*\n\s*)*(?:flowchart|graph))[ \t]+(LR|RL)\b/, '$1 TD'); }
   function mermaidRun(root) {
     var nodes = Array.prototype.slice.call(root.querySelectorAll('.mermaid:not([data-done])'));
     if (!nodes.length) return;
@@ -518,7 +519,7 @@
       Promise.all(nodes.map(function (n) {
         var src = n.getAttribute('data-src') || '';
         if (narrow) {
-          var turned = src.replace(/^(\s*(?:%%[^\n]*\n\s*)*(?:flowchart|graph))[ \t]+(LR|RL)\b/, '$1 TD');
+          var turned = turnFlow(src);
           if (turned !== src) { n.textContent = turned; n.setAttribute('data-turned', '1'); src = turned; }
         }
         return Promise.resolve().then(function () { return m.parse(src, { suppressErrors: true }); })
@@ -526,14 +527,28 @@
       })).then(function (parsed) {
         var good = parsed.filter(Boolean);
         if (!good.length) return;
-        return Promise.resolve(m.run({ nodes: good, suppressErrors: true })).catch(function () { /* checked below */ }).then(function () {
+        var draw = function (list) { return Promise.resolve(m.run({ nodes: list, suppressErrors: true })).catch(function () { /* checked below */ }); };
+        var natural = function (n) { var svg = n.querySelector('svg'); return svg ? (parseFloat(svg.getAttribute('width')) || (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width) || 0) : 0; };
+        return draw(good).then(function () {
+          // A left-to-right flowchart that doesn't fit the column (it would shrink below 80%) is
+          // redrawn top-to-bottom, at any screen width. View time only; data-src is unchanged.
+          var retry = good.filter(function (n) {
+            if (n.getAttribute('data-turned') || !n.querySelector('svg') || isErrorSvg(n)) return false;
+            var w = natural(n); if (!w || !n.clientWidth || w <= n.clientWidth / 0.8) return false;
+            var src = n.getAttribute('data-src') || '', turned = turnFlow(src);
+            if (turned === src) return false;
+            n.removeAttribute('data-processed'); n.textContent = turned; n.setAttribute('data-turned', '1');
+            return true;
+          });
+          return retry.length ? draw(retry) : null;
+        }).then(function () {
           good.forEach(function (n) {
             if (!n.querySelector('svg') || isErrorSvg(n)) { mermaidFail(n); return; }
             n.classList.add('mermaid-drawn');
             // The svg sits in its own scroller so the Expand button stays put. A diagram that would
-            // shrink below ~65% of its drawn size keeps its size and scrolls sideways inside its
-            // frame (the page never does); Expand shows it whole.
-            var svg = n.querySelector('svg'), w = parseFloat(svg.getAttribute('width')) || (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width) || 0;
+            // still shrink below ~65% of its drawn size keeps its size and scrolls sideways inside
+            // its frame (the page never does); Expand shows it whole.
+            var svg = n.querySelector('svg'), w = natural(n);
             var sc = el('div', 'diagram-scroll'); n.insertBefore(sc, svg); sc.appendChild(svg);
             if (w && n.clientWidth && w > n.clientWidth / 0.65) n.classList.add('diagram-wide');
             diagramExpand(n);

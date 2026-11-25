@@ -1295,6 +1295,14 @@ async function runInlineDiagrams(ctx, ok) {
     '  ' + Array.from({ length: 14 }, (_, i) => `N${i}["第 ${i + 1} 步：处理数据"]`).join(' --> '),
     '```',
     '',
+    '很多参与方的时序图：',
+    '',
+    '```mermaid',
+    'sequenceDiagram',
+    '  ' + Array.from({ length: 11 }, (_, i) => `participant P${i} as 参与方${i + 1}`).join('\n  '),
+    '  ' + Array.from({ length: 10 }, (_, i) => `P${i}->>P${i + 1}: 第 ${i + 1} 次交接`).join('\n  '),
+    '```',
+    '',
     '结尾段落。',
   ].join('\n');
   const { id } = await seedPaste(ctx.serverUrl, md, { cookie: ctx.ownerCookie });
@@ -1308,12 +1316,14 @@ async function runInlineDiagrams(ctx, ok) {
       wide: n.classList.contains('diagram-wide'), expand: !!n.querySelector('.diagram-expand'),
       fill: (() => { const r = n.querySelector('svg .node rect, svg .node polygon, svg rect.actor'); return r ? getComputedStyle(r).fill : null; })(),
     })));
-    ok(d.length === 4 && d[0].drawn && d[0].svg && d[1].drawn && d[1].svg && d[3].drawn, 'flowchart, sequence diagram and a wide flowchart are drawn inside the document');
+    ok(d.length === 5 && d[0].drawn && d[0].svg && d[1].drawn && d[1].svg && d[3].drawn && d[4].drawn, 'flowcharts and sequence diagrams are drawn inside the document');
+    const fit = await page.evaluate(() => [...document.querySelectorAll('#content .mermaid')].map((n) => { const svg = n.querySelector('svg'); return { turned: n.getAttribute('data-turned') === '1', fits: !!svg && svg.getBoundingClientRect().width <= n.clientWidth + 1, scale: svg ? svg.getBoundingClientRect().width / (parseFloat(svg.getAttribute('width')) || 1) : 0 }; }));
+    ok(fit[3].turned && fit[3].fits && fit[3].scale > 0.79 && !fit[0].turned, `on a desktop a flowchart too wide for the column is redrawn top-to-bottom and fits; one that fits stays left-to-right (${JSON.stringify(fit)})`);
     ok(d[2].failed && !d[2].svg && !d[2].bomb && d[2].text.includes('flowchart LR'), `a diagram that can't be parsed shows its source, never the "Syntax error" picture (${JSON.stringify(d[2])})`);
     ok(d[0].fill === 'rgb(255, 253, 249)', `diagrams use the page's colours (node fill ${d[0].fill})`);
     ok(d[0].expand && d[1].expand && d[3].expand && !d[2].expand, 'every drawn diagram has an Expand button; the failed one does not');
-    const wideFacts = await page.evaluate(() => { const n = document.querySelectorAll('#content .mermaid')[3]; const sc = n.querySelector('.diagram-scroll'); const b = n.querySelector('.diagram-expand').getBoundingClientRect(); const r = n.getBoundingClientRect(); return { wide: n.classList.contains('diagram-wide'), scrolls: sc.scrollWidth > sc.clientWidth, buttonIn: b.right <= r.right && b.top >= r.top }; });
-    ok(wideFacts.wide && wideFacts.scrolls && wideFacts.buttonIn, `a very wide diagram keeps its size and scrolls inside its frame, button in place (${JSON.stringify(wideFacts)})`);
+    const wideFacts = await page.evaluate(() => { const n = document.querySelectorAll('#content .mermaid')[4]; const sc = n.querySelector('.diagram-scroll'); const b = n.querySelector('.diagram-expand').getBoundingClientRect(); const r = n.getBoundingClientRect(); return { wide: n.classList.contains('diagram-wide'), scrolls: sc.scrollWidth > sc.clientWidth, buttonIn: b.right <= r.right && b.top >= r.top }; });
+    ok(wideFacts.wide && wideFacts.scrolls && wideFacts.buttonIn, `a very wide diagram that can't be turned (sequence) keeps its size and scrolls inside its frame, button in place (${JSON.stringify(wideFacts)})`);
     ok(await page.evaluate(() => [...document.querySelectorAll('.diagram-expand')].every((b) => b.textContent === '' && b.getAttribute('aria-label'))), 'the Expand button adds no readable text (icon + aria-label only)');
     const label = await page.evaluate(() => [...document.querySelectorAll('#content .mermaid svg')][0].textContent);
     ok(label.includes('题目 (1,250 道)') && label.includes('裁判打分'), 'Chinese labels and quoted punctuation render');
@@ -1351,14 +1361,14 @@ async function runInlineDiagrams(ctx, ok) {
     await waitRendered(page); await settle(page);
     const m = await page.evaluate(() => {
       const ns = [...document.querySelectorAll('#content .mermaid')];
-      const wide = ns[3]; const svg = wide.querySelector('svg');
+      const wide = ns[4]; const svg = wide.querySelector('svg');
       const fs = parseFloat(getComputedStyle(svg.querySelector('.nodeLabel, text') || svg).fontSize) || 0;
       const scale = svg.getBoundingClientRect().width / (parseFloat(svg.getAttribute('width')) || svg.getBoundingClientRect().width);
       const first = ns[0]; const fsvg = first.querySelector('svg');
       return { overflow: document.documentElement.scrollWidth - innerWidth, turned: ns.map((n) => n.getAttribute('data-turned') === '1'), firstFits: fsvg.getBoundingClientRect().width <= first.clientWidth + 1, firstSrcKept: first.getAttribute('data-src').includes('flowchart LR'), scale, fs, frameRight: wide.getBoundingClientRect().right, expandRight: wide.querySelector('.diagram-expand').getBoundingClientRect().right };
     });
     ok(m.overflow <= 0, `the page never scrolls sideways on a phone (${m.overflow}px)`);
-    ok(m.turned[0] && m.turned[3] && !m.turned[1] && m.firstFits && m.firstSrcKept, `on a phone left-to-right flowcharts are drawn top-to-bottom and fit, stored source unchanged (${JSON.stringify(m)})`);
+    ok(m.turned[0] && m.turned[3] && !m.turned[1] && !m.turned[4] && m.firstFits && m.firstSrcKept, `on a phone left-to-right flowcharts are drawn top-to-bottom and fit, stored source unchanged (${JSON.stringify(m)})`);
     ok(m.scale > 0.95 && m.frameRight <= 390 && m.expandRight <= m.frameRight, 'diagrams are never shrunk below readable size and the Expand button stays inside the frame');
     await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-phone.png'), fullPage: true });
   }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' });
