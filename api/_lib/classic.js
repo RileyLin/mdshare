@@ -301,7 +301,7 @@ export const classicDocHtml = (content, title, id, authed = false, isPublic = fa
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.8/purify.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="/vendor/mermaid-11.17.2.min.js"></script>
   <script>
     const raw = ${jsonForScript(content)};
     const pasteId = ${jsonForScript(id)};
@@ -336,7 +336,9 @@ export const classicDocHtml = (content, title, id, authed = false, isPublic = fa
       startOnLoad: false,
       theme: (localStorage.getItem('mdshare-theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default')) === 'dark' ? 'dark' : 'default',
       themeVariables: { primaryColor: '#3b82f6', fontFamily: 'DM Sans, sans-serif' },
-      securityLevel: 'loose'
+      // 'strict' (never 'loose'): a document's diagram must not be able to run script through
+      // click/call directives on the owner's session (adversarial review 2026-11-25).
+      securityLevel: 'strict'
     });
     function renderMermaidBlocks(container) {
       container.querySelectorAll('pre code.language-mermaid').forEach((el, i) => {
@@ -346,7 +348,7 @@ export const classicDocHtml = (content, title, id, authed = false, isPublic = fa
         div.textContent = el.textContent;
         pre.replaceWith(div);
       });
-      mermaid.run({ nodes: container.querySelectorAll('.mermaid') });
+      Promise.resolve(mermaid.run({ nodes: container.querySelectorAll('.mermaid'), suppressErrors: true })).catch(() => {});
     }
     renderMermaidBlocks(document.getElementById('content'));
 

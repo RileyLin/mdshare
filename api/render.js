@@ -12,7 +12,7 @@ import { renderDiagram } from './_lib/diagram-page.js';
 import { versionInfo } from './_lib/activity.js';
 import { withErrors } from './_lib/events.js';
 
-const CLASSIC_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdnjs.cloudflare.com fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'self'";
+const CLASSIC_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline' cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' cdnjs.cloudflare.com fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'self'";
 
 // Version line (owner: "v3 · Previous version · What changed") and the newer-version banner
 // (owner, or a reader when the newer version is public). Outside #content, so the rendered document

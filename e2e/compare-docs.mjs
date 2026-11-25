@@ -49,11 +49,15 @@ try {
     page.on('pageerror', (e) => errors.push(e.message));
     const grab = (fresh) => page.evaluate((isNew) => {
       const c = document.getElementById('content').cloneNode(true);
+      // A diagram is a picture, not text: both readers draw it (the new one with vendored
+      // mermaid), so compare the number of diagrams, not the svg's text and inline styles.
+      const diagrams = c.querySelectorAll('.mermaid, pre > code.language-mermaid').length;
+      c.querySelectorAll('.mermaid, pre:has(> code.language-mermaid)').forEach((m) => m.replaceWith(document.createTextNode('[diagram]')));
       if (isNew) c.querySelectorAll('.doc-meta, .toc-mobile, .anchor, .code-head, .table-tools').forEach((e) => e.remove());
       const links = [...c.querySelectorAll('a[href]')].map((a) => a.getAttribute('href')).sort();
       return {
         text: c.textContent.replace(/\s+/g, '').replace(/[：:]/g, ''),
-        counts: [c.querySelectorAll('table').length, c.querySelectorAll('tr').length, c.querySelectorAll('pre').length, c.querySelectorAll('img').length, c.querySelectorAll('li').length],
+        counts: [diagrams, c.querySelectorAll('table').length, c.querySelectorAll('tr').length, c.querySelectorAll('pre').length, c.querySelectorAll('img').length, c.querySelectorAll('li').length],
         links,
         rules: isNew ? {
           summary: c.querySelectorAll('.md-summary').length, subheads: c.querySelectorAll('h4.md-sub').length, steps: c.querySelectorAll('ol.md-steps').length,

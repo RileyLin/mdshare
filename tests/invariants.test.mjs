@@ -127,6 +127,9 @@ test('invariant "mermaid-vendored" passes on the real public/ and fails when the
     ['baseline', () => {}, false],
     ['missing file', (d) => rmSync(join(d, 'public', 'vendor', readdirSync(join(d, 'public', 'vendor')).find((f) => f.startsWith('mermaid-')))), true],
     ['CDN url', (d) => appendFileSync(join(d, 'public', 'assets', 'render.js'), "\n// x\nvar back = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';\n"), true],
+    ['CDN url in a server template', (d) => edit(d, 'api/_lib/classic.js', (s) => s.replace('<script src="/vendor/mermaid-11.17.2.min.js"></script>', '<script src="https://unpkg.com/mermaid@11/dist/mermaid.min.js"></script>')), true],
+    ['loose security level', (d) => edit(d, 'api/_lib/classic.js', (s) => s.replace("securityLevel: 'strict'", "securityLevel: 'loose'")), true],
+    ['vendored path that does not exist', (d) => edit(d, 'api/_lib/classic.js', (s) => s.replace('/vendor/mermaid-11.17.2.min.js', '/vendor/mermaid-9.0.0.min.js')), true],
   ]) {
     const dir = copyWithPublic();
     try {

@@ -1333,6 +1333,19 @@ async function runInlineDiagrams(ctx, ok) {
     ok(darkFill === 'rgb(34, 29, 23)', `in dark mode diagrams are redrawn with dark colours (${darkFill})`);
   }, { viewport: { width: 1280, height: 900 } });
 
+  // A diagram can't run script, in the current reader or the classic one (?classic=1 used
+  // securityLevel 'loose' until the 2026-11-25 review proved a click/call line ran eval).
+  const evil = await seedPaste(ctx.serverUrl, '# Diagram script test\n\n```mermaid\nflowchart LR\n  A[Click me] --> B[Or me]\n  click A call eval("window.__pwned=1")\n  click B href "javascript:window.__pwned=2"\n```\n', { cookie: ctx.ownerCookie });
+  for (const view of ['', '?classic=1']) {
+    await withContext(ctx, async (context) => {
+      const page = await openOwner(ctx, context, `/v/${evil.id}${view}`);
+      await page.waitForSelector('.mermaid svg', { timeout: 20000 });
+      for (const label of ['Click me', 'Or me']) await page.locator('.mermaid svg').getByText(label).first().click({ timeout: 3000 }).catch(() => {});
+      await page.waitForTimeout(300);
+      ok(await page.evaluate(() => window.__pwned === undefined), `${view || 'reader'}: click/call/href lines in a diagram never run script`);
+    });
+  }
+
   await withContext(ctx, async (context) => {
     const page = await openOwner(ctx, context, `/v/${id}`);
     await waitRendered(page); await settle(page);

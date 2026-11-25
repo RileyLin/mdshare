@@ -272,15 +272,20 @@ const checks = [
   },
   {
     id: 'mermaid-vendored',
-    why: 'Diagrams must draw with the same pinned library in production, e2e and the preview tool; with a CDN URL the tests only ever ran a stub and missed the "Syntax error" picture (2026-11-25).',
+    why: 'Diagrams must draw with one pinned library in production, e2e and the preview tool, and never with a script-capable security level: with securityLevel "loose" a click/call line in a diagram ran script on the owner\'s session (adversarial review 2026-11-25).',
     run() {
       if (!exists('public/assets/render.js')) return [];
       const errs = [];
       const m = /MERMAID_SRC = '\/vendor\/(mermaid-\d+\.\d+\.\d+\.min\.js)'/.exec(read('public/assets/render.js'));
       if (!m) errs.push("public/assets/render.js: load mermaid from a pinned vendored file: var MERMAID_SRC = '/vendor/mermaid-<x.y.z>.min.js'.");
-      else if (!exists(`public/vendor/${m[1]}`)) errs.push(`public/assets/render.js: MERMAID_SRC points at public/vendor/${m[1]}, which does not exist. Download that exact version into public/vendor/.`);
-      for (const f of walk('public/assets', (p) => p.endsWith('.js'))) {
-        lines(f).forEach((l, i) => { if (/cdn\.jsdelivr\.net\/npm\/mermaid/.test(l)) errs.push(`${f}:${i + 1}: mermaid comes from public/vendor (MERMAID_SRC), not the CDN.`); });
+      const files = [...walk('api', (p) => /\.(js|mjs|html)$/.test(p)), ...walk('public', (p) => /\.(js|html)$/.test(p) && !p.startsWith('public/vendor/'))];
+      for (const f of files) {
+        lines(f).forEach((l, i) => {
+          if (/https?:\/\/[^'"\s)]*mermaid/i.test(l)) errs.push(`${f}:${i + 1}: mermaid must come from public/vendor, not a remote URL.`);
+          for (const v of l.matchAll(/\/vendor\/(mermaid-[\w.-]+\.js)/g)) if (!exists(`public/vendor/${v[1]}`)) errs.push(`${f}:${i + 1}: /vendor/${v[1]} does not exist in public/vendor/.`);
+          const lvl = /securityLevel\s*:\s*['"]?(\w+)/.exec(l);
+          if (lvl && lvl[1] !== 'strict') errs.push(`${f}:${i + 1}: mermaid securityLevel must be 'strict' (got '${lvl[1]}'); anything else lets a document run script.`);
+        });
       }
       return errs;
     },

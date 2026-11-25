@@ -59,7 +59,7 @@ export function scripts(list) {
   return list.map((k) => `<script src="${map[k]}"></script>`).join('\n');
 }
 
-export const CSP_PAGE = "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'";
+export const CSP_PAGE = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'";
 
 export function wordmark() {
   return '<a class="wordmark" href="/" aria-label="mdshare home"><i></i>mdshare</a>';
