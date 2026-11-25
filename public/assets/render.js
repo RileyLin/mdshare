@@ -445,36 +445,112 @@
     });
   }
 
+  // Mermaid: vendored (public/vendor, same bytes as the CDN build), loaded only when a page has a
+  // diagram. Every diagram is parsed first; one mermaid can't parse shows its source with a label
+  // instead of mermaid's "Syntax error" picture. Colours come from the page's CSS variables, so a
+  // diagram matches the warm paper theme in light and dark. Drawn diagrams get an icon-only Expand
+  // button (no text, so the readable text of the page is unchanged).
+  var MERMAID_SRC = '/vendor/mermaid-11.17.2.min.js';
   var mermaidLoading = null;
+  function cssVar(name, fallback) {
+    var v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return /^#[0-9a-f]{3,8}$/i.test(v) ? v : fallback;
+  }
+  function mermaidConfig() {
+    var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var card = cssVar('--card', dark ? '#221d17' : '#fffdf9'), ink = cssVar('--ink', dark ? '#efe8dc' : '#1f1b16');
+    var line = cssVar('--line-2', dark ? '#463d31' : '#d9d0c0'), muted = cssVar('--ink-3', dark ? '#988d7c' : '#857b6c');
+    var soft = cssVar('--accent-soft', dark ? '#3a2619' : '#f6e6dc'), accent = cssVar('--accent', dark ? '#e08a5a' : '#b4532a');
+    var paper2 = cssVar('--paper-2', dark ? '#1f1b15' : '#f1ece2');
+    return {
+      startOnLoad: false, securityLevel: 'strict', theme: 'base', darkMode: dark,
+      fontFamily: 'DM Sans, PingFang SC, Hiragino Sans GB, Noto Sans SC, sans-serif',
+      themeVariables: {
+        background: card, mainBkg: card, primaryColor: card, primaryTextColor: ink, primaryBorderColor: line,
+        secondaryColor: soft, secondaryBorderColor: accent, secondaryTextColor: ink,
+        tertiaryColor: paper2, tertiaryBorderColor: line, tertiaryTextColor: ink,
+        lineColor: muted, textColor: ink, nodeTextColor: ink, edgeLabelBackground: card, clusterBkg: paper2, clusterBorder: line,
+        noteBkgColor: cssVar('--warn-soft', dark ? '#2e2414' : '#fbefd9'), noteBorderColor: cssVar('--warn-line', dark ? '#4d3b1d' : '#efd5a6'), noteTextColor: ink,
+        actorBkg: card, actorBorder: line, actorTextColor: ink, signalColor: muted, signalTextColor: ink,
+        fontSize: '15px',
+      },
+      flowchart: { curve: 'basis', padding: 14, useMaxWidth: false }, sequence: { useMaxWidth: false }, gantt: { useMaxWidth: false },
+    };
+  }
+  function mermaidFail(n) {
+    n.classList.remove('mermaid-drawn');
+    n.classList.add('mermaid-failed');
+    n.textContent = n.getAttribute('data-src') || n.textContent;
+  }
+  function isErrorSvg(n) {
+    return !!n.querySelector('svg[aria-roledescription="error"], .error-icon') || /Syntax error in text/.test(n.textContent || '');
+  }
+  function diagramExpand(n) {
+    if (n.querySelector('.diagram-expand')) return;
+    var b = el('button', 'diagram-expand'); b.type = 'button';
+    b.setAttribute('aria-label', 'Expand diagram'); b.title = 'Expand';
+    b.addEventListener('click', function () {
+      var svg = n.querySelector('svg'); if (!svg) return;
+      var ov = el('div', 'table-overlay diagram-overlay'); ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-label', 'Diagram');
+      var bar = el('div', 'to-bar'); var close = el('button', 'btn sm', 'Close'); close.type = 'button';
+      bar.appendChild(el('span', 'to-title', 'Diagram')); bar.appendChild(close);
+      var body = el('div', 'to-body diagram-canvas'); var copy = svg.cloneNode(true);
+      copy.removeAttribute('style'); copy.style.maxWidth = 'none';
+      body.appendChild(copy); ov.appendChild(bar); ov.appendChild(body); document.body.appendChild(ov);
+      var done = function () { ov.remove(); document.removeEventListener('keydown', onKey); b.focus(); };
+      var onKey = function (e) { if (e.key === 'Escape') done(); };
+      document.addEventListener('keydown', onKey);
+      close.addEventListener('click', done);
+      close.focus();
+    });
+    n.appendChild(b);
+  }
   function mermaidRun(root) {
-    var nodes = root.querySelectorAll('.mermaid:not([data-done])');
+    var nodes = Array.prototype.slice.call(root.querySelectorAll('.mermaid:not([data-done])'));
     if (!nodes.length) return;
     var go = function () {
-      var dark = document.documentElement.getAttribute('data-theme') === 'dark';
-      try {
-        window.mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'neutral', fontFamily: 'DM Sans, PingFang SC, sans-serif' });
-        nodes.forEach(function (n) { n.setAttribute('data-done', '1'); });
-        // mermaid.run rejects (with a plain object) on a diagram it can't parse. Catch it so a bad
-        // diagram never becomes an uncaught error, and show the source instead of a broken picture.
-        Promise.resolve(window.mermaid.run({ nodes: nodes, suppressErrors: true })).catch(function () {
-          nodes.forEach(function (n) {
-            if (n.querySelector('svg') && !/Syntax error|error-icon/i.test(n.innerHTML)) return;
-            n.classList.add('mermaid-failed');
-            n.textContent = n.getAttribute('data-src') || n.textContent;
+      var m = window.mermaid;
+      try { m.initialize(mermaidConfig()); } catch (e) { nodes.forEach(mermaidFail); return; }
+      nodes.forEach(function (n) { n.setAttribute('data-done', '1'); });
+      // On a phone a left-to-right flowchart is drawn top-to-bottom instead, so it fits the
+      // screen. View time only: data-src (what's stored, and what a failure shows) is unchanged.
+      var narrow = (root.clientWidth || innerWidth) < 600;
+      Promise.all(nodes.map(function (n) {
+        var src = n.getAttribute('data-src') || '';
+        if (narrow) {
+          var turned = src.replace(/^(\s*(?:%%[^\n]*\n\s*)*(?:flowchart|graph))[ \t]+(LR|RL)\b/, '$1 TD');
+          if (turned !== src) { n.textContent = turned; n.setAttribute('data-turned', '1'); src = turned; }
+        }
+        return Promise.resolve().then(function () { return m.parse(src, { suppressErrors: true }); })
+          .then(function (ok) { if (!ok) { mermaidFail(n); return null; } return n; }, function () { mermaidFail(n); return null; });
+      })).then(function (parsed) {
+        var good = parsed.filter(Boolean);
+        if (!good.length) return;
+        return Promise.resolve(m.run({ nodes: good, suppressErrors: true })).catch(function () { /* checked below */ }).then(function () {
+          good.forEach(function (n) {
+            if (!n.querySelector('svg') || isErrorSvg(n)) { mermaidFail(n); return; }
+            n.classList.add('mermaid-drawn');
+            // The svg sits in its own scroller so the Expand button stays put. A diagram that would
+            // shrink below ~65% of its drawn size keeps its size and scrolls sideways inside its
+            // frame (the page never does); Expand shows it whole.
+            var svg = n.querySelector('svg'), w = parseFloat(svg.getAttribute('width')) || (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width) || 0;
+            var sc = el('div', 'diagram-scroll'); n.insertBefore(sc, svg); sc.appendChild(svg);
+            if (w && n.clientWidth && w > n.clientWidth / 0.65) n.classList.add('diagram-wide');
+            diagramExpand(n);
           });
         });
-      } catch (e) { /* the source text stays visible */ }
+      }).catch(function () { nodes.forEach(function (n) { if (!n.classList.contains('mermaid-drawn')) mermaidFail(n); }); });
     };
     if (window.mermaid) return go();
     if (!mermaidLoading) {
       mermaidLoading = new Promise(function (resolve) {
         var s = document.createElement('script');
-        s.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
+        s.src = MERMAID_SRC;
         s.onload = resolve; s.onerror = resolve;
         document.head.appendChild(s);
       });
     }
-    mermaidLoading.then(function () { if (window.mermaid) go(); });
+    mermaidLoading.then(function () { if (window.mermaid) go(); else nodes.forEach(mermaidFail); });
   }
 
   function slug(s, used) {

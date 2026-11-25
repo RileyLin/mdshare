@@ -801,12 +801,16 @@ async function runGuideAndLlms(ctx, ok) {
   await withContext(ctx, async (context) => {
     const page = await openAnon(ctx, context, '/guide');
     await page.waitForSelector('#content h1', { timeout: 5000 });
-    const r = await page.evaluate(() => ({ h1: document.querySelector('#content h1').textContent, stats: document.querySelectorAll('#content .md-stats').length, toc: document.querySelectorAll('#toc a').length, raw: [...document.querySelectorAll('#content > p')].some((p) => /^:::/.test(p.textContent)), mermaid: document.querySelectorAll('#content .mermaid[data-mermaid-stub="ran"]').length }));
+    const r = await page.evaluate(() => ({ h1: document.querySelector('#content h1').textContent, stats: document.querySelectorAll('#content .md-stats').length, toc: document.querySelectorAll('#toc a').length, raw: [...document.querySelectorAll('#content > p')].some((p) => /^:::/.test(p.textContent)) }));
     ok(r.h1 === 'Formatting guide' && r.stats === 1 && r.toc > 6, `the guide renders through mdshare itself (${JSON.stringify(r)})`);
     const tocLabels = await page.$$eval('#toc a', (as) => as.map((a) => a.textContent));
     ok(!tocLabels.includes('Before') && !tocLabels.includes('First tab') && !tocLabels.includes('curl'), 'headings inside compare/cards/tabs blocks stay out of the contents');
     ok(!r.raw, 'every example in the guide renders (no stray ::: lines)');
-    ok(r.mermaid === 1, 'mermaid blocks are handed to mermaid (lazy-loaded)');
+    // Mermaid is vendored since 2026-11-25, so this is the real library, not the CDN stub: every
+    // diagram in the guide must actually draw.
+    await page.waitForFunction(() => [...document.querySelectorAll('#content .mermaid')].every((n) => n.classList.contains('mermaid-drawn') || n.classList.contains('mermaid-failed')), null, { timeout: 15000 }).catch(() => {});
+    const dg = await page.evaluate(() => ({ total: document.querySelectorAll('#content .mermaid').length, drawn: document.querySelectorAll('#content .mermaid.mermaid-drawn svg').length }));
+    ok(dg.total === 2 && dg.drawn === 2, `the guide's diagrams are drawn by the vendored mermaid (${dg.drawn}/${dg.total})`);
     await page.screenshot({ path: ctx.proofPath });
   });
 }
@@ -1230,20 +1234,121 @@ async function runVersions(ctx, ok) {
 }
 
 async function runPreviewTool(ctx, ok) {
-  const { spawnSync } = await import('node:child_process');
+  // Async spawn, not spawnSync: blocking this process for seconds lets the local server close
+  // idle keep-alive sockets, and the next feature's fetch() then fails on a dead socket.
+  const { spawn } = await import('node:child_process');
   const out = path.join(path.dirname(ctx.proofPath), 'preview');
-  const runPreview = (name) => {
-    const r = spawnSync(process.execPath, [path.join(E2E_DIR, 'preview.mjs'), path.join(FIXTURES, name), '--no-network', '--out', out, '--widths', '390,1280'], { encoding: 'utf8', env: process.env, timeout: 90000 });
-    let json = null; try { json = JSON.parse(r.stdout); } catch { /* reported below */ }
-    return { code: r.status, json, err: r.stderr };
-  };
-  const bad = runPreview('lint-broken.md');
+  const runPreview = (name) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(E2E_DIR, 'preview.mjs'), path.join(FIXTURES, name), '--out', out, '--widths', '390,1280'], { env: process.env });
+    let stdout = '', stderr = '';
+    const kill = setTimeout(() => child.kill('SIGKILL'), 90000);
+    child.stdout.on('data', (c) => { stdout += c; });
+    child.stderr.on('data', (c) => { stderr += c; });
+    child.on('close', (code) => { clearTimeout(kill); let json = null; try { json = JSON.parse(stdout); } catch { /* reported below */ } resolve({ code, json, err: stderr }); });
+  });
+  const bad = await runPreview('lint-broken.md');
   ok(bad.json && bad.code === 1 && bad.json.ok === false, `preview exits 1 and reports ok:false for a broken document${bad.json ? '' : ` (${bad.err.slice(0, 200)})`}`);
   ok(bad.json && bad.json.checks.warnings.some((w) => w.rule === 'unclosed-fence'), 'it includes the publish checks');
-  const good = runPreview('wide-tables.md');
+  const good = await runPreview('wide-tables.md');
   ok(good.json && good.json.widths.length === 2 && good.json.widths.every((w) => w.jsErrors.length === 0 && w.overflowPx <= 0 && fs.existsSync(w.screenshot)), 'a good document renders at both widths with no errors, no sideways scroll, and a screenshot each');
   ok(good.json && good.json.widths[0].tables.some((t) => t.view === 'cards') && good.json.widths[1].tables.every((t) => t.view !== undefined), 'it reports which layout each table chose (cards on a phone)');
   if (good.json) fs.copyFileSync(good.json.widths[0].screenshot, ctx.proofPath);
+}
+
+// ===== Inline diagrams (2026-11-25): real vendored mermaid inside regular documents =====
+async function runInlineDiagrams(ctx, ok) {
+  const md = [
+    '# 打分器怎么工作',
+    '',
+    '先看整体流程，再看每一步。',
+    '',
+    '```mermaid',
+    'flowchart LR',
+    '  Q["题目 (1,250 道)"] --> S[学生模型作答] --> J{裁判打分}',
+    '  J -- 高于平均 --> U[加强这种做法]',
+    '  J -- 低于平均 --> D[减弱这种做法]',
+    '  U --> S',
+    '  D --> S',
+    '```',
+    '',
+    '谁和谁交互：',
+    '',
+    '```mermaid',
+    'sequenceDiagram',
+    '  participant 工程师',
+    '  participant 训练平台',
+    '  工程师->>训练平台: 提交配方',
+    '  训练平台-->>工程师: 训练日志和分数',
+    '```',
+    '',
+    '一个写错的图：',
+    '',
+    '```mermaid',
+    'flowchart LR',
+    '  A[开始 --> --> B((',
+    '```',
+    '',
+    '一张很宽的图：',
+    '',
+    '```mermaid',
+    'flowchart LR',
+    '  ' + Array.from({ length: 14 }, (_, i) => `N${i}["第 ${i + 1} 步：处理数据"]`).join(' --> '),
+    '```',
+    '',
+    '结尾段落。',
+  ].join('\n');
+  const { id } = await seedPaste(ctx.serverUrl, md, { cookie: ctx.ownerCookie });
+  const settle = (page) => page.waitForFunction(() => [...document.querySelectorAll('#content .mermaid')].every((n) => n.classList.contains('mermaid-drawn') || n.classList.contains('mermaid-failed')), null, { timeout: 20000 });
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${id}`);
+    await waitRendered(page); await settle(page);
+    const d = await page.evaluate(() => [...document.querySelectorAll('#content .mermaid')].map((n) => ({
+      drawn: n.classList.contains('mermaid-drawn'), failed: n.classList.contains('mermaid-failed'), svg: !!n.querySelector('svg'),
+      bomb: !!n.querySelector('svg[aria-roledescription="error"]') || /Syntax error in text/.test(n.textContent), text: n.textContent.slice(0, 80),
+      wide: n.classList.contains('diagram-wide'), expand: !!n.querySelector('.diagram-expand'),
+      fill: (() => { const r = n.querySelector('svg .node rect, svg .node polygon, svg rect.actor'); return r ? getComputedStyle(r).fill : null; })(),
+    })));
+    ok(d.length === 4 && d[0].drawn && d[0].svg && d[1].drawn && d[1].svg && d[3].drawn, 'flowchart, sequence diagram and a wide flowchart are drawn inside the document');
+    ok(d[2].failed && !d[2].svg && !d[2].bomb && d[2].text.includes('flowchart LR'), `a diagram that can't be parsed shows its source, never the "Syntax error" picture (${JSON.stringify(d[2])})`);
+    ok(d[0].fill === 'rgb(255, 253, 249)', `diagrams use the page's colours (node fill ${d[0].fill})`);
+    ok(d[0].expand && d[1].expand && d[3].expand && !d[2].expand, 'every drawn diagram has an Expand button; the failed one does not');
+    const wideFacts = await page.evaluate(() => { const n = document.querySelectorAll('#content .mermaid')[3]; const sc = n.querySelector('.diagram-scroll'); const b = n.querySelector('.diagram-expand').getBoundingClientRect(); const r = n.getBoundingClientRect(); return { wide: n.classList.contains('diagram-wide'), scrolls: sc.scrollWidth > sc.clientWidth, buttonIn: b.right <= r.right && b.top >= r.top }; });
+    ok(wideFacts.wide && wideFacts.scrolls && wideFacts.buttonIn, `a very wide diagram keeps its size and scrolls inside its frame, button in place (${JSON.stringify(wideFacts)})`);
+    ok(await page.evaluate(() => [...document.querySelectorAll('.diagram-expand')].every((b) => b.textContent === '' && b.getAttribute('aria-label'))), 'the Expand button adds no readable text (icon + aria-label only)');
+    const label = await page.evaluate(() => [...document.querySelectorAll('#content .mermaid svg')][0].textContent);
+    ok(label.includes('题目 (1,250 道)') && label.includes('裁判打分'), 'Chinese labels and quoted punctuation render');
+    await page.evaluate(() => document.querySelectorAll('#content .mermaid')[0].scrollIntoView({ block: 'center' }));
+    await page.screenshot({ path: ctx.proofPath });
+    await page.click('#content .mermaid >> nth=0 >> .diagram-expand');
+    await page.waitForSelector('.diagram-overlay svg', { timeout: 3000 });
+    await page.waitForTimeout(300);
+    ok(await page.evaluate(() => { const o = document.querySelector('.diagram-overlay'); const r = o.getBoundingClientRect(); const svg = o.querySelector('svg').getBoundingClientRect(); return r.width === innerWidth && r.height === innerHeight && getComputedStyle(o).opacity === '1' && svg.width > 200; }), 'Expand opens a full-screen view of the diagram');
+    await page.keyboard.press('Escape');
+    ok(!(await page.$('.diagram-overlay')), 'Escape closes it');
+    // Dark theme redraws with dark colours.
+    await page.evaluate(() => { localStorage.setItem('mdshare-theme', 'dark'); });
+    await gotoResilient(page, `${ctx.serverUrl}/v/${id}`, { waitUntil: 'load' });
+    await waitRendered(page); await settle(page);
+    const darkFill = await page.evaluate(() => { const r = document.querySelector('#content .mermaid svg .node rect, #content .mermaid svg .node polygon'); return r ? getComputedStyle(r).fill : null; });
+    ok(darkFill === 'rgb(34, 29, 23)', `in dark mode diagrams are redrawn with dark colours (${darkFill})`);
+  }, { viewport: { width: 1280, height: 900 } });
+
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${id}`);
+    await waitRendered(page); await settle(page);
+    const m = await page.evaluate(() => {
+      const ns = [...document.querySelectorAll('#content .mermaid')];
+      const wide = ns[3]; const svg = wide.querySelector('svg');
+      const fs = parseFloat(getComputedStyle(svg.querySelector('.nodeLabel, text') || svg).fontSize) || 0;
+      const scale = svg.getBoundingClientRect().width / (parseFloat(svg.getAttribute('width')) || svg.getBoundingClientRect().width);
+      const first = ns[0]; const fsvg = first.querySelector('svg');
+      return { overflow: document.documentElement.scrollWidth - innerWidth, turned: ns.map((n) => n.getAttribute('data-turned') === '1'), firstFits: fsvg.getBoundingClientRect().width <= first.clientWidth + 1, firstSrcKept: first.getAttribute('data-src').includes('flowchart LR'), scale, fs, frameRight: wide.getBoundingClientRect().right, expandRight: wide.querySelector('.diagram-expand').getBoundingClientRect().right };
+    });
+    ok(m.overflow <= 0, `the page never scrolls sideways on a phone (${m.overflow}px)`);
+    ok(m.turned[0] && m.turned[3] && !m.turned[1] && m.firstFits && m.firstSrcKept, `on a phone left-to-right flowcharts are drawn top-to-bottom and fit, stored source unchanged (${JSON.stringify(m)})`);
+    ok(m.scale > 0.95 && m.frameRight <= 390 && m.expandRight <= m.frameRight, 'diagrams are never shrunk below readable size and the Expand button stays inside the frame');
+    await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-phone.png'), fullPage: true });
+  }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' });
 }
 
 const RUNNERS = {
@@ -1283,6 +1388,7 @@ const RUNNERS = {
   'feedback-loop': runFeedbackLoop,
   'versions': runVersions,
   'preview-tool': runPreviewTool,
+  'inline-diagrams': runInlineDiagrams,
 };
 
 async function main() {

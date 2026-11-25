@@ -508,5 +508,23 @@
       "no JS errors, no sideways scroll, screenshot per width",
       "reports the layout each table chose"
     ]
+  },
+  {
+    "id": "inline-diagrams",
+    "name": "Diagrams inside regular documents (vendored mermaid)",
+    "path": "/v/:id with ```mermaid",
+    "steps": [
+      "open a document with a flowchart, a sequence diagram, a broken diagram and a very wide flowchart",
+      "Expand a diagram, press Escape",
+      "switch to dark theme",
+      "open on a phone"
+    ],
+    "assertions": [
+      "valid diagrams are drawn by the real library in the page's colours",
+      "a broken diagram shows its source, never mermaid's error picture",
+      "drawn diagrams have an icon-only Expand button; full-screen view; Escape closes",
+      "dark theme redraws with dark colours",
+      "on a phone the page never scrolls sideways; a wide diagram keeps its size and scrolls in its frame"
+    ]
   }
 ]

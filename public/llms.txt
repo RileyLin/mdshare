@@ -62,8 +62,27 @@ Answer feedback by revising the passage it quotes, not by rewriting the whole do
    :::table cards Optional caption      (options: cards | table | wide | compact; other words = caption)
    | ... table ... |
    :::
-6. Use fenced code blocks with a language (```bash, ```python). Mermaid diagrams: ```mermaid.
-7. Don't paste raw HTML; it is sanitised. Don't put the whole document in one code block.
+6. Use fenced code blocks with a language (```bash, ```python).
+7. Draw a diagram (```mermaid) whenever a picture says it faster than prose, right next to the
+   paragraph that explains it, the same way you'd use a table:
+   - a process or pipeline with 4+ steps, or with branches/loops      -> flowchart LR / TD
+   - who talks to whom, in what order (requests, handoffs, approvals) -> sequenceDiagram
+   - how parts connect (architecture, data flow, money flow)          -> flowchart with subgraph
+   - a timeline or plan                                               -> timeline or gantt
+   - a hierarchy or breakdown                                         -> mindmap or flowchart TD
+   Keep it to one idea and at most ~12 nodes; short labels (put the detail in the text); quote
+   labels that contain punctuation: A["Score (0-1)"]. Chinese labels are fine. The text should
+   still make sense without the picture. Diagrams use the page colours, scroll inside their frame
+   on a phone, and have an Expand button. One that doesn't parse shows its source and is reported
+   in "checks" when the type is wrong; preview locally to be sure it draws.
+   Example:
+   ```mermaid
+   flowchart LR
+     Q[Question] --> S[Search] --> R{Enough evidence?}
+     R -- no --> S
+     R -- yes --> W[Write answer]
+   ```
+8. Don't paste raw HTML; it is sanitised. Don't put the whole document in one code block.
 
 ## Extra blocks (optional; all degrade to readable text elsewhere)
 

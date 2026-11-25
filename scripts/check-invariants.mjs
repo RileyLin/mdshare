@@ -271,6 +271,21 @@ const checks = [
     },
   },
   {
+    id: 'mermaid-vendored',
+    why: 'Diagrams must draw with the same pinned library in production, e2e and the preview tool; with a CDN URL the tests only ever ran a stub and missed the "Syntax error" picture (2026-11-25).',
+    run() {
+      if (!exists('public/assets/render.js')) return [];
+      const errs = [];
+      const m = /MERMAID_SRC = '\/vendor\/(mermaid-\d+\.\d+\.\d+\.min\.js)'/.exec(read('public/assets/render.js'));
+      if (!m) errs.push("public/assets/render.js: load mermaid from a pinned vendored file: var MERMAID_SRC = '/vendor/mermaid-<x.y.z>.min.js'.");
+      else if (!exists(`public/vendor/${m[1]}`)) errs.push(`public/assets/render.js: MERMAID_SRC points at public/vendor/${m[1]}, which does not exist. Download that exact version into public/vendor/.`);
+      for (const f of walk('public/assets', (p) => p.endsWith('.js'))) {
+        lines(f).forEach((l, i) => { if (/cdn\.jsdelivr\.net\/npm\/mermaid/.test(l)) errs.push(`${f}:${i + 1}: mermaid comes from public/vendor (MERMAID_SRC), not the CDN.`); });
+      }
+      return errs;
+    },
+  },
+  {
     id: 'publish-checks',
     why: 'Agents rely on the create response telling them about a broken page before the reader sees it (2026-11-25).',
     run() {

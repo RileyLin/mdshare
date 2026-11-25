@@ -3,17 +3,15 @@
 // publishing it. Renders a local Markdown file through the real reader page (local stack + fake
 // Supabase, same code as production) at a phone and a desktop width and prints a JSON report:
 //
-//   node e2e/preview.mjs <file.md> [--out <dir>] [--widths 390,1280] [--no-network]
+//   node e2e/preview.mjs <file.md> [--out <dir>] [--widths 390,1280]
 //
 //   { ok, checks: <publish checks>, widths: [{ width, jsErrors, overflowPx, mermaid: {total,
 //     drawn, failed, checked}, tables: [{cols, view}], unknownBlocks, screenshot }] }
 //
 // ok is false when the publish checks warn, a script errors, the page scrolls sideways, or a
-// mermaid diagram fails to draw. Mermaid is fetched once with curl and cached outside the repo;
-// with --no-network (or no copy) diagrams are reported as checked:false, never as passing.
+// mermaid diagram fails to draw. Mermaid is vendored (public/vendor), so diagrams are really
+// drawn, offline, with the same library production serves.
 import { ensureNoProxyEnv } from './_proxy-guard.mjs';
-const OUTER_PROXY = process.env.__MDSHARE_PREVIEW_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || '';
-if (OUTER_PROXY && !process.env.__MDSHARE_PREVIEW_PROXY) process.env.__MDSHARE_PREVIEW_PROXY = OUTER_PROXY;
 await ensureNoProxyEnv();
 
 import fs from 'node:fs';
@@ -40,28 +38,13 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2));
 const file = args._[0];
 if (!file || !fs.existsSync(file)) {
-  console.error('Usage: node e2e/preview.mjs <file.md> [--out <dir>] [--widths 390,1280] [--no-network]');
+  console.error('Usage: node e2e/preview.mjs <file.md> [--out <dir>] [--widths 390,1280]');
   process.exit(2);
 }
 const markdown = fs.readFileSync(file, 'utf8');
 const outDir = path.resolve(String(args.out || path.join(process.env.TMPDIR || '/tmp', 'mdshare-preview')));
 fs.mkdirSync(outDir, { recursive: true });
 const widths = String(args.widths || '390,1280').split(',').map((w) => parseInt(w, 10)).filter((w) => w >= 280 && w <= 3840);
-const network = !args['no-network'];
-const proxy = process.env.__MDSHARE_PREVIEW_PROXY;
-
-// Mermaid comes from jsdelivr in production. Cache one copy outside the repo (fetched with curl,
-// which this machine's proxy handles better than headless Chromium) and serve it to the page.
-const MERMAID_URL = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
-const mermaidCache = path.join(process.env.HOME || '/tmp', '.cache', 'mdshare-preview', 'mermaid-11.min.js');
-if (network && !fs.existsSync(mermaidCache)) {
-  fs.mkdirSync(path.dirname(mermaidCache), { recursive: true });
-  const { spawnSync } = await import('node:child_process');
-  const r = spawnSync('curl', ['-sfL', '-m', '60', ...(proxy ? ['-x', proxy] : []), '-o', mermaidCache, MERMAID_URL], { stdio: 'ignore' });
-  if (r.status !== 0) fs.rmSync(mermaidCache, { force: true });
-}
-const mermaidJs = network && fs.existsSync(mermaidCache) ? fs.readFileSync(mermaidCache) : null;
-
 const sb = await startFakeSupabase({});
 const srv = await startServer({ root: path.resolve(path.join(E2E_DIR, '..')), supabaseUrl: sb.url });
 const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined, headless: true, args: ['--no-sandbox'] });
@@ -75,12 +58,8 @@ try {
 
   for (const width of widths) {
     const context = await browser.newContext({ viewport: { width, height: width < 600 ? 844 : 900 }, isMobile: width < 600, hasTouch: width < 600, reducedMotion: 'reduce', ignoreHTTPSErrors: true });
-    await context.route(/^https:\/\//, (r) => {
-      const u = r.request().url();
-      if (mermaidJs && /cdn\.jsdelivr\.net\/npm\/mermaid@11\//.test(u)) return r.fulfill({ status: 200, contentType: 'text/javascript', body: mermaidJs });
-      if (/^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(u)) return r.fulfill({ status: 200, body: '' });
-      return r.abort();
-    });
+    // Everything the page needs is same-origin; fonts are cosmetic.
+    await context.route(/^https:\/\//, (r) => (/^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(r.request().url()) ? r.fulfill({ status: 200, body: '' }) : r.abort()));
     await context.addCookies([cookie]);
     const jsErrors = [];
     const page = await context.newPage();
@@ -109,7 +88,7 @@ try {
     const shot = path.join(outDir, `${path.basename(file).replace(/\.[^.]+$/, '')}-${width}.png`);
     await page.screenshot({ path: shot, fullPage: true });
     const w = { width, jsErrors, ...facts, screenshot: shot };
-    if (jsErrors.length || facts.overflowPx > 0 || facts.mermaid.failed > 0 || facts.text === 0) report.ok = false;
+    if (jsErrors.length || facts.overflowPx > 0 || facts.mermaid.failed > 0 || !facts.mermaid.checked || facts.text === 0) report.ok = false;
     report.widths.push(w);
     await context.close();
   }

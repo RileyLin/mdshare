@@ -219,6 +219,19 @@ flowchart LR
   A[Write] --> B[Share privately] --> C[Publish and keep]
 ```
 
+Diagrams sit inside the document like a table: use one when a process, a flow between parts, an order of events or a plan is easier to see than to read. They take the page's colours (light and dark), scroll sideways inside their frame on a phone instead of shrinking to unreadable, and the **⤢** button opens a full-screen view. A diagram that can't be drawn shows its source with a note instead of an error picture.
+
+```mermaid
+sequenceDiagram
+  participant You
+  participant Agent
+  You->>Agent: Select a sentence, tap "Example"
+  Agent->>Agent: Revise only that passage
+  Agent-->>You: New version + link
+```
+
+Keep each diagram to one idea and about a dozen boxes, and keep labels short; put the explanation in the text around it. Labels with punctuation need quotes: `A["Score (0-1)"]`.
+
 ## Tables
 
 Plain Markdown tables need nothing extra. The reader measures every table:

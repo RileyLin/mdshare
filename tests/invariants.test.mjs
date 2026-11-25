@@ -119,3 +119,21 @@ test('invariant "version-reads-constant" fails when a new version stops storing 
     assert.match(r.out, /✗ version-reads-constant /, r.out);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// mermaid-vendored reads public/, which copyRepo() leaves out; copy it for these two cases.
+function copyWithPublic() { const dir = copyRepo(); cpSync(join(ROOT, 'public'), join(dir, 'public'), { recursive: true }); return dir; }
+test('invariant "mermaid-vendored" passes on the real public/ and fails when the vendored file is missing or a CDN URL returns', () => {
+  for (const [label, mutate, expectFail] of [
+    ['baseline', () => {}, false],
+    ['missing file', (d) => rmSync(join(d, 'public', 'vendor', readdirSync(join(d, 'public', 'vendor')).find((f) => f.startsWith('mermaid-')))), true],
+    ['CDN url', (d) => appendFileSync(join(d, 'public', 'assets', 'render.js'), "\n// x\nvar back = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';\n"), true],
+  ]) {
+    const dir = copyWithPublic();
+    try {
+      mutate(dir);
+      const r = run(dir);
+      if (expectFail) { assert.equal(r.code, 1, `${label}\n${r.out}`); assert.match(r.out, /✗ mermaid-vendored /, r.out); }
+      else assert.equal(r.code, 0, `${label}\n${r.out}`);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+});
