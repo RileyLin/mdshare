@@ -86,3 +86,18 @@ test('warnings are capped and never throw on odd input', () => {
   assert.ok(lintMarkdown('MEDIA:x\n'.repeat(200)).warnings.length <= 50);
   for (const v of [undefined, null, 42, '', '\n\n|', '```', ':::']) assert.doesNotThrow(() => lintMarkdown(v));
 });
+
+test('single-hyphen delimiter rows are tables too (marked renders them), so bad rows still warn', () => {
+  const r = lintMarkdown('# T\n\n| a | b |\n| - | - |\n| 1 | 2 | 3 |\n');
+  assert.equal(r.stats.tables, 1);
+  assert.ok(r.warnings.some((w) => w.rule === 'table-columns' && w.severity === 'warn' && w.line === 5), JSON.stringify(r.warnings));
+  const bare = lintMarkdown('# T\n\na | b\n- | -\n1 | 2\n');
+  assert.equal(bare.stats.tables, 1);
+  assert.equal(bare.ok, true, JSON.stringify(bare.warnings));
+});
+
+test('must not fire: a rule or a bullet under a line with a pipe is not a table', () => {
+  const r = lintMarkdown('# T\n\nuse a | b here\n---\n\nx | y\n- item\n');
+  assert.equal(r.stats.tables, 0, JSON.stringify(r));
+  assert.ok(!r.warnings.some((w) => w.rule === 'table-columns'));
+});

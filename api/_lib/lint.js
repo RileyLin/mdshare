@@ -32,7 +32,9 @@ export function tableCells(line) {
   return cells;
 }
 
-const isSeparator = (line) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line) && line.includes('-');
+// GFM (and marked) accept a single hyphen per delimiter cell (`| - | - |`); a pipe is required so a
+// plain `---` rule or a lone `-` bullet under a line that happens to contain `|` is not a table.
+const isSeparator = (line) => /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(line) && line.includes('-') && line.includes('|');
 const looksLikeRow = (line) => line.includes('|') && line.trim() !== '';
 
 function stripInlineCode(line) {
