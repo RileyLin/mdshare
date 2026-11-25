@@ -233,7 +233,7 @@ async function handler(req, res) {
       // `scopes` (added 2026-10-08, AGENT-SEARCH-PLAN.md) is optional. Omitted entirely ->
       // undefined is passed through to createToken(), which leaves the DB column at its default
       // (null) -> a legacy token, preserving every existing caller of this endpoint byte-for-byte.
-      // Present -> must be an array of at most 3 distinct strings, each one of ALLOWED_SCOPES;
+      // Present -> must be an array of at most ALLOWED_SCOPES.length distinct strings, each one of ALLOWED_SCOPES;
       // anything else is a 400 before any Supabase call, never silently dropped/ignored/clamped.
       let scopes;
       if (body.scopes !== undefined) {

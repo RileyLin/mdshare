@@ -54,12 +54,13 @@ export function isValidTokenId(id) {
   return typeof id === 'string' && TOKEN_ID_PATTERN.test(id);
 }
 
-// The only four scope strings a scoped token may ever be issued with. Enforced in api/auth.js
+// The only scope strings a scoped token may ever be issued with (activity:* added 2026-11-25 for
+// read receipts and feedback, api/doc.js). Enforced in api/auth.js
 // before createToken() is ever called (reject unknown values there, 400, before any Supabase
 // write) — this constant is exported so that validation and this module's own usage never drift
 // out of sync. documents:publish:any is intentionally separate from documents:publish (see the
 // comment above and api/pin.js) — it is never implied by it.
-export const ALLOWED_SCOPES = ['documents:read', 'documents:write', 'documents:publish', 'documents:publish:any'];
+export const ALLOWED_SCOPES = ['documents:read', 'documents:write', 'documents:publish', 'documents:publish:any', 'activity:read', 'activity:write'];
 
 // true only for a token row whose `scopes` column is literally null — i.e. every token that
 // existed before migration 006 ran, by construction (no backfill), plus any new token created by

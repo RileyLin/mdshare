@@ -201,7 +201,7 @@
   }
   function onLegacy() {
     var legacy = $('scope-legacy').checked;
-    ['scope-read', 'scope-write', 'scope-publish', 'scope-publish-any'].forEach(function (id) { $(id).disabled = legacy; });
+    ['scope-read', 'scope-write', 'scope-publish', 'scope-publish-any', 'scope-activity-read', 'scope-activity-write'].forEach(function (id) { $(id).disabled = legacy; });
     $('scope-row').style.opacity = legacy ? '0.45' : '1';
   }
   async function createToken() {
@@ -214,7 +214,7 @@
       var days = $('new-token-days').value;
       if (days === 'never') payload.never_expires = true; else payload.expires_in_days = Number(days);
       if (!$('scope-legacy').checked) {
-        payload.scopes = [['documents:read', 'scope-read'], ['documents:write', 'scope-write'], ['documents:publish', 'scope-publish'], ['documents:publish:any', 'scope-publish-any']]
+        payload.scopes = [['documents:read', 'scope-read'], ['documents:write', 'scope-write'], ['documents:publish', 'scope-publish'], ['documents:publish:any', 'scope-publish-any'], ['activity:read', 'scope-activity-read'], ['activity:write', 'scope-activity-write']]
           .filter(function (x) { return $(x[1]).checked; }).map(function (x) { return x[0]; });
       }
       var data = await api('/api/auth', json('POST', payload));
@@ -222,7 +222,7 @@
       $('new-token-value').textContent = data.token;
       $('new-token-reveal').hidden = false;
       $('new-token-name').value = '';
-      $('scope-legacy').checked = false; $('scope-read').checked = true; $('scope-write').checked = false; $('scope-publish').checked = false; $('scope-publish-any').checked = false; onLegacy();
+      $('scope-legacy').checked = false; $('scope-read').checked = true; $('scope-write').checked = false; $('scope-publish').checked = false; $('scope-publish-any').checked = false; $('scope-activity-read').checked = false; $('scope-activity-write').checked = false; onLegacy();
       toast('Token created. Copy it now');
       loadTokens();
     } catch (e) { toast('Failed: ' + e.message, true); }

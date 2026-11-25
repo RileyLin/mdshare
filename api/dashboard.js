@@ -75,6 +75,8 @@ const SETTINGS = `<main class="page" id="settings">
           <label class="check"><input type="checkbox" id="scope-read" checked> <span><code class="inline">documents:read</code> read the library</span></label>
           <label class="check"><input type="checkbox" id="scope-write"> <span><code class="inline">documents:write</code> publish</span></label>
           <label class="check"><input type="checkbox" id="scope-publish"> <span><code class="inline">documents:publish</code> share its own docs</span></label>
+          <label class="check" title="Read receipts and reader feedback (api/doc.js)."><input type="checkbox" id="scope-activity-read"> <span><code class="inline">activity:read</code> see reads + feedback</span></label>
+          <label class="check" title="Mark feedback resolved after revising."><input type="checkbox" id="scope-activity-write"> <span><code class="inline">activity:write</code> resolve feedback</span></label>
         </div>
         <details><summary>Advanced</summary>
           <div class="scopes" style="margin-top:10px">

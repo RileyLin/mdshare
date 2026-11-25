@@ -1,13 +1,12 @@
-// GET /d/:id — renders SVG diagram, with optional markdown writeup below. Private unless the
+// GET /d/:id (rewritten to /api/render?kind=diagram) — renders SVG diagram, with optional markdown writeup below. Private unless the
 // owner is authenticated or the row has is_public: true. Unauthenticated requests to a private id
 // get a same-URL login prompt instead of the diagram's title/content.
 // Rebuilt 2026-11-19 on the shared chrome (api/_lib/ui.js + /assets/app.js). The SVG travels as
 // JSON and is sanitised with DOMPurify before it touches the DOM (the old page inlined raw SVG into
 // the HTML first, so an embedded <script> could run before sanitising).
-import { checkAuthAndRefresh } from './auth.js';
-import { getRow, isVisible, isKept, setPrivacyHeaders, privateGateHtml } from './_lib/access.js';
-import { head, header, ownerControls, readerControls, toast, dataBlock, scripts, CSP_PAGE, notFoundPage, unavailablePage, esc } from './_lib/ui.js';
-import { withErrors } from './_lib/events.js';
+import { checkAuthAndRefresh } from '../auth.js';
+import { getRow, isVisible, isKept, setPrivacyHeaders, privateGateHtml } from './access.js';
+import { head, header, ownerControls, readerControls, toast, dataBlock, scripts, CSP_PAGE, notFoundPage, unavailablePage, esc } from './ui.js';
 
 function diagramPage({ id, row, owner }) {
   const title = row.title || 'Diagram';
@@ -33,7 +32,8 @@ ${scripts(['marked', 'purify', 'hljs', 'render', 'app'])}
 </body></html>`;
 }
 
-async function handler(req, res) {
+// Called by api/render.js for kind=diagram (merged 2026-11-25 to free a Vercel function slot).
+export async function renderDiagram(req, res) {
   const { id } = req.query;
   if (!id) return res.status(400).send('Missing id');
 
@@ -51,4 +51,3 @@ async function handler(req, res) {
   return res.status(200).send(diagramPage({ id, row, owner: authed && req.query.as !== 'reader' }));
 }
 
-export default withErrors('diagram-render', handler);

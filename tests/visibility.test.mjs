@@ -8,7 +8,8 @@ process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
 
 const { default: authHandler } = await import('../api/auth.js');
 const { default: renderHandler } = await import('../api/render.js');
-const { default: diagramRenderHandler } = await import('../api/diagram-render.js');
+// /d/:id is served by api/render.js with kind=diagram since 2026-11-25 (vercel.json rewrite).
+const diagramRenderHandler = (req, res) => renderHandler({ ...req, query: { ...req.query, kind: 'diagram' } }, res);
 const { default: archifyRenderHandler } = await import('../api/archify-render.js');
 const { default: shareHandler } = await import('../api/share.js');
 const { default: diagramHandler } = await import('../api/diagram.js');

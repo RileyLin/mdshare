@@ -1012,6 +1012,240 @@ async function runTableReadability(ctx, ok) {
   }, { viewport: { width: 1440, height: 900 } });
 }
 
+// ===== Reading loop (2026-11-25): publish checks, read receipts, feedback, versions, preview =====
+
+async function createAs(ctx, body, { cookie, bearer } = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (cookie) headers.cookie = cookie;
+  if (bearer) headers.Authorization = 'Bearer ' + bearer;
+  const r = await fetch(`${ctx.serverUrl}/api/share`, { method: 'POST', headers, body: JSON.stringify(body) });
+  return { status: r.status, json: await r.json().catch(() => null) };
+}
+const readRow = (ctx, id) => ctx.sb.tables.mdshare_reads.find((r) => r.doc_id === id);
+const contentText = (page) => page.evaluate(() => document.getElementById('content').textContent);
+
+async function runPublishChecks(ctx, ok) {
+  const broken = await createAs(ctx, { markdown: fixture('lint-broken.md'), keep: true });
+  const rules = (broken.json?.checks?.warnings || []).map((w) => w.rule);
+  ok(broken.status === 200 && broken.json.checks.ok === false, 'a broken document is still created, and the response says it has problems');
+  ok(['table-columns', 'unclosed-fence'].every((r) => rules.includes(r)), `the response names the problems with line numbers (${rules.join(', ')})`);
+  ok(broken.json.checks.warnings.every((w) => Number.isInteger(w.line) && w.message.length > 10), 'each problem has a line and a readable message');
+  ok(broken.json.kept === false && /agent token/.test(broken.json.keep_ignored || ''), 'anonymous keep:true is ignored and the response says why');
+  const clean = await createAs(ctx, { markdown: fixture('loop-doc.md') }, { cookie: ctx.ownerCookie });
+  ok(clean.json.checks.ok === true && clean.json.checks.stats.tables === 1 && clean.json.checks.stats.minutes >= 1, 'a clean document passes, with stats (tables, reading time)');
+  const llms = await (await fetch(`${ctx.serverUrl}/llms.txt`)).text();
+  ok(/checks/.test(llms) && /parent/.test(llms) && /\/api\/doc/.test(llms), 'the agent guide documents checks, versions and /api/doc');
+  await withContext(ctx, async (context) => { const p = await openOwner(ctx, context, `/v/${broken.json.id}`); await waitRendered(p); await p.screenshot({ path: ctx.proofPath }); });
+}
+
+async function runReadReceipts(ctx, ok) {
+  const { json: d } = await createAs(ctx, { markdown: fixture('loop-doc.md') }, { cookie: ctx.ownerCookie });
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${d.id}`);
+    await waitRendered(page);
+    await page.waitForTimeout(800);
+    let row = readRow(ctx, d.id);
+    ok(row && row.open_count === 1, 'opening a document as the owner records one open');
+    for (let i = 0; i < 4; i++) { await page.mouse.move(200 + i * 20, 300); await page.waitForTimeout(400); }
+    await page.evaluate(() => scrollTo(0, document.documentElement.scrollHeight));
+    await page.waitForTimeout(300);
+    await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); });
+    await page.waitForTimeout(600);
+    row = readRow(ctx, d.id);
+    ok(row && row.max_scroll >= 90, `scrolling to the end records the depth (max_scroll ${row && row.max_scroll})`);
+    ok(row && row.active_seconds >= 1, `time spent is recorded (active_seconds ${row && row.active_seconds})`);
+    ok(row && row.open_count === 1, 'leaving the page does not count as another open');
+    await page.screenshot({ path: ctx.proofPath });
+    await gotoResilient(page, `${ctx.serverUrl}/v/${d.id}`, { waitUntil: 'load' });
+    await page.waitForTimeout(800);
+    ok(readRow(ctx, d.id).open_count === 2, 'opening it again counts a second open');
+    const before = ctx.sb.tables.mdshare_reads.length;
+    await gotoResilient(page, `${ctx.serverUrl}/v/${d.id}?as=reader`, { waitUntil: 'load' });
+    await page.waitForTimeout(800);
+    ok(readRow(ctx, d.id).open_count === 2 && ctx.sb.tables.mdshare_reads.length === before, '"view as reader" is not recorded');
+  });
+  const reads = await ownerApi(ctx, 'GET', `/api/doc?action=reads&ids=${d.id}`);
+  ok(reads.status === 200 && reads.json.items[0].opened === true && reads.json.items[0].open_count === 2, 'GET /api/doc?action=reads reports the opens');
+  // A public document opened by a stranger records nothing.
+  await ownerApi(ctx, 'PATCH', '/api/pin', { id: d.id, kind: 'paste', is_public: true });
+  const { json: other } = await createAs(ctx, { markdown: '# Public\n\ntext' }, { cookie: ctx.ownerCookie });
+  await ownerApi(ctx, 'PATCH', '/api/pin', { id: other.id, kind: 'paste', is_public: true });
+  await withContext(ctx, async (context) => {
+    const page = await openAnon(ctx, context, `/v/${other.id}`);
+    await waitRendered(page); await page.waitForTimeout(800);
+    ok(!readRow(ctx, other.id), 'a stranger reading a public document is never recorded');
+    ok(await page.evaluate(() => !document.querySelector('script[src*="loop.js"]')), 'readers do not load the reading-loop script');
+  });
+  const unread = await ownerApi(ctx, 'GET', '/api/doc?action=reads&unread=1&days=1');
+  ok(unread.json.items.some((x) => x.id === other.id) && !unread.json.items.some((x) => x.id === d.id), 'unread lists documents the owner has not opened');
+}
+
+async function selectText(page, marker, length) {
+  return page.evaluate(({ marker, length }) => {
+    const walker = document.createTreeWalker(document.getElementById('content'), NodeFilter.SHOW_TEXT);
+    let n; while ((n = walker.nextNode())) { const i = n.textContent.indexOf(marker); if (i >= 0) { const r = document.createRange(); r.setStart(n, i); r.setEnd(n, Math.min(n.textContent.length, i + length)); const s = getSelection(); s.removeAllRanges(); s.addRange(r); return r.toString(); } }
+    return null;
+  }, { marker, length });
+}
+async function dragSelect(page, marker, chars) {
+  const box = await page.evaluate(({ marker, chars }) => {
+    const walker = document.createTreeWalker(document.getElementById('content'), NodeFilter.SHOW_TEXT);
+    let n; while ((n = walker.nextNode())) { const i = n.textContent.indexOf(marker); if (i >= 0) { n.parentElement.scrollIntoView({ block: 'center' }); const a = document.createRange(); a.setStart(n, i); a.setEnd(n, i + 1); const b = document.createRange(); b.setStart(n, i + chars - 1); b.setEnd(n, i + chars); const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect(); return { x1: ra.left + 1, y1: ra.top + ra.height / 2, x2: rb.right - 1, y2: rb.top + rb.height / 2 }; } }
+    return null;
+  }, { marker, chars });
+  await page.mouse.move(box.x1, box.y1); await page.mouse.down(); await page.mouse.move(box.x2, box.y2, { steps: 8 }); await page.mouse.up();
+  return page.evaluate(() => getSelection().toString());
+}
+const barOnScreen = (page) => page.evaluate(() => { const b = document.getElementById('fb-bar'); if (!b || b.hidden) return false; const r = b.getBoundingClientRect(); return r.width > 0 && r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight; });
+
+async function runFeedbackLoop(ctx, ok) {
+  const { json: d } = await createAs(ctx, { markdown: fixture('loop-doc.md'), origin: 'agent:main:telegram:group:-1' }, { cookie: ctx.ownerCookie });
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${d.id}`);
+    await waitRendered(page);
+    const textBefore = await contentText(page);
+    const quote = await dragSelect(page, 'LOOPMARK', 20);
+    await page.waitForTimeout(300);
+    ok(quote && quote.startsWith('LOOPMARK'), `dragging across text selects it ("${quote}")`);
+    ok(await barOnScreen(page), 'selecting text shows the feedback bar, fully on screen');
+    const labels = await page.$$eval('#fb-bar > button', (bs) => bs.map((b) => b.textContent));
+    ok(JSON.stringify(labels) === JSON.stringify(['举个例子', '没看懂', '这里不对', '展开讲', '写一句…']), `a Chinese document gets Chinese buttons (${labels.join(' / ')})`);
+    await page.screenshot({ path: ctx.proofPath });
+    await page.click('#fb-bar [data-kind="example"]');
+    await page.waitForFunction(() => document.getElementById('toast').classList.contains('show'), null, { timeout: 3000 });
+    ok((await page.textContent('#toast')).includes('已记下'), 'sending shows a confirmation');
+    const fb = ctx.sb.tables.mdshare_feedback.find((f) => f.doc_id === d.id);
+    ok(fb && fb.kind === 'example' && fb.status === 'open' && fb.quote === quote.replace(/\s+/g, ' ').trim(), 'the feedback is stored with the exact quote');
+    ok(fb && fb.context && fb.context.heading === '第一部分：背景' && fb.context.after.length > 0, `it carries the section heading and nearby text (heading "${fb && fb.context && fb.context.heading}")`);
+    ok(await page.evaluate(() => document.getElementById('fb-bar').hidden), 'the bar closes after sending');
+    await page.waitForFunction(() => !document.getElementById('fb-pill').hidden, null, { timeout: 3000 });
+    ok((await page.textContent('#fb-pill')).includes('1 待处理'), 'the feedback pill shows one open item');
+
+    // Note flow with typed text, then Escape on a fresh selection.
+    await selectText(page, '学生会钻空子', 6);
+    await page.waitForTimeout(300);
+    await page.click('#fb-bar [data-kind="note"]');
+    ok(await page.isVisible('#fb-bar textarea'), '"写一句…" opens a note box');
+    await page.fill('#fb-bar textarea', '这里换成客服退款的例子');
+    await page.click('#fb-bar button[type="submit"]');
+    await page.waitForTimeout(400);
+    const note = ctx.sb.tables.mdshare_feedback.find((f) => f.kind === 'note');
+    ok(note && note.note === '这里换成客服退款的例子' && note.quote === '学生会钻空子' && note.context.heading === '第三部分：风险', 'a note is stored with its text, quote and section');
+    await selectText(page, '打分器最难', 5); await page.waitForTimeout(300);
+    await page.keyboard.press('Escape');
+    ok(await page.evaluate(() => document.getElementById('fb-bar').hidden), 'Escape closes the bar');
+    await page.click('#fb-pill');
+    const panel = await page.textContent('#fb-panel');
+    ok(panel.includes('LOOPMARK') && panel.includes('这里换成客服退款的例子'), 'the panel lists this document\'s feedback');
+    ok((await contentText(page)) === textBefore, 'the rendered document text is unchanged by feedback (nothing inserted into #content)');
+    ok(ctx.sb.tables.mdshare_pastes.find((p) => p.id === d.id).content === fixture('loop-doc.md'), 'stored Markdown is unchanged');
+  }, { viewport: { width: 1280, height: 860 } });
+
+  // The agent side: list open feedback with the origin, resolve it into a new version.
+  const tok = (await ownerApi(ctx, 'POST', '/api/auth', { action: 'create_token', name: 'e2e-loop', scopes: ['documents:read', 'documents:write', 'activity:read', 'activity:write'], expires_in_days: 1 })).json.token;
+  const auth = { Authorization: 'Bearer ' + tok };
+  const open = await (await fetch(`${ctx.serverUrl}/api/doc?action=feedback&status=open`, { headers: auth })).json();
+  ok(open.items.length === 2 && open.items.every((f) => f.origin === 'agent:main:telegram:group:-1' && f.doc_id === d.id), 'an agent token lists open feedback with the document\'s origin');
+  const v2 = await createAs(ctx, { markdown: fixture('loop-doc.md').replace('学生会钻空子', '比如客服退款：学生会钻空子'), parent: d.id }, { bearer: tok });
+  const res = await (await fetch(`${ctx.serverUrl}/api/doc?action=resolve`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: open.items.map((f) => f.id), resolved_in: v2.json.id }) })).json();
+  ok(res.updated && res.updated.length === 2, 'the agent resolves both items into the new version');
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${d.id}`);
+    await waitRendered(page);
+    await page.waitForFunction(() => !document.getElementById('fb-pill').hidden, null, { timeout: 3000 });
+    ok(!(await page.textContent('#fb-pill')).includes('待处理'), 'once resolved, the pill no longer shows open items');
+    await page.click('#fb-pill');
+    ok(await page.$eval('#fb-panel', (p, id) => !!p.querySelector(`a[href="/v/${id}"]`), v2.json.id), 'each resolved item links to the version that fixed it');
+  });
+
+  // Phone: the bar fits on screen and the page doesn't scroll sideways.
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${d.id}`);
+    await waitRendered(page);
+    await page.evaluate(() => document.querySelector('#content h2:nth-of-type(2)').scrollIntoView({ block: 'center' }));
+    await selectText(page, '每一步取', 18); await page.waitForTimeout(300);
+    ok(await barOnScreen(page), 'on a phone the feedback bar stays fully on screen');
+    ok(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth <= 0), 'no sideways scroll on a phone');
+    await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-phone.png') });
+  }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+
+  // Readers never get the bar.
+  await ownerApi(ctx, 'PATCH', '/api/pin', { id: d.id, kind: 'paste', is_public: true });
+  await withContext(ctx, async (context) => {
+    const page = await openAnon(ctx, context, `/v/${d.id}`);
+    await waitRendered(page);
+    await selectText(page, 'LOOPMARK', 10); await page.waitForTimeout(300);
+    ok(await page.evaluate(() => !document.getElementById('fb-bar') && !document.getElementById('fb-pill')), 'a reader selecting text gets no feedback bar');
+  });
+  const anonPost = await fetch(`${ctx.serverUrl}/api/doc?action=feedback`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: d.id, kind: 'wrong', quote: 'spam' }) });
+  ok(anonPost.status === 401 && ctx.sb.tables.mdshare_feedback.length === 2, 'anonymous feedback is refused and nothing is stored');
+}
+
+async function runVersions(ctx, ok) {
+  const v1md = '# 版本测试\n\n' + '这是第一版的开头段落，用来测试版本对比的效果和中文界面。'.repeat(2) + '\n\n## 方法\n\n第一步：写题目。\n\n第二步：旧的说法，后来删掉。\n\n第三步：开始训练。\n';
+  const v2md = v1md.replace('第二步：旧的说法，后来删掉。', '第二步：新的说法，加了一个真实例子。\n\n例子：Harvey 的 57 条细则。');
+  const { json: v1 } = await createAs(ctx, { markdown: v1md }, { cookie: ctx.ownerCookie });
+  const { json: v2 } = await createAs(ctx, { markdown: v2md, parent: v1.id }, { cookie: ctx.ownerCookie });
+  ok(v2.parent === v1.id, 'creating with parent links the new version');
+  const anonLink = await createAs(ctx, { markdown: '# spoof', parent: v1.id });
+  ok(anonLink.status === 404, 'an anonymous create cannot attach itself as a newer version');
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${v1.id}`);
+    await waitRendered(page);
+    ok(await page.isVisible('#version-banner'), 'the old version shows a "newer version" banner');
+    ok((await page.getAttribute('#version-banner', 'href')) === `/v/${v2.id}` && (await page.textContent('#version-banner')).includes('这篇已有新版本'), 'it links to the newest version, in the document\'s language');
+    ok(await page.evaluate(() => !document.getElementById('content').contains(document.getElementById('version-banner'))), 'the banner sits outside the document body');
+    await page.click('#version-banner');
+    await page.waitForURL(`**/v/${v2.id}`);
+    await waitRendered(page);
+    ok((await page.textContent('#version-line')).includes('v2'), 'the new version says it is v2 and links back');
+    ok(!(await page.isVisible('#version-banner')), 'the newest version has no banner');
+    await page.click('#btn-diff');
+    await page.waitForSelector('#diff-body .d-add', { timeout: 5000 });
+    const adds = await page.$$eval('#diff-body .d-add', (e) => e.map((x) => x.textContent));
+    const dels = await page.$$eval('#diff-body .d-del', (e) => e.map((x) => x.textContent));
+    ok(adds.some((t) => t.includes('新的说法')) && adds.some((t) => t.includes('Harvey')), `"What changed" shows the added lines (${adds.length})`);
+    ok(dels.length === 1 && dels[0].includes('旧的说法'), 'and the removed line');
+    ok((await page.$$('#diff-body .d-ctx')).length >= 1 && (await page.$$('#diff-body .d-gap')).length >= 1, 'unchanged text is shown as context and long unchanged runs are folded');
+    await page.waitForTimeout(300);
+    ok(await page.evaluate(() => { const o = document.getElementById('diff-overlay'); const r = o.getBoundingClientRect(); return getComputedStyle(o).opacity === '1' && r.left === 0 && r.top === 0 && r.width === innerWidth && r.height === innerHeight; }), 'the comparison covers the whole page (opaque, full screen)');
+    await page.screenshot({ path: ctx.proofPath });
+    await page.keyboard.press('Escape');
+    ok(!(await page.$('#diff-overlay')), 'Escape closes the comparison');
+  }, { viewport: { width: 1280, height: 860 } });
+  await ownerApi(ctx, 'PATCH', '/api/pin', { id: v1.id, kind: 'paste', is_public: true });
+  await withContext(ctx, async (context) => {
+    const page = await openAnon(ctx, context, `/v/${v1.id}`);
+    await waitRendered(page);
+    ok(!(await page.$('#version-banner')) && !(await page.$('#version-line')), 'a reader is not told about a private newer version');
+  });
+  await ownerApi(ctx, 'PATCH', '/api/pin', { id: v2.id, kind: 'paste', is_public: true });
+  await withContext(ctx, async (context) => {
+    const page = await openAnon(ctx, context, `/v/${v1.id}`);
+    await waitRendered(page);
+    ok(await page.isVisible('#version-banner') && !(await page.$('#version-line')), 'once the new version is public, readers see the banner (but not the owner\'s version line)');
+  });
+  const chain = await ownerApi(ctx, 'GET', `/api/doc?action=versions&id=${v2.id}`);
+  ok(chain.status === 200 && chain.json.versions.map((v) => v.id).join() === [v1.id, v2.id].join(), 'GET /api/doc?action=versions returns the chain oldest first');
+}
+
+async function runPreviewTool(ctx, ok) {
+  const { spawnSync } = await import('node:child_process');
+  const out = path.join(path.dirname(ctx.proofPath), 'preview');
+  const runPreview = (name) => {
+    const r = spawnSync(process.execPath, [path.join(E2E_DIR, 'preview.mjs'), path.join(FIXTURES, name), '--no-network', '--out', out, '--widths', '390,1280'], { encoding: 'utf8', env: process.env, timeout: 90000 });
+    let json = null; try { json = JSON.parse(r.stdout); } catch { /* reported below */ }
+    return { code: r.status, json, err: r.stderr };
+  };
+  const bad = runPreview('lint-broken.md');
+  ok(bad.json && bad.code === 1 && bad.json.ok === false, `preview exits 1 and reports ok:false for a broken document${bad.json ? '' : ` (${bad.err.slice(0, 200)})`}`);
+  ok(bad.json && bad.json.checks.warnings.some((w) => w.rule === 'unclosed-fence'), 'it includes the publish checks');
+  const good = runPreview('wide-tables.md');
+  ok(good.json && good.json.widths.length === 2 && good.json.widths.every((w) => w.jsErrors.length === 0 && w.overflowPx <= 0 && fs.existsSync(w.screenshot)), 'a good document renders at both widths with no errors, no sideways scroll, and a screenshot each');
+  ok(good.json && good.json.widths[0].tables.some((t) => t.view === 'cards') && good.json.widths[1].tables.every((t) => t.view !== undefined), 'it reports which layout each table chose (cards on a phone)');
+  if (good.json) fs.copyFileSync(good.json.widths[0].screenshot, ctx.proofPath);
+}
+
 const RUNNERS = {
   'home-page': runHomePage,
   'create-paste-ui': runCreatePasteUi,
@@ -1044,6 +1278,11 @@ const RUNNERS = {
   'renderer-fuzz': runRendererFuzz,
   'ui-monkey': runUiMonkey,
   'table-readability': runTableReadability,
+  'publish-checks': runPublishChecks,
+  'read-receipts': runReadReceipts,
+  'feedback-loop': runFeedbackLoop,
+  'versions': runVersions,
+  'preview-tool': runPreviewTool,
 };
 
 async function main() {

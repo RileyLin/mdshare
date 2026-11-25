@@ -18,6 +18,8 @@
 //   mdshare-cli read <id> --kind paste|diagram|archify
 //   mdshare-cli create <kind> <file> [--ttl SECONDS] [--title TITLE]   (kind: paste|diagram|archify)
 //   mdshare-cli publish <id> --kind K --public true|false
+//   mdshare-cli create paste <file> --keep --parent ID --origin SESSION [--strict]
+//   mdshare-cli feedback [<doc id>] [--status S] | resolve <fb_id>... --in <id> | reads [ids] | versions <id>
 //
 // Token resolution (first match wins): MDSHARE_AGENT_TOKEN env var, then MDSHARE_AGENT_TOKEN_FILE
 // env var, then --token-file <path> flag, then DEFAULT_TOKEN_FILE (~/.mdshare/token, the file
@@ -234,11 +236,52 @@ async function cmdCreate(positional, flags) {
   if (kind === 'diagram') { body.svg = content; if (flags.title) body.title = flags.title; }
   if (kind === 'archify') fail('create for kind=archify requires html+kind+ir fields not expressible as a single file via this CLI; use the MCP tools or POST /api/archify directly');
   if (flags.ttl) body.ttl = Number(flags.ttl);
+  if (flags.keep) body.keep = true;
+  if (kind === 'paste' && typeof flags.parent === 'string') body.parent = flags.parent;
+  if (kind === 'paste' && typeof flags.origin === 'string') body.origin = flags.origin;
 
   const res = await fetch(`${BASE_URL}${path}`, { method: 'POST', headers: authHeaders(flags), body: JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) fail(`create failed (${res.status}): ${data.error || 'unknown error'}`);
   printJson(data);
+  // Publish checks (paste only): a one-line summary on stderr so a script sees problems even when
+  // it only parses stdout. --strict makes a "warn" a non-zero exit (the document still exists).
+  if (data.checks && Array.isArray(data.checks.warnings)) {
+    const warns = data.checks.warnings.filter((w) => w.severity === 'warn');
+    process.stderr.write(warns.length ? `checks: ${warns.length} problem(s): ${warns.map((w) => `line ${w.line} ${w.rule}`).join('; ')}\n` : 'checks: ok\n');
+    if (warns.length && flags.strict) fail('publish checks found problems (see "checks" above); fix and create again with --parent ' + data.id);
+  }
+  if (data.keep_ignored) process.stderr.write(`keep: ${data.keep_ignored}\n`);
+}
+
+// Reading loop (2026-11-25): GET/POST /api/doc. Needs activity:read / activity:write /
+// documents:read scopes on the token (see `login --scopes`).
+async function docApi(flags, method, query, body) {
+  const res = await fetch(`${BASE_URL}/api/doc?${new URLSearchParams(query).toString()}`, {
+    method, headers: authHeaders(flags), ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const data = res.status === 204 ? {} : await res.json().catch(() => ({}));
+  if (!res.ok) fail(`${query.action} failed (${res.status}): ${data.error || 'unknown error'}`);
+  return data;
+}
+async function cmdFeedback(positional, flags) {
+  const q = { action: 'feedback' };
+  if (positional[0]) q.id = positional[0];
+  if (typeof flags.status === 'string') q.status = flags.status;
+  else if (!positional[0]) q.status = 'open';
+  printJson(await docApi(flags, 'GET', q));
+}
+async function cmdResolve(positional, flags) {
+  if (!positional.length) fail('usage: mdshare-cli resolve <fb_id> [<fb_id> ...] [--in <new doc id>] [--status resolved|dismissed|open]');
+  printJson(await docApi(flags, 'POST', { action: 'resolve' }, { ids: positional, status: typeof flags.status === 'string' ? flags.status : 'resolved', resolved_in: typeof flags.in === 'string' ? flags.in : null }));
+}
+async function cmdReads(positional, flags) {
+  const q = positional.length ? { action: 'reads', ids: positional.join(',') } : { action: 'reads', unread: '1', days: String(flags.days || 7) };
+  printJson(await docApi(flags, 'GET', q));
+}
+async function cmdVersions(positional, flags) {
+  if (!positional[0]) fail('usage: mdshare-cli versions <id>');
+  printJson(await docApi(flags, 'GET', { action: 'versions', id: positional[0] }));
 }
 
 async function cmdPublish(positional, flags) {
@@ -271,6 +314,10 @@ async function main() {
     case 'read': return cmdRead(positional, flags);
     case 'create': return cmdCreate(positional, flags);
     case 'publish': return cmdPublish(positional, flags);
+    case 'feedback': return cmdFeedback(positional, flags);
+    case 'resolve': return cmdResolve(positional, flags);
+    case 'reads': return cmdReads(positional, flags);
+    case 'versions': return cmdVersions(positional, flags);
     default:
       process.stderr.write([
         'mdshare-cli — portable CLI for the mdshare agent API',
@@ -287,7 +334,12 @@ async function main() {
         '  search [--q TERM] [--kind paste|diagram|archify|all] [--limit N] [--offset N]',
         '  recent [--kind K] [--limit N] [--offset N]',
         '  read <id> --kind paste|diagram|archify',
-        '  create paste|diagram <file> [--ttl SECONDS] [--title TITLE]',
+        '  create paste|diagram <file> [--ttl SECONDS] [--title TITLE] [--keep]',
+        '        [--parent ID] [--origin SESSION] [--strict]   (prints publish checks to stderr)',
+        '  feedback [<doc id>] [--status open|resolved|dismissed]   (default: all open feedback)',
+        '  resolve <fb_id>... [--in <new doc id>] [--status resolved|dismissed|open]',
+        '  reads [<doc id>...] [--days N]   (no ids: documents the owner has not opened yet)',
+        '  versions <id>',
         '  publish <id> --kind K --public true|false',
         '',
         'Token: set MDSHARE_AGENT_TOKEN or MDSHARE_AGENT_TOKEN_FILE (env), or --token-file <path>.',
@@ -311,6 +363,6 @@ if (isDirectRun) {
 
 export {
   parseArgs, resolveToken, authHeaders, readHiddenPassword,
-  cmdLogin, cmdStatus, cmdSearch, cmdRead, cmdCreate, cmdPublish, main,
+  cmdLogin, cmdStatus, cmdSearch, cmdRead, cmdCreate, cmdPublish, cmdFeedback, cmdResolve, cmdReads, cmdVersions, main,
   DEFAULT_TOKEN_FILE, CliError,
 };

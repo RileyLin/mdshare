@@ -245,3 +245,11 @@ Or set it for the whole document with `tables: cards` (or `table`, `compact`, `a
 ## For agents
 
 Publish with `POST /api/share` and a JSON body `{"markdown": "...", "keep": true}`. Send `Authorization: Bearer <token>` to publish as yourself; `keep` is honoured for tokens and the owner. The plain-text version of this guide, written for models, is at [/llms.txt](/llms.txt).
+
+The create response includes `checks`: a list of problems the page will show (an unclosed code block or `:::` block, a table row with extra cells, a mermaid block that won't draw, a local file link). Fix them and publish again with `"parent": "<old id>"`; the old page then points readers to the new version, and the new one has **What changed**.
+
+## Reading and feedback
+
+When you (the owner) read a document, mdshare notes that you opened it and how far you got. Nobody else's reading is recorded.
+
+Select any text in a document and a small bar appears: **Example**, **Unclear**, **Wrong**, **Expand** or **Note…** (in Chinese documents: 举个例子, 没看懂, 这里不对, 展开讲, 写一句…). Your feedback goes to the agent that wrote the document, with the passage you selected. The **Feedback** button at the bottom left lists what you sent and links each item to the version that fixed it.

@@ -7,7 +7,7 @@
     },
     {
       "source": "/d/:id",
-      "destination": "/api/diagram-render?id=:id"
+      "destination": "/api/render?kind=diagram&id=:id"
     },
     {
       "source": "/raw/:id",

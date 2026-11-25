@@ -2,7 +2,7 @@
 // card, and message pages. Visual styles live in /assets/mdshare.css; behaviour in /assets/app.js.
 // Underscore directory: not a Vercel function.
 
-export const ASSET_V = '20261123';
+export const ASSET_V = '20261125';
 
 export function esc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -54,6 +54,7 @@ export function scripts(list) {
     render: `/assets/render.js?v=${ASSET_V}`,
     app: `/assets/app.js?v=${ASSET_V}`,
     library: `/assets/library.js?v=${ASSET_V}`,
+    loop: `/assets/loop.js?v=${ASSET_V}`,
   };
   return list.map((k) => `<script src="${map[k]}"></script>`).join('\n');
 }

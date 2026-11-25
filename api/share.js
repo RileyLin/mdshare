@@ -11,6 +11,8 @@ import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.
 import { randomBytes } from 'crypto';
 import { wantsKeep, expiryFields, baseUrl, FORMAT_GUIDE_PATH } from './_lib/content.js';
 import { withErrors } from './_lib/events.js';
+import { lintMarkdown } from './_lib/lint.js';
+import { canUseParent } from './_lib/activity.js';
 
 // --- Rate Limiting (in-memory, per Vercel serverless instance) ---
 // Vercel functions can be cold-started, so this is "best effort" rate limiting.
@@ -59,7 +61,7 @@ function extractTitle(markdown) {
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
-async function supabaseSet(id, content, ttlSeconds, createdByToken, keep) {
+async function supabaseSet(id, content, ttlSeconds, createdByToken, keep, links = {}) {
   const { expires_at: expiresAt, pinned } = expiryFields(ttlSeconds, keep);
   const title = extractTitle(content);
   const res = await fetch(`${SUPABASE_URL}/rest/v1/mdshare_pastes`, {
@@ -74,7 +76,8 @@ async function supabaseSet(id, content, ttlSeconds, createdByToken, keep) {
     // of anything a caller puts in the request body. Making it public requires the authenticated
     // PATCH /api/visibility endpoint. created_by_token is set only from a server-validated bearer
     // token (see handler below) — never read from the request body either.
-    body: JSON.stringify({ id, content, expires_at: expiresAt, pinned, title, is_public: false, created_by_token: createdByToken || null }),
+    // parent_id/origin come from the handler after canUseParent()/cleanOrigin() (migration 009).
+    body: JSON.stringify({ id, content, expires_at: expiresAt, pinned, title, is_public: false, created_by_token: createdByToken || null, parent_id: links.parentId || null, origin: links.origin || null }),
   });
   if (!res.ok) throw new Error(`Supabase insert failed: ${res.status}`);
 }
@@ -83,6 +86,12 @@ async function supabaseSet(id, content, ttlSeconds, createdByToken, keep) {
 // injection safety before this change. They intentionally do NOT add the strict nanoid-shaped
 // isValidId() check that the anonymous-facing GET path below uses, so a pre-existing owner-created
 // row with an unusual id (see tests/delete-flow.test.mjs) can still be managed.
+function cleanOrigin(v) {
+  if (typeof v !== 'string') return null;
+  const s = v.trim().slice(0, 200);
+  return /^[\w:.@/#+-]{1,200}$/.test(s) ? s : null;
+}
+
 async function supabaseDelete(id) {
   const res = await fetch(
     `${SUPABASE_URL}/rest/v1/mdshare_pastes?id=eq.${encodeURIComponent(id)}`,
@@ -181,10 +190,30 @@ async function handler(req, res) {
     const id = nanoid();
 
     const keep = wantsKeep(body, req, res, agentAuth);
-    await supabaseSet(id, markdown, ttl, agentAuth.valid ? agentAuth.id : null, keep);
+    const trusted = agentAuth.valid || checkAuthAndRefresh(req, res) === true;
+
+    // Versions: `parent` makes this document the next version of an existing one. Only the owner
+    // or a token that can read the parent may do it (canUseParent); otherwise 404, never a silent
+    // unlinked create, so an agent learns its revision did not link.
+    let parentId = null;
+    if (body?.parent != null) {
+      const p = await canUseParent(body.parent, req, res, agentAuth);
+      if (p.dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
+      if (!p.ok) return res.status(404).json({ error: 'parent not found, expired, or not readable with this credential', guide: `${baseUrl(req)}${FORMAT_GUIDE_PATH}` });
+      parentId = p.row.id;
+    }
+    // Where feedback on this document should be sent (an agent's session or chat id). Stored only
+    // for the owner or a valid token; anonymous creates can't plant routing data.
+    const origin = trusted ? cleanOrigin(body?.origin) : null;
+
+    await supabaseSet(id, markdown, ttl, agentAuth.valid ? agentAuth.id : null, keep, { parentId, origin });
 
     const base = baseUrl(req);
-    return res.status(200).json({ url: `${base}/v/${id}`, id, expires_in: keep ? null : ttl, kept: keep, format_guide: `${base}${FORMAT_GUIDE_PATH}` });
+    const out = { url: `${base}/v/${id}`, id, expires_in: keep ? null : ttl, kept: keep, format_guide: `${base}${FORMAT_GUIDE_PATH}`, checks: lintMarkdown(markdown) };
+    if (body?.keep === true && !keep) out.keep_ignored = 'keep:true needs the owner session or an agent token (Authorization: Bearer <token>); this document expires normally.';
+    if (parentId) out.parent = parentId;
+    if (origin) out.origin = origin;
+    return res.status(200).json(out);
   }
 
   if (req.method === 'PATCH') {

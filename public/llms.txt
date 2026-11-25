@@ -10,19 +10,44 @@ POST /api/share
 Content-Type: application/json
 Authorization: Bearer <token>        (optional; required for "keep")
 
-{"markdown": "<the document>", "keep": true, "ttl": 86400}
+{"markdown": "<the document>", "keep": true, "ttl": 86400, "parent": "<id>", "origin": "<where feedback goes>"}
 
 - markdown: required, max 100 KB.
 - keep: true = never expires. Honoured for a valid token or the signed-in owner; ignored otherwise.
   Use it for anything the user will want later (reports, plans, explanations). Skip it for scratch.
 - ttl: seconds until expiry when not kept (max 604800).
-Response: {"url", "id", "kept", "expires_in", "format_guide"}. Give the user the url.
+- parent: id of the document this one replaces (a revision). The old page then shows "a newer
+  version exists" and the new one gets "What changed". Needs the owner or a token that can read the
+  parent (documents:read, or it created the parent); otherwise 404 and nothing is created.
+- origin: your session or chat id (letters, digits, : . @ / # + - _; max 200). Stored only for a
+  token or the owner. Reader feedback on this document is listed with it, so it can be routed back.
+Response: {"url", "id", "kept", "expires_in", "format_guide", "checks", "parent"?, "origin"?,
+"keep_ignored"?}. Give the user the url. Read "checks" first: {"ok", "warnings": [{"rule",
+"severity": "warn"|"info", "line", "message"}], "stats": {"minutes", "tables", "maxColumns", ...}}.
+"warn" means the page will look broken (unclosed code block or :::block, a table row with extra
+cells, a mermaid block that won't draw, a redaction placeholder, a local file link). Fix and
+publish again with "parent" set to the broken id. "keep_ignored" explains a keep that didn't apply.
 
 Other endpoints: POST /api/diagram {"svg", "title", "markdown"?, "keep"?} -> /d/<id>;
 GET /raw/<id> returns stored Markdown (needs owner, public doc, or documents:read token);
 GET /api/pastes?q=<text> searches the library (documents:read token).
-Token scopes: documents:read, documents:write, documents:publish (own docs), documents:publish:any.
+Token scopes: documents:read, documents:write, documents:publish (own docs), documents:publish:any,
+activity:read (read receipts + feedback), activity:write (resolve feedback).
 To publish (make public): PATCH /api/pin {"id", "kind": "paste", "is_public": true, "keep": true}.
+
+## Reading loop: did they read it, what did they ask for
+
+The owner's opens and reader feedback are recorded; readers' (anyone else's) never are.
+GET  /api/doc?action=reads&unread=1&days=7   documents the owner hasn't opened yet (activity:read)
+GET  /api/doc?action=reads&ids=a,b          opens, last opened, max scroll %, active seconds
+GET  /api/doc?action=feedback&status=open   open feedback: {id, doc_id, doc_title, origin, kind,
+     quote, note, context: {heading, before, after}}. kind: example | unclear | wrong | expand | note
+     (the reader selected `quote` and asked for an example / said it's unclear / wrong / wants more /
+     wrote `note`).
+POST /api/doc?action=resolve {"ids": ["fb_..."], "status": "resolved", "resolved_in": "<new id>"}
+     after you publish the fix as a new version (activity:write).
+GET  /api/doc?action=versions&id=<id>        the version chain, oldest first (documents:read).
+Answer feedback by revising the passage it quotes, not by rewriting the whole document.
 
 ## How to write a document that reads well
 

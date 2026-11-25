@@ -58,7 +58,24 @@ const mutations = {
   'no-redacted-placeholders': (d) => appendFileSync(join(d, 'api', 'pin.js'), '\n// key: ' + '*'.repeat(3) + '\n'),
   'root-markdown': (d) => writeFileSync(join(d, 'NEW-PLAN.md'), '# plan\n'),
   'claude-md-size': (d) => appendFileSync(join(d, 'CLAUDE.md'), 'more prose\n'.repeat(100)),
+  // Reading loop (2026-11-25).
+  'activity-actions-auth': (d) => edit(d, 'api/doc.js', (s) => s.replace("auth: 'owner|activity:write', httpMethod: 'POST',", "httpMethod: 'POST',")),
+  'activity-writes-allowlist': (d) => edit(d, 'api/_lib/activity.js', (s) => s.replace("export const ACTIVITY_TABLES = ['mdshare_reads', 'mdshare_feedback'];", "export const ACTIVITY_TABLES = ['mdshare_reads', 'mdshare_feedback', 'mdshare_pastes'];")),
+  'version-parent-gated': (d) => edit(d, 'api/_lib/activity.js', (s) => s.replace("if (!row) return { ok: false };\n  if (checkAuthAndRefresh(req, res)) return { ok: true, row };", "if (!row) return { ok: false };\n  if (row.is_public === true) return { ok: true, row };\n  if (checkAuthAndRefresh(req, res)) return { ok: true, row };")),
+  'loop-owner-only': (d) => edit(d, 'api/_lib/diagram-page.js', (s) => s.replace("${scripts(['marked', 'purify', 'hljs', 'render', 'app'])}", "${scripts(['marked', 'purify', 'hljs', 'render', 'app', 'loop'])}")),
+  'publish-checks': (d) => edit(d, 'api/share.js', (s) => s.replace(', checks: lintMarkdown(markdown) }', ' }')),
 };
+
+// Second mutation for the write allowlist: a direct write from api/doc.js.
+test('invariant "activity-writes-allowlist" fails when api/doc.js writes directly', () => {
+  const dir = copyRepo();
+  try {
+    appendFileSync(join(dir, 'api', 'doc.js'), "\nconst sneak = () => fetch(process.env.SUPABASE_URL + '/rest/v1/mdshare_pastes', { method: 'PATCH' });\n");
+    const r = run(dir);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /✗ activity-writes-allowlist /, r.out);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 for (const [id, mutate] of Object.entries(mutations)) {
   test(`invariant "${id}" fails when broken`, () => {

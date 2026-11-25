@@ -11,7 +11,8 @@
 //   GET    /rest/v1/<table>?select=...&or=(expires_at.gt.<iso>,pinned.eq.true)
 //            &[or=(col.ilike.*term*,...)]&order=<col.dir[,col.dir]>&limit=N[&offset=N]
 //   POST   /rest/v1/<table>                      (insert; Prefer: return=minimal|representation)
-//   PATCH  /rest/v1/<table>?id=eq.<id>[&revoked_at=is.null]  (partial update)
+//   PATCH  /rest/v1/<table>?id=eq.<id>[&revoked_at=is.null]  (partial update; also doc_id=eq., id=in.())
+//   GET    ...&<col>=in.(a,b,c)  &<col>=gte.<iso>                (activity tables, migration 009)
 //   DELETE /rest/v1/<table>?id=eq.<id>
 //
 // Anything that doesn't match one of the above shapes gets a 501 naming the unmatched
@@ -19,17 +20,19 @@
 // silently-wrong response.
 import http from 'node:http';
 
-const KNOWN_TABLES = ['mdshare_pastes', 'mdshare_diagrams', 'mdshare_archify', 'mdshare_agent_tokens', 'mdshare_events'];
+const KNOWN_TABLES = ['mdshare_pastes', 'mdshare_diagrams', 'mdshare_archify', 'mdshare_agent_tokens', 'mdshare_events', 'mdshare_reads', 'mdshare_feedback'];
 
-// Column defaults mirroring migrations/001-007 *.sql. Only applied to a field the insert body did
+// Column defaults mirroring migrations/001-009 *.sql. Only applied to a field the insert body did
 // not already set (the app always sets most of these explicitly on create; this only covers what
 // a real Postgres DEFAULT would silently fill in).
 const TABLE_DEFAULTS = {
-  mdshare_pastes: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, title: null }),
+  mdshare_pastes: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, title: null, parent_id: null, origin: null }),
   mdshare_diagrams: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, markdown: null }),
   mdshare_archify: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, ir: null, markdown: null }),
   mdshare_agent_tokens: () => ({ created_at: new Date().toISOString(), revoked_at: null, last_used_at: null, scopes: null, expires_at: null }),
   mdshare_events: () => ({ created_at: new Date().toISOString(), detail: null, commit: null }),
+  mdshare_reads: () => ({ first_opened_at: new Date().toISOString(), last_opened_at: new Date().toISOString(), open_count: 0, max_scroll: 0, active_seconds: 0 }),
+  mdshare_feedback: () => ({ created_at: new Date().toISOString(), status: 'open', resolved_in: null, resolved_at: null, quote: null, note: null, context: null }),
 };
 
 class UnsupportedQueryError extends Error {}
@@ -100,6 +103,12 @@ function evalCondition(row, { col, op, val }) {
       return new Date(row[col]).getTime() <= new Date(val).getTime();
     case 'ilike':
       return row[col] != null && ilikePatternToRegExp(val).test(String(row[col]));
+    case 'in': {
+      // in.(a,b,c) — values never contain commas or parens here (validated ids only).
+      if (!val.startsWith('(') || !val.endsWith(')')) throw new UnsupportedQueryError(`malformed in.() list: ${val}`);
+      const list = val.slice(1, -1).split(',').filter(Boolean);
+      return list.some((v) => coerceEq(row[col], v));
+    }
     default:
       throw new UnsupportedQueryError(`unsupported filter operator "${op}" on column "${col}"`);
   }

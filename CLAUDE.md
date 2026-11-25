@@ -26,6 +26,8 @@ Migrations: additive only (checked). The agent may apply an additive migration w
 - `api/auth.js` — owner password login, signed 180-day session cookie, token management.
 - `api/health.js` + `api/_lib/events.js` — liveness/commit, client error intake, `withErrors()` (every handler must use it; checked).
 - `api/pin.js` — keep ("pin") / unkeep (fresh 7-day expiry) and the only `is_public` toggle (`keep: true` keeps in the same write).
+- `api/doc.js` + `api/_lib/activity.js` — reading loop: owner read receipts, select-text feedback, resolve, version chain (`public/assets/loop.js`, owner pages only). `api/_lib/lint.js` — publish checks returned by `POST /api/share`. `/d/:id` is `api/_lib/diagram-page.js` via `render.js?kind=diagram`.
+- `node e2e/preview.mjs <file.md>` — render a document like the reader will (390 + 1280 px): JSON report + screenshots. Use it before publishing anything long.
 - `api/_lib/ui.js` — page chrome for every server page (head, header, owner controls, sign-in card, 404s). `api/_lib/classic.js` is the pre-redesign reader behind `?classic=1`.
 - `public/assets/render.js` — the one Markdown renderer (reader, editor preview, home, guide, diagram notes): marked → DOMPurify → enhancement rules. `app.js` page behaviour, `library.js` Library/Settings, `mdshare.css` the design system. Libraries are vendored in `public/vendor/`.
 - Rendering rule: stored Markdown is never rewritten. Automatic formatting happens at view time and fires only on clear patterns; `e2e` has must-not-trigger fixtures and an old-vs-new text-equivalence check. Run `node e2e/compare-docs.mjs --dir <private docs>` before changing a rule.
@@ -33,7 +35,7 @@ Migrations: additive only (checked). The agent may apply an additive migration w
 - `docs/history/` — past plans, rollout notes and the previous long CLAUDE.md. Background only, not current rules.
 
 ## Enforced by checks — read the error message, don't re-explain here
-`npm run check` (`scripts/check-invariants.mjs`) fails on: more than 12 API functions (Vercel Hobby cap); broken or duplicate rewrites; destructive SQL in migrations; creation routes taking visibility from the request; content routes missing `isVisible`/`setPrivacyHeaders`; unencoded ids in PostgREST filters; `allow-same-origin` in an iframe sandbox; timers without `.unref()`; credential-like strings (the repo is public); stray root Markdown; CLAUDE.md over 90 lines / 7000 chars. `tests/invariants.test.mjs` proves each check fires.
+`npm run check` (`scripts/check-invariants.mjs`) fails on: more than 12 API functions (Vercel Hobby cap); broken or duplicate rewrites; destructive SQL in migrations; creation routes taking visibility from the request; content routes missing `isVisible`/`setPrivacyHeaders`; unencoded ids in PostgREST filters; `allow-same-origin` in an iframe sandbox; timers without `.unref()`; credential-like strings (the repo is public); stray root Markdown; CLAUDE.md over 90 lines / 7000 chars; `api/doc.js` actions without auth; activity writes outside `activityWrite`; versions without `canUseParent`; the loop script on non-owner pages; a create response without `checks`. `tests/invariants.test.mjs` proves each check fires.
 
 ## When you correct a mistake
 Don't add a paragraph here. In order of preference:

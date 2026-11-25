@@ -32,7 +32,8 @@ const apiTopLevel = () => readdirSync(join(ROOT, 'api')).filter((f) => f.endsWit
 const apiFiles = () => walk('api', (f) => f.endsWith('.js'));
 
 // Content routes: each one returns stored content and must gate it and keep it out of caches.
-const CONTENT_ROUTES = ['api/render.js', 'api/diagram-render.js', 'api/archify-render.js', 'api/share.js', 'api/diagram.js', 'api/archify.js'];
+// api/_lib/diagram-page.js is the /d/:id page, dispatched from api/render.js (kind=diagram) since 2026-11-25.
+const CONTENT_ROUTES = ['api/render.js', 'api/_lib/diagram-page.js', 'api/archify-render.js', 'api/share.js', 'api/diagram.js', 'api/archify.js'];
 const CREATE_ROUTES = ['api/share.js', 'api/diagram.js', 'api/archify.js'];
 
 const checks = [
@@ -154,6 +155,97 @@ const checks = [
         if (timers > unrefs) errs.push(`${f}: ${timers} setInterval() but ${unrefs} .unref() — keep the handle and call handle.unref?.() so serverless/test processes can exit.`);
       }
       return errs;
+    },
+  },
+  {
+    id: 'activity-actions-auth',
+    why: 'api/doc.js exposes reading-loop actions; an action added without an explicit auth rule would be reachable by anyone (2026-11-25).',
+    run() {
+      if (!exists('api/doc.js')) return [];
+      const src = read('api/doc.js');
+      const m = /const ACTIONS = \{\n([\s\S]*?)\n\};/.exec(src);
+      if (!m) return ['api/doc.js: keep the actions in one `const ACTIONS = { ... };` table so each one declares its auth.'];
+      const scopes = (/ALLOWED_SCOPES = \[([^\]]*)\]/.exec(read('api/_lib/agent-tokens.js')) || [null, ''])[1].match(/'[^']+'/g)?.map((x) => x.slice(1, -1)) || [];
+      const errs = [];
+      const entries = m[1].split(/\n(?= {2}[a-z]+: \{)/);
+      for (const e of entries) {
+        const name = (/^\s*([a-z]+): \{/.exec(e) || [])[1];
+        if (!name) continue;
+        const auth = /\bauth:\s*('[^']*'|\{[^}]*\})/.exec(e);
+        if (!auth) { errs.push(`api/doc.js: action "${name}" has no auth. Add auth: 'owner' or 'owner|<scope>' (or one per method).`); continue; }
+        for (const rule of auth[1].match(/'[^']*'/g) || []) {
+          const r = rule.slice(1, -1);
+          if (['POST', 'GET'].includes(r)) continue;
+          const [who, scope] = r.split('|');
+          if (who !== 'owner' || (scope !== undefined && !scopes.includes(scope))) errs.push(`api/doc.js: action "${name}" auth '${r}' must be 'owner' or 'owner|<one of ${scopes.join(', ')}>'.`);
+        }
+      }
+      if (!entries.some((e) => /^\s*[a-z]+: \{/.test(e))) errs.push('api/doc.js: ACTIONS table is empty or unparseable.');
+      return errs;
+    },
+  },
+  {
+    id: 'activity-writes-allowlist',
+    why: 'Feedback and read receipts must never change stored content or visibility: only api/_lib/activity.js writes, and only to the activity tables (2026-11-25).',
+    run() {
+      const errs = [];
+      if (exists('api/doc.js')) {
+        lines('api/doc.js').forEach((l, i) => {
+          if (isCommentLine(l)) return;
+          if (/\bfetch\(|method:\s*['"](POST|PATCH|PUT|DELETE)/.test(l)) errs.push(`api/doc.js:${i + 1}: write through api/_lib/activity.js (activityWrite), never fetch() directly: "${l.trim()}"`);
+        });
+      }
+      if (exists('api/_lib/activity.js')) {
+        const src = read('api/_lib/activity.js');
+        const list = (/ACTIVITY_TABLES = \[([^\]]*)\]/.exec(src) || [null, ''])[1];
+        if (!list || /mdshare_(pastes|diagrams|archify|agent_tokens|events)/.test(list)) errs.push(`api/_lib/activity.js: ACTIVITY_TABLES must list only activity tables (got [${list}]).`);
+        if (!/export async function activityWrite\(table[^)]*\) \{\n\s*if \(!ACTIVITY_TABLES\.includes\(table\)\) throw/.test(src)) errs.push('api/_lib/activity.js: activityWrite() must start by throwing for any table not in ACTIVITY_TABLES.');
+        const writes = src.split('\n').filter((l) => /^\s*method\s*[,:]/.test(l) && !isCommentLine(l)).length;
+        if (writes > 1) errs.push('api/_lib/activity.js: only activityWrite() may send a non-GET request.');
+      }
+      for (const f of apiFiles()) {
+        if (f === 'api/_lib/activity.js') continue;
+        lines(f).forEach((l, i) => {
+          if (!isCommentLine(l) && /rest\/v1\/mdshare_(reads|feedback)/.test(l)) errs.push(`${f}:${i + 1}: activity tables are only touched by api/_lib/activity.js.`);
+        });
+      }
+      return errs;
+    },
+  },
+  {
+    id: 'version-parent-gated',
+    why: 'A version link puts a "newer version" banner on another document; only the owner or a token that can read the parent may create one, never based on is_public (2026-11-25).',
+    run() {
+      const errs = [];
+      const share = read('api/share.js');
+      if (/parent_id:/.test(share) && !/await canUseParent\(/.test(share)) errs.push('api/share.js: stores parent_id without calling canUseParent() first.');
+      if (exists('api/_lib/activity.js')) {
+        const body = (/export async function canUseParent\([\s\S]*?\n\}/.exec(read('api/_lib/activity.js')) || [''])[0];
+        if (!body) errs.push('api/_lib/activity.js: canUseParent() is missing.');
+        else if (/is_public/.test(body)) errs.push('api/_lib/activity.js: canUseParent() must not grant access because a parent is public.');
+      }
+      return errs;
+    },
+  },
+  {
+    id: 'loop-owner-only',
+    why: 'The feedback/read-receipt script records the owner\'s reading; it must load only on owner pages (2026-11-25).',
+    run() {
+      const errs = [];
+      for (const f of apiFiles()) {
+        lines(f).forEach((l, i) => {
+          if (isCommentLine(l) || !/'loop'/.test(l)) return;
+          if (!(f === 'api/render.js' && /scripts\(owner \? \[[^\]]*'loop'[^\]]*\] : \[(?![^\]]*'loop')/.test(l))) errs.push(`${f}:${i + 1}: load the 'loop' script only as scripts(owner ? [..., 'loop'] : [...]) in api/render.js.`);
+        });
+      }
+      return errs;
+    },
+  },
+  {
+    id: 'publish-checks',
+    why: 'Agents rely on the create response telling them about a broken page before the reader sees it (2026-11-25).',
+    run() {
+      return /checks: lintMarkdown\(markdown\)/.test(read('api/share.js')) ? [] : ['api/share.js: the POST response must include `checks: lintMarkdown(markdown)`.'];
     },
   },
   {
