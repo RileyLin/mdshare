@@ -181,6 +181,11 @@ const checks = [
         }
       }
       if (!entries.some((e) => /^\s*[a-z]+: \{/.test(e))) errs.push('api/doc.js: ACTIONS table is empty or unparseable.');
+      // Every action has a run(); an entry the splitter can't see (computed or quoted key) would
+      // dodge the auth check above, so the counts must agree.
+      const named = entries.filter((e) => /^\s*[a-z]+: \{/.test(e)).length;
+      const runs = (m[1].match(/\basync run\(/g) || []).length;
+      if (runs !== named) errs.push(`api/doc.js: ACTIONS has ${runs} run() bodies but ${named} plain \`name: {\` entries. Write each action as a plain lowercase key at two-space indent so its auth is checked.`);
       return errs;
     },
   },
@@ -237,7 +242,31 @@ const checks = [
           if (isCommentLine(l) || !/'loop'/.test(l)) return;
           if (!(f === 'api/render.js' && /scripts\(owner \? \[[^\]]*'loop'[^\]]*\] : \[(?![^\]]*'loop')/.test(l))) errs.push(`${f}:${i + 1}: load the 'loop' script only as scripts(owner ? [..., 'loop'] : [...]) in api/render.js.`);
         });
+        // The asset path itself may appear only in the scripts() map in api/_lib/ui.js.
+        lines(f).forEach((l, i) => {
+          if (!isCommentLine(l) && /\bloop\.js\b/.test(l) && f !== 'api/_lib/ui.js') errs.push(`${f}:${i + 1}: don't reference loop.js directly; add 'loop' through scripts(owner ? [...] : [...]) in api/render.js.`);
+        });
       }
+      return errs;
+    },
+  },
+  {
+    id: 'version-reads-constant',
+    why: 'Version lookups once walked parent links one query per hop on every page view (adversarial review 2026-11-25); root_id/version_no make them one query.',
+    run() {
+      if (!exists('api/_lib/activity.js')) return [];
+      const src = read('api/_lib/activity.js');
+      const m = /\/\/ -{10} Versions -{10}([\s\S]*?)\/\/ -{10} /.exec(src);
+      if (!m) return ['api/_lib/activity.js: keep the version helpers in the "// ---------- Versions ----------" section.'];
+      const errs = [];
+      m[1].split('\n').forEach((l, i) => {
+        if (!isCommentLine(l) && /\b(for|while)\s*\(|\.(forEach|map|reduce)\([^)]*\bawait\b|\bawait\b[^;]*\b(for|while)\b/.test(l)) {
+          errs.push(`api/_lib/activity.js (Versions section, line ${i + 1}): no loops in version lookups ("${l.trim()}"). Query by root_id/version_no instead of walking parent links.`);
+        }
+      });
+      const selects = (m[1].match(/\bawait sbSelect\(/g) || []).length;
+      if (selects > 3) errs.push(`api/_lib/activity.js: the Versions section makes ${selects} sbSelect calls (max 3: page view 1, API 2).`);
+      if (!/root_id: links\.rootId/.test(read('api/share.js'))) errs.push('api/share.js: a new version must store root_id and version_no (versionFields(parentRow)).');
       return errs;
     },
   },

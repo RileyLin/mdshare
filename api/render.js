@@ -74,7 +74,7 @@ async function handler(req, res) {
   if (!id) return res.status(400).send('Missing id');
 
   setPrivacyHeaders(res);
-  const { row, dbError } = await getRow('mdshare_pastes', id, 'content,expires_at,is_public,pinned,created_at,parent_id');
+  const { row, dbError } = await getRow('mdshare_pastes', id, 'content,expires_at,is_public,pinned,created_at,parent_id,root_id,version_no');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
 
   if (dbError) return res.status(503).send(unavailablePage());

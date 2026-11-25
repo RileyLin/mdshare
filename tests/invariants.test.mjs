@@ -64,6 +64,7 @@ const mutations = {
   'version-parent-gated': (d) => edit(d, 'api/_lib/activity.js', (s) => s.replace("if (!row) return { ok: false };\n  if (checkAuthAndRefresh(req, res)) return { ok: true, row };", "if (!row) return { ok: false };\n  if (row.is_public === true) return { ok: true, row };\n  if (checkAuthAndRefresh(req, res)) return { ok: true, row };")),
   'loop-owner-only': (d) => edit(d, 'api/_lib/diagram-page.js', (s) => s.replace("${scripts(['marked', 'purify', 'hljs', 'render', 'app'])}", "${scripts(['marked', 'purify', 'hljs', 'render', 'app', 'loop'])}")),
   'publish-checks': (d) => edit(d, 'api/share.js', (s) => s.replace(', checks: lintMarkdown(markdown) }', ' }')),
+  'version-reads-constant': (d) => edit(d, 'api/_lib/activity.js', (s) => s.replace("  const mine = versionNoOf(row);", "  const mine = versionNoOf(row);\n  for (let cur = row && row.parent_id, k = 0; cur && k < 20; k++) cur = (await sbSelect('mdshare_pastes', `id=eq.${encodeURIComponent(cur)}&select=parent_id`))[0]?.parent_id;")),
 };
 
 // Second mutation for the write allowlist: a direct write from api/doc.js.
@@ -88,3 +89,33 @@ for (const [id, mutate] of Object.entries(mutations)) {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 }
+
+test('invariant "activity-actions-auth" fails when an action hides behind a quoted key', () => {
+  const dir = copyRepo();
+  try {
+    edit(dir, 'api/doc.js', (s) => s.replace('const ACTIONS = {\n', "const ACTIONS = {\n  'sneak': { httpMethod: 'GET', async run() { return [200, {}]; } },\n"));
+    const r = run(dir);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /✗ activity-actions-auth /, r.out);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('invariant "loop-owner-only" fails when a page links loop.js directly', () => {
+  const dir = copyRepo();
+  try {
+    edit(dir, 'api/_lib/diagram-page.js', (s) => s.replace('</body></html>', '<script src="/assets/loop.js"></script></body></html>'));
+    const r = run(dir);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /✗ loop-owner-only /, r.out);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('invariant "version-reads-constant" fails when a new version stops storing root_id', () => {
+  const dir = copyRepo();
+  try {
+    edit(dir, 'api/share.js', (s) => s.replace('root_id: links.rootId || null, ', ''));
+    const r = run(dir);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /✗ version-reads-constant /, r.out);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

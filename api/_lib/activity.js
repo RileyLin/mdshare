@@ -13,7 +13,6 @@ import { randomBytes } from 'crypto';
 export const ACTIVITY_TABLES = ['mdshare_reads', 'mdshare_feedback'];
 export const FEEDBACK_KINDS = ['example', 'unclear', 'wrong', 'expand', 'note'];
 export const FEEDBACK_STATUSES = ['open', 'resolved', 'dismissed'];
-const MAX_CHAIN = 20;
 
 function sbHeaders(extra) {
   const key = process.env.SUPABASE_SERVICE_KEY;
@@ -59,12 +58,28 @@ export function allowed(auth, req, res, agentAuth) {
 }
 
 // ---------- Versions ----------
+// Every version stores root_id (the first version's id) and version_no at write time
+// (migration 010), so reads cost one query per page view and two for the API, however long the
+// chain gets. The first version keeps root_id/version_no NULL (its own id, version 1). An earlier
+// build walked parent links one query per hop on every page view; the 2026-11-25 adversarial
+// review showed a 25-long chain turned one anonymous view into 21 sequential queries.
+// tests/reading-loop.test.mjs pins the query counts.
+export const MAX_VERSIONS = 100;
+const rootOf = (row, id) => (row && row.root_id) || id;
+const versionNoOf = (row) => (row && Number.isInteger(row.version_no) && row.version_no > 0 ? row.version_no : 1);
+const byVersion = (a, b) => versionNoOf(a) - versionNoOf(b) || String(a.created_at || '').localeCompare(String(b.created_at || ''));
+
+// root_id + version_no for a new version of parentRow (needs id, root_id, version_no).
+export function versionFields(parentRow) {
+  return { root_id: rootOf(parentRow, parentRow.id), version_no: versionNoOf(parentRow) + 1 };
+}
+
 // May this request create a new version of `parentId`? Only the owner, or an agent token that can
 // read the parent (documents:read, or it created the parent). Anonymous creates never can: a
 // stranger must not be able to attach a "newer version" banner to someone's document.
 export async function canUseParent(parentId, req, res, agentAuth) {
   if (typeof parentId !== 'string' || !isValidId(parentId)) return { ok: false };
-  const { row, dbError } = await getRow('mdshare_pastes', parentId, 'id,created_by_token,expires_at,pinned');
+  const { row, dbError } = await getRow('mdshare_pastes', parentId, 'id,created_by_token,expires_at,pinned,root_id,version_no');
   if (dbError) return { ok: false, dbError: true };
   if (!row) return { ok: false };
   if (checkAuthAndRefresh(req, res)) return { ok: true, row };
@@ -72,32 +87,20 @@ export async function canUseParent(parentId, req, res, agentAuth) {
   return { ok: false };
 }
 
-// Version facts for the reader page. Owner: parent id, version number, newest descendant. Reader:
-// only the newest descendant, and only when it is public. A DB error degrades to "no version
-// info" rather than breaking the page.
+// Version facts for the reader page. Owner: parent id, version number, newest later version.
+// Reader: only the newest later version, and only when it is public. One query. "Later" means a
+// higher version number in the same family, so a branch (two v2s of one v1) points at the newest
+// of them. A DB error degrades to "no version info" rather than breaking the page.
 export async function versionInfo(id, row, { owner }) {
-  const out = { parentId: row && row.parent_id ? row.parent_id : null, versionNo: null, newerId: null, newerTitle: null };
+  const mine = versionNoOf(row);
+  const out = { parentId: row && row.parent_id ? row.parent_id : null, versionNo: owner ? mine : null, newerId: null, newerTitle: null };
   try {
-    if (owner && out.parentId) {
-      let n = 1;
-      let cur = out.parentId;
-      while (cur && n < MAX_CHAIN && isValidId(cur)) {
-        const rows = await sbSelect('mdshare_pastes', `id=eq.${encodeURIComponent(cur)}&select=id,parent_id`);
-        n++;
-        cur = rows[0] ? rows[0].parent_id : null;
-      }
-      out.versionNo = n;
-    } else if (owner) {
-      out.versionNo = 1;
-    }
-    let cur = id;
-    let newest = null;
-    for (let k = 0; k < MAX_CHAIN; k++) {
-      const kids = (await sbSelect('mdshare_pastes', `parent_id=eq.${encodeURIComponent(cur)}&select=id,title,is_public,expires_at,pinned&order=created_at.desc&limit=5`)).filter(alive);
-      if (!kids.length) break;
-      newest = kids[0];
-      cur = newest.id;
-    }
+    const root = rootOf(row, id);
+    if (!isValidId(root)) return out;
+    const later = (await sbSelect('mdshare_pastes', `root_id=eq.${encodeURIComponent(root)}&version_no=gt.${mine}&select=id,title,is_public,expires_at,pinned,version_no,created_at&order=version_no.desc,created_at.desc&limit=10`))
+      .filter((r) => alive(r) && r.id !== id && versionNoOf(r) > mine)
+      .sort((a, b) => byVersion(b, a));
+    const newest = later[0];
     if (newest && (owner || newest.is_public === true)) {
       out.newerId = newest.id;
       out.newerTitle = newest.title || null;
@@ -108,27 +111,14 @@ export async function versionInfo(id, row, { owner }) {
   return out;
 }
 
-// Chain for the API: oldest → newest, at most MAX_CHAIN each way.
+// The whole family for the API, oldest first: one query for the row, one for the family.
 export async function versionChain(id) {
-  const up = [];
-  let cur = id;
-  for (let k = 0; k < MAX_CHAIN && cur && isValidId(cur); k++) {
-    const rows = await sbSelect('mdshare_pastes', `id=eq.${encodeURIComponent(cur)}&select=id,title,created_at,parent_id,expires_at,pinned`);
-    if (!rows[0]) break;
-    up.unshift(rows[0]);
-    cur = rows[0].parent_id;
-  }
-  if (!up.length) return null;
-  const down = [];
-  cur = id;
-  for (let k = 0; k < MAX_CHAIN; k++) {
-    const kids = (await sbSelect('mdshare_pastes', `parent_id=eq.${encodeURIComponent(cur)}&select=id,title,created_at,parent_id,expires_at,pinned&order=created_at.desc&limit=5`)).filter(alive);
-    if (!kids.length) break;
-    down.push(kids[0]);
-    cur = kids[0].id;
-  }
-  const shape = (r, i) => ({ id: r.id, title: r.title || null, created_at: r.created_at || null, version: i + 1, expired: !alive(r) });
-  return [...up, ...down].map(shape);
+  const self = await sbSelect('mdshare_pastes', `id=eq.${encodeURIComponent(id)}&select=id,root_id`);
+  if (!self[0]) return null;
+  const root = rootOf(self[0], id);
+  if (!isValidId(root)) return null;
+  const family = await sbSelect('mdshare_pastes', `or=${encodeURIComponent(`(id.eq.${root},root_id.eq.${root})`)}&select=id,title,created_at,parent_id,expires_at,pinned,version_no&limit=${MAX_VERSIONS}`);
+  return family.sort(byVersion).map((r) => ({ id: r.id, title: r.title || null, created_at: r.created_at || null, version: versionNoOf(r), parent: r.parent_id || null, expired: !alive(r) }));
 }
 
 // ---------- Read receipts (owner only; called by api/doc.js after the auth check) ----------

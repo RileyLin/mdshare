@@ -26,7 +26,7 @@ const KNOWN_TABLES = ['mdshare_pastes', 'mdshare_diagrams', 'mdshare_archify', '
 // not already set (the app always sets most of these explicitly on create; this only covers what
 // a real Postgres DEFAULT would silently fill in).
 const TABLE_DEFAULTS = {
-  mdshare_pastes: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, title: null, parent_id: null, origin: null }),
+  mdshare_pastes: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, title: null, parent_id: null, root_id: null, version_no: null, origin: null }),
   mdshare_diagrams: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, markdown: null }),
   mdshare_archify: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, ir: null, markdown: null }),
   mdshare_agent_tokens: () => ({ created_at: new Date().toISOString(), revoked_at: null, last_used_at: null, scopes: null, expires_at: null }),
@@ -85,6 +85,14 @@ function parseConditionString(cond) {
   return { col, op, val };
 }
 
+// Range filters: numbers compare as numbers (version_no=gt.2), everything else as timestamps.
+// A NULL column never satisfies a range filter, like SQL.
+function compareRange(fieldVal, rawVal) {
+  if (fieldVal === null || fieldVal === undefined) return NaN;
+  if (typeof fieldVal === 'number') return fieldVal - Number(rawVal);
+  return new Date(fieldVal).getTime() - new Date(rawVal).getTime();
+}
+
 function evalCondition(row, { col, op, val }) {
   switch (op) {
     case 'eq':
@@ -94,13 +102,13 @@ function evalCondition(row, { col, op, val }) {
     case 'is':
       return val === 'null' ? row[col] === null || row[col] === undefined : coerceEq(row[col], val);
     case 'gt':
-      return new Date(row[col]).getTime() > new Date(val).getTime();
+      return compareRange(row[col], val) > 0;
     case 'gte':
-      return new Date(row[col]).getTime() >= new Date(val).getTime();
+      return compareRange(row[col], val) >= 0;
     case 'lt':
-      return new Date(row[col]).getTime() < new Date(val).getTime();
+      return compareRange(row[col], val) < 0;
     case 'lte':
-      return new Date(row[col]).getTime() <= new Date(val).getTime();
+      return compareRange(row[col], val) <= 0;
     case 'ilike':
       return row[col] != null && ilikePatternToRegExp(val).test(String(row[col]));
     case 'in': {

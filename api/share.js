@@ -12,7 +12,7 @@ import { randomBytes } from 'crypto';
 import { wantsKeep, expiryFields, baseUrl, FORMAT_GUIDE_PATH } from './_lib/content.js';
 import { withErrors } from './_lib/events.js';
 import { lintMarkdown } from './_lib/lint.js';
-import { canUseParent } from './_lib/activity.js';
+import { canUseParent, versionFields } from './_lib/activity.js';
 
 // --- Rate Limiting (in-memory, per Vercel serverless instance) ---
 // Vercel functions can be cold-started, so this is "best effort" rate limiting.
@@ -76,8 +76,9 @@ async function supabaseSet(id, content, ttlSeconds, createdByToken, keep, links 
     // of anything a caller puts in the request body. Making it public requires the authenticated
     // PATCH /api/visibility endpoint. created_by_token is set only from a server-validated bearer
     // token (see handler below) — never read from the request body either.
-    // parent_id/origin come from the handler after canUseParent()/cleanOrigin() (migration 009).
-    body: JSON.stringify({ id, content, expires_at: expiresAt, pinned, title, is_public: false, created_by_token: createdByToken || null, parent_id: links.parentId || null, origin: links.origin || null }),
+    // parent_id/root_id/version_no/origin come from the handler after canUseParent()/cleanOrigin()
+    // (migrations 009, 010). root_id + version_no are stored so reads never walk the chain.
+    body: JSON.stringify({ id, content, expires_at: expiresAt, pinned, title, is_public: false, created_by_token: createdByToken || null, parent_id: links.parentId || null, root_id: links.rootId || null, version_no: links.versionNo || null, origin: links.origin || null }),
   });
   if (!res.ok) throw new Error(`Supabase insert failed: ${res.status}`);
 }
@@ -196,17 +197,19 @@ async function handler(req, res) {
     // or a token that can read the parent may do it (canUseParent); otherwise 404, never a silent
     // unlinked create, so an agent learns its revision did not link.
     let parentId = null;
+    let version = {};
     if (body?.parent != null) {
       const p = await canUseParent(body.parent, req, res, agentAuth);
       if (p.dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
       if (!p.ok) return res.status(404).json({ error: 'parent not found, expired, or not readable with this credential', guide: `${baseUrl(req)}${FORMAT_GUIDE_PATH}` });
       parentId = p.row.id;
+      version = versionFields(p.row);
     }
     // Where feedback on this document should be sent (an agent's session or chat id). Stored only
     // for the owner or a valid token; anonymous creates can't plant routing data.
     const origin = trusted ? cleanOrigin(body?.origin) : null;
 
-    await supabaseSet(id, markdown, ttl, agentAuth.valid ? agentAuth.id : null, keep, { parentId, origin });
+    await supabaseSet(id, markdown, ttl, agentAuth.valid ? agentAuth.id : null, keep, { parentId, rootId: version.root_id, versionNo: version.version_no, origin });
 
     const base = baseUrl(req);
     const out = { url: `${base}/v/${id}`, id, expires_in: keep ? null : ttl, kept: keep, format_guide: `${base}${FORMAT_GUIDE_PATH}`, checks: lintMarkdown(markdown) };

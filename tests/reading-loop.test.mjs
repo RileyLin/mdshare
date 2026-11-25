@@ -211,11 +211,15 @@ test('versions: owner and readers of the parent can link; anonymous never, even 
   const chain = await doc({ action: 'versions', id: owner.body.id }, { headers: { cookie: COOKIE } });
   assert.deepEqual(chain.body.versions.map((v) => v.version), [1, 2, 3]);
   assert.equal(chain.body.versions[0].id, parent);
+  const v3row = db.sb.tables.mdshare_pastes.find((p) => p.parent_id === owner.body.id);
+  assert.equal(v3row.root_id, parent, 'every version stores the first version as root_id');
+  assert.equal(v3row.version_no, 3, 'and its own number');
+  assert.equal(db.sb.tables.mdshare_pastes.find((p) => p.id === owner.body.id).version_no, 2);
 });
 
 test('reader page: owner sees version line and newer banner; a reader sees the banner only when the newer version is public', async () => {
   const v1 = await seedPaste({ is_public: true, content: '# 第一版\n\n' + '中文内容'.repeat(20) });
-  const v2 = await seedPaste({ parent_id: v1, is_public: false, title: 'Second' });
+  const v2 = await seedPaste({ parent_id: v1, root_id: v1, version_no: 2, is_public: false, title: 'Second' });
   const ownerV1 = await call(renderHandler, { query: { id: v1 }, headers: { cookie: COOKIE } });
   assert.match(ownerV1.body, /id="version-banner" href="\/v\/[^"]+"/);
   assert.match(ownerV1.body, /这篇已有新版本/, 'Chinese document gets a Chinese banner');
@@ -259,4 +263,44 @@ test('create: checks always present; origin only for trusted creators; ignored k
   assert.equal(bad.body.origin, undefined, 'origin with unsafe characters is dropped');
   const row = db.sb.tables.mdshare_pastes.find((p) => p.id === agent.body.id);
   assert.equal(row.is_public, false, 'still private by default');
+});
+
+// Adversarial review 2026-11-25, finding 1: version lookups used to walk the chain one query per
+// hop on every page view. They are now O(1); these counts are the contract.
+test('version lookups cost a fixed number of queries however long the chain is', async () => {
+  const N = 30;
+  const ids = [];
+  for (let i = 0; i < N; i++) {
+    const extra = i === 0 ? { is_public: true } : { is_public: true, parent_id: ids[i - 1], root_id: ids[0], version_no: i + 1 };
+    ids.push(await seedPaste(extra));
+  }
+  const count = async (fn) => { const before = db.calls.length; const r = await fn(); return { r, n: db.calls.length - before }; };
+
+  const anonOld = await count(() => call(renderHandler, { query: { id: ids[0] } }));
+  assert.equal(anonOld.r.statusCode, 200);
+  assert.match(anonOld.r.body, new RegExp(`href="/v/${ids[N - 1]}"`), 'the oldest version points at the newest');
+  assert.ok(anonOld.n <= 2, `anonymous page view of the oldest version: ${anonOld.n} queries (row + family)`);
+
+  const ownerMid = await count(() => call(renderHandler, { query: { id: ids[12] }, headers: { cookie: COOKIE } }));
+  assert.match(ownerMid.r.body, /v13/, 'owner sees the stored version number');
+  assert.ok(ownerMid.n <= 2, `owner page view in the middle of the chain: ${ownerMid.n} queries`);
+
+  const api = await count(() => doc({ action: 'versions', id: ids[12] }, { headers: { cookie: COOKIE } }));
+  assert.equal(api.r.body.versions.length, N);
+  assert.deepEqual(api.r.body.versions.map((v) => v.version), Array.from({ length: N }, (_, i) => i + 1));
+  assert.ok(api.n <= 3, `versions API: ${api.n} queries (token check aside: row + family)`);
+
+  const newest = await count(() => call(renderHandler, { query: { id: ids[N - 1] } }));
+  assert.doesNotMatch(newest.r.body, /version-banner/, 'the newest version has no banner');
+  assert.ok(newest.n <= 2);
+});
+
+test('a branch (two versions of one parent) points the old version at the newest of them', async () => {
+  const v1 = await seedPaste({ is_public: true });
+  await seedPaste({ parent_id: v1, root_id: v1, version_no: 2, is_public: true, created_at: '2026-01-01T00:00:00Z' });
+  const b = await seedPaste({ parent_id: v1, root_id: v1, version_no: 2, is_public: true, created_at: '2026-02-01T00:00:00Z' });
+  const expired = await seedPaste({ parent_id: b, root_id: v1, version_no: 3, is_public: true, expires_at: '2000-01-01T00:00:00Z' });
+  const page = await call(renderHandler, { query: { id: v1 } });
+  assert.match(page.body, new RegExp(`href="/v/${b}"`), 'newest live version wins; an expired v3 is skipped');
+  assert.doesNotMatch(page.body, new RegExp(expired));
 });
