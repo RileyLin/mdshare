@@ -19,8 +19,18 @@ export function expiryFields(ttlSeconds, keep) {
     : { expires_at: new Date(Date.now() + ttlSeconds * 1000).toISOString(), pinned: false };
 }
 
+// Links inside error/hint bodies (the guide) point at the canonical site, or at a loopback dev
+// server; never at whatever Host header the request sent (adversarial review 2026-11-26).
+export const SITE_ORIGIN = 'https://mdshare-rileylins-projects.vercel.app';
+const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?$/;
+export function siteOrigin(req) {
+  const host = String((req && req.headers && req.headers.host) || '');
+  return LOOPBACK_HOST.test(host) ? `http://${host}` : SITE_ORIGIN;
+}
+export const guideUrl = (req) => `${siteOrigin(req)}${FORMAT_GUIDE_PATH}`;
+
 export function baseUrl(req) {
-  const host = req.headers.host || 'mdshare-rileylins-projects.vercel.app';
+  const host = req.headers.host || new URL(SITE_ORIGIN).host;
   const protocol = host.includes('localhost') || host.startsWith('127.') ? 'http' : 'https';
   return `${protocol}://${host}`;
 }

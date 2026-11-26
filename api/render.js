@@ -13,7 +13,7 @@ import { classicDocHtml } from './_lib/classic.js';
 import { renderDiagram } from './_lib/diagram-page.js';
 import { versionInfo } from './_lib/activity.js';
 import { withErrors } from './_lib/events.js';
-import { wantsMarkdown, sendRawMarkdown } from './_lib/raw.js';
+import { wantsMarkdown, sendRawMarkdown, refusalHint } from './_lib/raw.js';
 
 const CLASSIC_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline' cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' cdnjs.cloudflare.com fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'self'";
 
@@ -89,7 +89,8 @@ async function handler(req, res) {
   const authed = checkAuthAndRefresh(req, res);
   if (!isVisible(row, req, res)) {
     res.setHeader('WWW-Authenticate', 'Bearer realm="mdshare"');
-    return res.status(401).send(privateGateHtml());
+    // A token sent as x-api-key / ?key= adds one sentence to the gate; nothing else changes.
+    return res.status(401).send(privateGateHtml({ hint: refusalHint(req) }));
   }
 
   const markdown = row.content;

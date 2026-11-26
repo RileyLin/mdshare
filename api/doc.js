@@ -15,7 +15,7 @@ import { resolveAgentToken } from './_lib/agent-tokens.js';
 import { parseJsonBody } from './_lib/body.js';
 import { withErrors } from './_lib/events.js';
 import { validateSearch, searchDocs } from './_lib/search.js';
-import { apiKeyMisuse, authHint, HINTS } from './_lib/raw.js';
+import { refusalHint, authHint, HINTS } from './_lib/raw.js';
 import {
   allowed, recordRead, listReads, validateFeedback, createFeedback, listFeedback, resolveFeedback, versionChain, FEEDBACK_STATUSES,
 } from './_lib/activity.js';
@@ -97,15 +97,14 @@ async function handler(req, res) {
 
   const auth = typeof action.auth === 'string' ? action.auth : action.auth[req.method];
   const scope = auth.includes('|') ? auth.split('|')[1] : null;
-  // A token sent as x-api-key / ?key= is not a credential here; say how to send it (api/_lib/raw.js).
-  if (!action.silent && apiKeyMisuse(req)) return authHint(req, res, { error: 'Unsupported credential', hint: HINTS.misplaced, scope });
   const agentAuth = await resolveAgentToken(req);
   if (agentAuth.present && !agentAuth.valid) return authHint(req, res, { error: 'Invalid or expired token', hint: HINTS.invalid, scope });
   if (!allowed(auth, req, res, agentAuth)) {
     // The read beacon answers 204 either way, so a page can't tell who is signed in from it.
     if (action.silent) return res.status(204).end();
     if (agentAuth.valid) return res.status(403).json({ error: `This token needs the ${scope} scope`, guide: '/llms.txt' });
-    return authHint(req, res, { error: scope ? `Sign in as the owner, or send Authorization: Bearer <token> with the ${scope} scope` : 'Owner only', hint: HINTS.missing, scope });
+    // Refused anyway: a token sent as x-api-key / ?key= only changes the hint (api/_lib/raw.js refusalHint).
+    return authHint(req, res, { error: scope ? `Sign in as the owner, or send Authorization: Bearer <token> with the ${scope} scope` : 'Owner only', hint: refusalHint(req, HINTS.missing), scope });
   }
 
   const [status, payload] = await action.run({ method: req.method, body, query: req.query || {} });

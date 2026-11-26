@@ -9,7 +9,7 @@ import { sendRawMarkdown, authHint, HINTS } from './_lib/raw.js';
 import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
 import { randomBytes } from 'crypto';
-import { wantsKeep, expiryFields, baseUrl, FORMAT_GUIDE_PATH } from './_lib/content.js';
+import { wantsKeep, expiryFields, baseUrl, guideUrl, FORMAT_GUIDE_PATH } from './_lib/content.js';
 import { withErrors } from './_lib/events.js';
 import { lintMarkdown } from './_lib/lint.js';
 import { canUseParent, versionFields } from './_lib/activity.js';
@@ -201,7 +201,7 @@ async function handler(req, res) {
     if (body?.parent != null) {
       const p = await canUseParent(body.parent, req, res, agentAuth);
       if (p.dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
-      if (!p.ok) return res.status(404).json({ error: 'parent not found, expired, or not readable with this credential', guide: `${baseUrl(req)}${FORMAT_GUIDE_PATH}` });
+      if (!p.ok) return res.status(404).json({ error: 'parent not found, expired, or not readable with this credential', guide: guideUrl(req) });
       parentId = p.row.id;
       version = versionFields(p.row);
     }

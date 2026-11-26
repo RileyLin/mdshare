@@ -552,13 +552,14 @@
     "path": "/v/:id (Bearer, anon, owner) + Settings token reveal",
     "steps": [
       "create a documents:read token",
-      "fetch /v/:id with the token, with a bad token, with x-api-key",
+      "fetch /v/:id with the token, with a bad token, with x-api-key; /raw/:id with x-api-key and as the owner with a stray ?token=",
       "open /v/:id anonymously and as the owner",
       "create a token in Settings"
     ],
     "assertions": [
       "Bearer fetch returns the exact Markdown as text/markdown",
-      "a bad token is 401 with WWW-Authenticate and a hint; x-api-key gets the Bearer hint",
+      "a bad token is 401 with WWW-Authenticate and a hint; x-api-key adds the Bearer hint to the refusal (/v gate 401, /raw 404)",
+      "a stray ?token= never refuses the owner; content responses send X-Content-Type-Options: nosniff",
       "anonymous browser sees the sign-in gate with the agent hint, no content and no rel=alternate",
       "the owner page advertises the Markdown with rel=alternate",
       "the Settings reveal shows a paste-ready agent block with this site, the token, its scopes and a search example"

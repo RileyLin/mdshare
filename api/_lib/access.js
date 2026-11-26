@@ -112,13 +112,16 @@ export function setPrivacyHeaders(res) {
   res.setHeader('X-Robots-Tag', 'noindex, nofollow');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Cache-Control', 'private, no-store');
+  // Stored content is served as text/plain, text/markdown or HTML; never let a browser guess another type.
+  res.setHeader('X-Content-Type-Options', 'nosniff');
 }
 
 // Shown instead of content when an item exists but is private and the requester is not the
 // owner. Reloads the exact same URL after a successful login — same-origin by construction,
 // since it never takes a redirect target from the client. No title/content is ever included.
-export function privateGateHtml() {
-  return privateGatePage();
+// `hint` (api/_lib/raw.js refusalHint) is extra, escaped text for an agent that sent its token the wrong way.
+export function privateGateHtml({ hint } = {}) {
+  return privateGatePage({ hint });
 }
 
 // A row is "kept" (never expires) when pinned; legacy pinned rows were pushed to 2099.

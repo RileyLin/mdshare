@@ -838,9 +838,17 @@ async function runAgentReadV(ctx, ok) {
   const bad = await fetch(`${ctx.serverUrl}/v/${id}`, { headers: auth('mds_not_a_real_token_at_all') });
   const badBody = await bad.json().catch(() => ({}));
   ok(bad.status === 401 && /^Bearer/.test(bad.headers.get('www-authenticate') || '') && /Authorization: Bearer/.test(badBody.hint || '') && /\/llms\.txt$/.test(badBody.guide || ''), `a bad token gets 401 + WWW-Authenticate + hint (status ${bad.status})`);
+  // A misplaced key only adds the hint to a refusal (adversarial review 2026-11-26): /v keeps its
+  // sign-in gate (+ one sentence), /raw its 404 (+ hint); a public document and the owner are unchanged.
   const key = await fetch(`${ctx.serverUrl}/v/${id}`, { headers: { 'x-api-key': token } });
-  const keyBody = await key.json().catch(() => ({}));
-  ok(key.status === 401 && /Send the token as Authorization: Bearer/.test(keyBody.hint || '') && !JSON.stringify(keyBody).includes(marker), `x-api-key gets the Bearer hint, no content (status ${key.status})`);
+  const keyText = await key.text();
+  ok(key.status === 401 && /^Bearer/.test(key.headers.get('www-authenticate') || '') && /Send the token as Authorization: Bearer &lt;token&gt;/.test(keyText) && !keyText.includes(marker), `x-api-key on /v gets the gate with the Bearer hint, no content (status ${key.status})`);
+  const rawKey = await fetch(`${ctx.serverUrl}/raw/${id}`, { headers: { 'x-api-key': token } });
+  const rawKeyBody = await rawKey.json().catch(() => ({}));
+  ok(rawKey.status === 404 && /Send the token as Authorization: Bearer/.test(rawKeyBody.hint || '') && !JSON.stringify(rawKeyBody).includes(marker), `x-api-key on /raw gets the 404 with the Bearer hint (status ${rawKey.status})`);
+  ok(key.headers.get('x-content-type-options') === 'nosniff' && rawKey.headers.get('x-content-type-options') === 'nosniff' && good.headers.get('x-content-type-options') === 'nosniff', 'content responses send X-Content-Type-Options: nosniff');
+  const ownerStray = await fetch(`${ctx.serverUrl}/raw/${id}?token=unrelated`, { headers: { cookie: ctx.ownerCookie } });
+  ok(ownerStray.status === 200 && (await ownerStray.text()) === md, `the owner with a stray ?token= still reads /raw (status ${ownerStray.status})`);
   const missing = await fetch(`${ctx.serverUrl}/v/${id}x`, { headers: auth(token) });
   ok(missing.status === 404, `a missing id with a token is a JSON 404 (status ${missing.status})`);
   await withContext(ctx, async (context) => {

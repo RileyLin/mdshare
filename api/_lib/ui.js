@@ -175,12 +175,12 @@ export function loginPage({ title = 'Sign in', heading = 'Sign in', sub = 'Sign 
 </body></html>`;
 }
 
-export function privateGatePage() {
+export function privateGatePage({ hint } = {}) {
   return loginPage({
     title: 'Private',
     heading: 'This content is private',
     sub: 'Sign in as the owner to view it. If it is ever shared publicly, this link will work for anyone without signing in.',
     // Same text for every private document: tells an agent how to authenticate, says nothing about the document.
-    fine: 'Agent or script? Send <code>Authorization: Bearer &lt;token&gt;</code>. See <a href="/llms.txt">/llms.txt</a>.',
+    fine: `Agent or script? Send <code>Authorization: Bearer &lt;token&gt;</code>. See <a href="/llms.txt">/llms.txt</a>.${hint ? ` <span id="agent-hint">${esc(hint)}</span>` : ''}`,
   });
 }

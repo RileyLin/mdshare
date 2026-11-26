@@ -330,21 +330,62 @@ const checks = [
   },
   {
     id: 'agent-auth-hints',
-    why: 'Agents failed silently on bare 401s and on tokens sent as x-api-key (diagnosis 2026-11-15); every agent-facing 401 says how to authenticate, and a misplaced key is refused before any lookup (2026-11-26).',
+    why: 'Agents failed silently on bare 401s and on tokens sent as x-api-key (diagnosis 2026-11-15); every agent-facing 401 says how to authenticate. A misplaced key once 401ed the owner and public links (adversarial review 2026-11-26): it may only change the hint on a request that is refused anyway.',
     run() {
       const errs = [];
       const raw = exists('api/_lib/raw.js') ? read('api/_lib/raw.js') : '';
       if (!/export function authHint\([^)]*\) \{\n\s*res\.setHeader\('WWW-Authenticate', `Bearer/.test(raw)) errs.push("api/_lib/raw.js: authHint() must start by setting WWW-Authenticate: Bearer.");
-      const body = (/export async function sendRawMarkdown\([\s\S]*?\n\}/.exec(raw) || [''])[0];
-      const misuse = body.indexOf('if (apiKeyMisuse(req)) return authHint(');
-      const lookup = body.indexOf('getRow(');
-      if (misuse < 0 || lookup < 0 || misuse > lookup) errs.push('api/_lib/raw.js: refuse a misplaced key (apiKeyMisuse -> authHint) before getRow(), so the answer is the same for every id.');
       for (const f of ['api/doc.js', 'api/_lib/raw.js', 'api/share.js']) {
         lines(f).forEach((l, i) => {
           if (!isCommentLine(l) && /status\(401\)/.test(l) && !/Unauthorized/.test(l)) errs.push(`${f}:${i + 1}: send agent-facing 401s through authHint() (WWW-Authenticate + hint + guide): "${l.trim()}"`);
         });
       }
-      if (!/apiKeyMisuse\(req\)\) return authHint\(/.test(read('api/doc.js'))) errs.push('api/doc.js: answer x-api-key / ?key= with authHint(... HINTS.misplaced ...).');
+      // apiKeyMisuse() is read only by refusalHint(), and refusalHint() only after the request was refused.
+      const helper = (/export function refusalHint\(req, fallback\) \{\n([\s\S]*?)\n\}/.exec(raw) || [])[1];
+      if (!helper || !/apiKeyMisuse\(req\) \? HINTS\.misplaced : fallback/.test(helper)) errs.push('api/_lib/raw.js: keep `export function refusalHint(req, fallback) { return apiKeyMisuse(req) ? HINTS.misplaced : fallback; }`.');
+      for (const f of apiFiles()) {
+        lines(f).forEach((l, i) => {
+          if (isCommentLine(l) || /export function apiKeyMisuse\(/.test(l) || (f === 'api/_lib/raw.js' && /apiKeyMisuse\(req\) \? HINTS\.misplaced : fallback/.test(l))) return;
+          if (/apiKeyMisuse\(/.test(l)) errs.push(`${f}:${i + 1}: don't decide anything on apiKeyMisuse(); on a refusal path use refusalHint(req, <hint>) so the owner, a valid Bearer and public documents are never refused for a stray ?token= ("${l.trim()}").`);
+        });
+      }
+      const wants = (/export function wantsMarkdown\([\s\S]*?\n\}/.exec(raw) || [''])[0];
+      if (/refusalHint\(|HINTS\.misplaced/.test(wants)) errs.push('api/_lib/raw.js: wantsMarkdown() must not look at misplaced keys; a stray ?token= must keep the HTML page.');
+      const after = (file, src, gate, label) => {
+        const g = src.search(gate);
+        const uses = [...src.matchAll(/refusalHint\(/g)].map((m) => m.index);
+        if (g < 0) errs.push(`${file}: expected ${label}.`);
+        else if (uses.some((u) => u < g)) errs.push(`${file}: call refusalHint() only after ${label}, on the refusal path.`);
+      };
+      const send = (/export async function sendRawMarkdown\([\s\S]*?\n\}/.exec(raw) || [''])[0];
+      if (/HINTS\.misplaced/.test(send)) errs.push('api/_lib/raw.js: sendRawMarkdown() gives the misplaced-key hint only through refusalHint().');
+      after('api/_lib/raw.js sendRawMarkdown()', send, /if \(!row \|\| !isVisible\(row, req, res, \{ agentOwns \}\)\) \{/, 'the isVisible() check');
+      const doc = read('api/doc.js');
+      const handler = (/async function handler\([\s\S]*?\n\}/.exec(doc) || [''])[0];
+      if (/HINTS\.misplaced/.test(doc)) errs.push('api/doc.js: give the misplaced-key hint only through refusalHint().');
+      after('api/doc.js handler()', handler, /if \(!allowed\(auth, req, res, agentAuth\)\) \{/, 'the allowed() check');
+      if (!/hint: refusalHint\(req, HINTS\.missing\)/.test(handler)) errs.push('api/doc.js: the refused-request authHint() uses hint: refusalHint(req, HINTS.missing).');
+      after('api/render.js', read('api/render.js'), /if \(!isVisible\(row, req, res\)\) \{/, 'the isVisible() check');
+      return errs;
+    },
+  },
+  {
+    id: 'guide-link-origin',
+    why: 'The guide link in agent hints echoed the request Host header (adversarial review 2026-11-26); hint links use the canonical origin (api/_lib/content.js guideUrl/siteOrigin).',
+    run() {
+      const errs = [];
+      const content = read('api/_lib/content.js');
+      const origin = (/export function siteOrigin\(req\) \{\n([\s\S]*?)\n\}/.exec(content) || [])[1];
+      if (!origin || !/LOOPBACK_HOST\.test\(host\) \? `http:\/\/\$\{host\}` : SITE_ORIGIN/.test(origin)) errs.push('api/_lib/content.js: siteOrigin() returns SITE_ORIGIN unless the Host is a loopback dev server (LOOPBACK_HOST.test(host)).');
+      if (!/export const guideUrl = \(req\) => `\$\{siteOrigin\(req\)\}\$\{FORMAT_GUIDE_PATH\}`;/.test(content)) errs.push('api/_lib/content.js: guideUrl(req) must be `${siteOrigin(req)}${FORMAT_GUIDE_PATH}`.');
+      lines('api/_lib/raw.js').forEach((l, i) => {
+        if (!isCommentLine(l) && /baseUrl\(|headers\.host|headers\[['"]host/.test(l)) errs.push(`api/_lib/raw.js:${i + 1}: hint bodies link with guideUrl(req), never baseUrl()/the Host header ("${l.trim()}").`);
+      });
+      for (const f of apiFiles()) {
+        lines(f).forEach((l, i) => {
+          if (!isCommentLine(l) && /\bguide: /.test(l) && /baseUrl\(|headers\.host|headers\[['"]host|\$\{base\}/.test(l)) errs.push(`${f}:${i + 1}: build the guide link with guideUrl(req) (canonical origin), not the request Host ("${l.trim()}").`);
+        });
+      }
       return errs;
     },
   },

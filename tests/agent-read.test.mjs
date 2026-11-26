@@ -3,7 +3,7 @@
 // Contracts proven here:
 //  - /v/:id + Bearer documents:read -> 200 text/markdown, exact stored content
 //  - /v/:id + Bearer that created the row (no documents:read) -> 200; legacy own row -> 200
-//  - invalid Bearer -> 401 + WWW-Authenticate + hint; x-api-key / ?key= -> 401 hint, no DB read
+//  - invalid Bearer -> 401 + WWW-Authenticate + hint; x-api-key / ?key= on a refused request -> the Bearer hint
 //  - token without access -> the same 404 body for an existing private id and a missing id
 //  - owner session + Accept: text/markdown -> Markdown; owner without it -> HTML page
 //  - anonymous (with or without Accept: text/markdown) -> unchanged sign-in gate, no content
@@ -103,23 +103,31 @@ test('invalid Bearer -> 401 with WWW-Authenticate and a hint, never the page or 
   assert.match(rawBad.headers['www-authenticate'], /Bearer/);
 });
 
-test('a token sent as x-api-key or ?key= gets the Bearer hint, before any lookup, same for every id', async () => {
+test('a token sent as x-api-key or ?key= gets the Bearer hint on the refusal, same answer for every id', async () => {
+  // Since the adversarial review (2026-11-26) a misplaced key only adds the hint to a request that
+  // is refused anyway (tests/misplaced-key.test.mjs: owner, Bearer and public reads are unchanged),
+  // so /raw now reads the row first and keeps its 404; it was a 401 before any lookup.
   const { token } = await mint(['documents:read']);
   const id = seed();
-  const before = db.calls.length;
   const bodies = [];
+  const work = [];
   for (const [target, headers, extra] of [[id, { 'x-api-key': token }, {}], ['missingId123', { 'x-api-key': token }, {}], [id, {}, { key: token }], [id, { 'api-key': token }, {}]]) {
     const r = await view(target, headers, extra);
-    assert.equal(r.statusCode, 401);
-    assert.match(r.headers['www-authenticate'], /Bearer/);
-    assert.match(r.body.hint, /Send the token as Authorization: Bearer <token>/);
-    bodies.push(JSON.stringify(r.body));
+    if (target === id) {
+      assert.equal(r.statusCode, 401, '/v keeps its sign-in gate');
+      assert.match(r.headers['www-authenticate'], /Bearer/);
+      assert.match(r.body, /Send the token as Authorization: Bearer &lt;token&gt;/);
+      assert.doesNotMatch(r.body, /secret-marker/);
+    } else assert.equal(r.statusCode, 404, '/v keeps its not-found page');
+    const before = db.calls.length;
     const rr = await raw(target, headers, extra);
-    assert.equal(rr.statusCode, 401, '/raw gives the same hint');
-    assert.equal(JSON.stringify(rr.body), JSON.stringify(r.body));
+    work.push(db.calls.length - before);
+    assert.equal(rr.statusCode, 404, '/raw keeps its 404 and carries the hint');
+    assert.match(rr.body.hint, /Send the token as Authorization: Bearer <token>/);
+    bodies.push(JSON.stringify(rr.body));
   }
   assert.equal(new Set(bodies).size, 1, 'identical answer whatever the id');
-  assert.equal(db.calls.length, before, 'no database call for a misplaced key');
+  assert.equal(new Set(work).size, 1, 'the same database work for an existing and a missing id');
   assert.equal(apiKeyMisuse({ headers: { authorization: 'Bearer ' + token, 'x-api-key': 'x' }, query: {} }), false, 'a real Bearer header wins');
 });
 

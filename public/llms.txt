@@ -33,8 +33,9 @@ GET /api/pastes?q=<text>&kind=paste|diagram|archify lists the catalog (documents
 
 ## Read and search
 
-Send the token as "Authorization: Bearer <token>" (not x-api-key, not ?key=; those get a 401 that
-says so). A 401 carries WWW-Authenticate: Bearer, a "hint" and this guide's URL.
+Send the token as "Authorization: Bearer <token>" (not x-api-key, not ?key=: those are not read,
+and a refused request says so in its hint). A 401 carries WWW-Authenticate: Bearer, a "hint"
+and this guide's URL.
 GET /v/<id>   with Authorization: Bearer -> the stored Markdown (text/markdown), so a /v/ link
               someone gave you works as-is. GET /raw/<id> is the same (text/plain). Readable for
               the owner, a public doc, a documents:read token, or the token that created it.

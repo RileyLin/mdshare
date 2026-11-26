@@ -81,7 +81,11 @@ const extraMutations = [
   ['markdown-route-gating', '/v serves Markdown itself', (d) => edit(d, 'api/render.js', (s) => s.replace("  if (wantsMarkdown(req, res)) return sendRawMarkdown(req, res, { contentType: 'text/markdown; charset=utf-8' });", "  if (req.headers.authorization) { const { row: r0 } = await getRow('mdshare_pastes', id, 'content'); res.setHeader('Content-Type', 'text/markdown; charset=utf-8'); return res.send(r0.content); }"))],
   ['markdown-route-gating', '/raw stops using the shared read path', (d) => edit(d, 'api/share.js', (s) => s.replace("  if (req.method === 'GET') return sendRawMarkdown(req, res);", "  if (req.method === 'GET') return res.status(200).send('');"))],
   ['markdown-route-gating', 'an invalid Bearer falls back to the public check', (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace("  if (agentAuth.present && !agentAuth.valid) return authHint(req, res, { error: 'Invalid or expired token', hint: HINTS.invalid });\n", ''))],
-  ['agent-auth-hints', 'a misplaced key is checked after the row lookup', (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace("  if (apiKeyMisuse(req)) return authHint(req, res, { error: 'Unsupported credential', hint: HINTS.misplaced });\n", '').replace("  if (dbError) return res.status(503)", "  if (apiKeyMisuse(req)) return authHint(req, res, { error: 'Unsupported credential', hint: HINTS.misplaced });\n  if (dbError) return res.status(503)"))],
+  // A misplaced key may only change the hint on a refused request (adversarial review 2026-11-26).
+  ['agent-auth-hints', '/raw refuses a misplaced key before the visibility check', (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace('  // A present-but-invalid Bearer', "  if (apiKeyMisuse(req)) return authHint(req, res, { error: 'Unsupported credential', hint: HINTS.misplaced });\n  // A present-but-invalid Bearer"))],
+  ['agent-auth-hints', '/v treats a stray ?token= as an agent request', (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace('  if (parseBearer(req)) return true;\n', '  if (parseBearer(req) || apiKeyMisuse(req)) return true;\n'))],
+  ['agent-auth-hints', 'api/doc.js refuses a misplaced key before the owner check', (d) => edit(d, 'api/doc.js', (s) => s.replace('  const agentAuth = await resolveAgentToken(req);\n', "  if (refusalHint(req, null)) return authHint(req, res, { error: 'Unsupported credential', hint: HINTS.missing, scope });\n  const agentAuth = await resolveAgentToken(req);\n"))],
+  ['agent-auth-hints', '/raw consults the misplaced-key hint before the row lookup', (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace('  // A present-but-invalid Bearer', '  const early = refusalHint(req, null); void early;\n  // A present-but-invalid Bearer'))],
   ['agent-auth-hints', 'authHint stops sending WWW-Authenticate', (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace("  res.setHeader('WWW-Authenticate', `Bearer realm=\"mdshare\"${scope ? `, scope=\"${scope}\"` : ''}`);\n", ''))],
 ];
 for (const [id, label, mutate] of extraMutations) {
@@ -95,6 +99,26 @@ for (const [id, label, mutate] of extraMutations) {
       const r = run(dir);
       assert.equal(r.code, 1, `expected failure for ${id} (${label})\n${r.out}`);
       assert.match(r.out, new RegExp(`✗ ${id.replace(/[-]/g, '\\-')} `), r.out);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+}
+
+// Hint links never echo the Host header (adversarial review 2026-11-26).
+const originMutations = [
+  ['authHint links with baseUrl()', 'api/_lib/raw.js', (s) => s.replace('return res.status(status).json({ error, hint, guide: guideUrl(req) });', 'return res.status(status).json({ error, hint, guide: `${baseUrl(req)}/llms.txt` });')],
+  ['siteOrigin echoes any Host', 'api/_lib/content.js', (s) => s.replace('return LOOPBACK_HOST.test(host) ? `http://${host}` : SITE_ORIGIN;', 'return host ? `https://${host}` : SITE_ORIGIN;')],
+  ['a guide link is built from the Host header', 'api/share.js', (s) => s.replace("guide: guideUrl(req) });", "guide: `https://${req.headers.host}/llms.txt` });")],
+];
+for (const [label, file, fn] of originMutations) {
+  test(`invariant "guide-link-origin" fails when ${label}`, () => {
+    const dir = copyRepo();
+    try {
+      const before = readFileSync(join(dir, file), 'utf8');
+      edit(dir, file, fn);
+      assert.notEqual(readFileSync(join(dir, file), 'utf8'), before, 'the mutation applied');
+      const r = run(dir);
+      assert.equal(r.code, 1, r.out);
+      assert.match(r.out, /✗ guide-link-origin /, r.out);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 }

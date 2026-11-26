@@ -4,14 +4,17 @@
 // scripts/check-invariants.mjs "markdown-route-gating" keeps both routes on sendRawMarkdown().
 //
 // Failures say what to do. A 401 carries WWW-Authenticate: Bearer, a one-line hint and the guide
-// link. A credential sent the wrong way (x-api-key header, ?key= query) is refused before any
-// lookup with a hint to use Authorization: Bearer. A request that may not read a document gets
-// the same 404 for an existing and a missing id, so nothing reveals that an id exists.
+// link (always the canonical site, never the request's Host header). A credential sent the wrong
+// way (x-api-key header, ?key= query) is only ever extra hint text on a request that is already
+// refused: it never changes the answer for the owner, a valid Bearer or a public document
+// (adversarial review 2026-11-26), so refusalHint() is called only after visibility was decided.
+// A request that may not read a document gets the same 404 for an existing and a missing id, so
+// nothing reveals that an id exists.
 // Underscore directory: not a Vercel function.
 import { checkAuthAndRefresh } from '../auth.js';
 import { getRow, isVisible, setPrivacyHeaders } from './access.js';
 import { parseBearer, resolveAgentToken, hasScope } from './agent-tokens.js';
-import { baseUrl, FORMAT_GUIDE_PATH } from './content.js';
+import { guideUrl } from './content.js';
 
 export const HINTS = {
   invalid: 'Check the token (Settings → API tokens on this site) and send it as Authorization: Bearer <token>.',
@@ -31,10 +34,17 @@ export function apiKeyMisuse(req) {
   return MISPLACED_HEADERS.some((k) => typeof h[k] === 'string' && h[k].trim() !== '') || MISPLACED_QUERY.some((k) => typeof q[k] === 'string' && q[k] !== '');
 }
 
+// The hint for a request that is being refused anyway: say how to send the token when one was sent
+// the wrong way, otherwise `fallback`. Only call this on a refusal path, after the owner session,
+// the Bearer token and the document's visibility were checked (invariant "agent-auth-hints").
+export function refusalHint(req, fallback) {
+  return apiKeyMisuse(req) ? HINTS.misplaced : fallback;
+}
+
 // 401 with WWW-Authenticate and a hint. `error` stays the short message older clients match on.
 export function authHint(req, res, { error, hint, status = 401, scope }) {
   res.setHeader('WWW-Authenticate', `Bearer realm="mdshare"${scope ? `, scope="${scope}"` : ''}`);
-  return res.status(status).json({ error, hint, guide: `${baseUrl(req)}${FORMAT_GUIDE_PATH}` });
+  return res.status(status).json({ error, hint, guide: guideUrl(req) });
 }
 
 // Accept header lists text/markdown at least as strongly as text/html.
@@ -54,11 +64,11 @@ export function acceptsMarkdown(req) {
   return md > 0 && md >= q('text/html');
 }
 
-// Should /v/:id answer with Markdown instead of the page? Any Bearer header or misplaced key (an
-// agent: it gets Markdown or an actionable error), or the owner asking for text/markdown.
-// Everything else keeps the HTML page / sign-in gate exactly as before.
+// Should /v/:id answer with Markdown instead of the page? Any Bearer header (an agent: it gets
+// Markdown or an actionable error), or the owner asking for text/markdown. Everything else,
+// including a stray ?token= or x-api-key, keeps the HTML page / sign-in gate exactly as before.
 export function wantsMarkdown(req, res) {
-  if (parseBearer(req) || apiKeyMisuse(req)) return true;
+  if (parseBearer(req)) return true;
   return acceptsMarkdown(req) && checkAuthAndRefresh(req, res) === true;
 }
 
@@ -67,7 +77,6 @@ export async function sendRawMarkdown(req, res, { contentType = 'text/plain; cha
   res.setHeader('Vary', 'Accept, Authorization, Cookie');
   const id = req.query && req.query.id;
   if (!id) return res.status(400).json({ error: 'Missing id' });
-  if (apiKeyMisuse(req)) return authHint(req, res, { error: 'Unsupported credential', hint: HINTS.misplaced });
 
   // A present-but-invalid Bearer is a hard 401, never a fallback to the owner/public check.
   const agentAuth = await resolveAgentToken(req);
@@ -81,8 +90,8 @@ export async function sendRawMarkdown(req, res, { contentType = 'text/plain; cha
   const agentOwns = !!(agentAuth.valid && row && (hasScope(agentAuth, 'documents:read') || row.created_by_token === agentAuth.id));
   if (!row || !isVisible(row, req, res, { agentOwns })) {
     // Same body for a missing id and an existing one this request may not read.
-    const hint = agentAuth.valid ? HINTS.notReadable : (checkAuthAndRefresh(req, res) ? undefined : HINTS.missing);
-    return res.status(404).json({ error: 'Not found or expired', hint, guide: `${baseUrl(req)}${FORMAT_GUIDE_PATH}` });
+    const hint = agentAuth.valid ? HINTS.notReadable : (checkAuthAndRefresh(req, res) ? undefined : refusalHint(req, HINTS.missing));
+    return res.status(404).json({ error: 'Not found or expired', hint, guide: guideUrl(req) });
   }
   res.setHeader('Content-Type', contentType);
   return res.status(200).send(row.content);
