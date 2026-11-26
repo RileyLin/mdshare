@@ -24,7 +24,7 @@ export function validateSearch(query) {
   if (!q) return { error: 'Pass q=<text to search for> (1-200 characters)' };
   if ([...q].length > SEARCH_MAX_QUERY) return { error: `q is too long (max ${SEARCH_MAX_QUERY} characters)` };
   // Postgres text can't hold NUL or a lone surrogate; refuse them here instead of a 503 from the database.
-  if (/\u0000/.test(q) || !q.isWellFormed()) return { error: 'q contains characters that cannot be searched' };
+  if (q.includes(String.fromCharCode(0)) || !q.isWellFormed()) return { error: 'q contains characters that cannot be searched' };
   return { value: { q, limit: int(query.limit, 20, 1, SEARCH_MAX_LIMIT), offset: int(query.offset ?? query.cursor, 0, 0, SEARCH_MAX_OFFSET) } };
 }
 
