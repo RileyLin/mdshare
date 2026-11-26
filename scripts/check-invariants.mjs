@@ -430,7 +430,7 @@ const checks = [
   },
   {
     id: 'translation-gated',
-    why: 'A translation link puts a 中文/English switch on every page of a group. The owner links any pair; a token only a pair it created, target and group (ADV-B, 2026-11-26: documents:read let a token plant a switch on the owner\'s private document); never because it is public; a reader sees the switch only when the translation is public (2026-11-26).',
+    why: 'A translation link puts a 中文/English switch on every page of a group. The owner links any pair; a token only a pair it created, target and group (ADV-B, 2026-11-26: documents:read let a token plant a switch on the owner\'s private document); never because it is public; a document never joins its own family or translation; a reader sees the switch only when the translation is public (2026-11-26).',
     run() {
       const errs = [];
       const act = exists('api/_lib/activity.js') ? read('api/_lib/activity.js') : '';
@@ -454,8 +454,10 @@ const checks = [
       if (/translation_of:/.test(share)) {
         const gate = share.search(/const t = await canLinkTranslation\(body\.translation_of, req, res, agentAuth\);/);
         const store = share.search(/translationOf = translationFields\(t\.row\)\.translation_of;/);
+        const self = share.search(/if \(version\.root_id && \(t\.row\.root_id \|\| t\.row\.id\) === version\.root_id\) return res\.status\(400\)/);
         if (gate < 0) errs.push('api/share.js: check `const t = await canLinkTranslation(body.translation_of, req, res, agentAuth);` before linking a translation.');
         if (store < 0 || store < gate) errs.push('api/share.js: store the link as `translationOf = translationFields(t.row).translation_of;` after the canLinkTranslation() check, never from the request body.');
+        if (self < 0 || self < gate || self > store) errs.push('api/share.js: between the gate and the store, refuse a translation of the own version family: `if (version.root_id && (t.row.root_id || t.row.id) === version.root_id) return res.status(400)...`.');
         if (!/translation_of: links\.translationOf \|\| null/.test(share)) errs.push('api/share.js: the insert stores `translation_of: links.translationOf || null` (set only from the gated row or the gated parent).');
         lines('api/share.js').forEach((l, i) => {
           if (!isCommentLine(l) && /body\??\.translation_of/.test(l) && !/canLinkTranslation\(body\.translation_of|body\?\.translation_of != null/.test(l)) errs.push(`api/share.js:${i + 1}: body.translation_of may only be passed to canLinkTranslation() ("${l.trim()}").`);
@@ -469,6 +471,11 @@ const checks = [
         if (gate < 0 || write < 0 || gate > write) errs.push('api/doc.js: the translation action checks canLinkTranslation(body.translation_of, ...) before patchMeta().');
         if (/canUseParent\(/.test(action)) errs.push('api/doc.js: the translation action gates with canLinkTranslation(), not canUseParent() (documents:read must not be enough).');
         if (!/patch\.translation_of = link;/.test(action) || !/const link = translationFields\(t\.row\)\.translation_of;/.test(action)) errs.push('api/doc.js: the translation action stores translationFields(t.row).translation_of, never the request body.');
+        // Anti-cycle / self-link (ADV-B finding 3): a document never joins its own version family
+        // or the group it already names, between the gate and the write.
+        const own = action.indexOf('const own = e.row.root_id || e.row.id;');
+        const cycle = action.indexOf("if ((t.row.root_id || t.row.id) === own || link === own) return [400,");
+        if (own < 0 || cycle < 0 || cycle < gate || cycle > write || cycle < action.indexOf('const link = translationFields(t.row).translation_of;')) errs.push("api/doc.js: the translation action refuses a self/circular link between canLinkTranslation() and patchMeta(): `const own = e.row.root_id || e.row.id;` ... `if ((t.row.root_id || t.row.id) === own || link === own) return [400, ...]`.");
         if (!/auth: 'owner\|documents:write,documents:publish'/.test(action)) errs.push("api/doc.js: translation must be auth: 'owner|documents:write,documents:publish'.");
       }
       const info = (/export async function versionInfo\([\s\S]*?\n\}/.exec(act) || [''])[0];
