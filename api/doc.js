@@ -6,7 +6,8 @@
 //   POST ?action=resolve   owner | activity:write. {ids, status, resolved_in}
 //   GET  ?action=versions  owner | documents:read. ?id=<doc> -> oldest..newest chain
 //   GET  ?action=search    owner | documents:read. ?q=<text>&limit&offset -> titles + snippets
-//                          (api/_lib/search.js: one rpc call, the text never enters a filter string)
+//                          (api/_lib/search.js: one rpc call, the text never enters a filter string;
+//                          SEARCH_RATE_LIMIT a minute per token, or per IP for the owner session -> 429)
 // Every action is declared in ACTIONS with its `auth`; scripts/check-invariants.mjs fails if one
 // isn't. This file never writes directly (all writes go through api/_lib/activity.js, which only
 // accepts the activity tables), so nothing here can change stored content or visibility.
@@ -16,9 +17,14 @@ import { parseJsonBody } from './_lib/body.js';
 import { withErrors } from './_lib/events.js';
 import { validateSearch, searchDocs } from './_lib/search.js';
 import { refusalHint, authHint, HINTS } from './_lib/raw.js';
+import { rateLimiter, clientIp } from './_lib/rate-limit.js';
 import {
   allowed, recordRead, listReads, validateFeedback, createFeedback, listFeedback, resolveFeedback, versionChain, FEEDBACK_STATUSES,
 } from './_lib/activity.js';
+
+// Search is the costly read (a LIKE scan over every row for a short query): cap each credential.
+export const SEARCH_RATE_LIMIT = 60;
+const searchRate = rateLimiter({ limit: SEARCH_RATE_LIMIT, windowMs: 60 * 1000 });
 
 const ACTIONS = {
   read: {
@@ -76,9 +82,14 @@ const ACTIONS = {
   },
   search: {
     auth: 'owner|documents:read', httpMethod: 'GET',
-    async run({ query }) {
+    async run({ query, req, res, agentAuth }) {
       const v = validateSearch(query);
       if (v.error) return [400, { error: v.error }];
+      const rate = searchRate.check(agentAuth.valid ? `token:${agentAuth.id}` : `owner:${clientIp(req)}`);
+      if (!rate.allowed) {
+        res.setHeader('Retry-After', String(rate.retryAfter));
+        return [429, { error: `Too many searches: at most ${SEARCH_RATE_LIMIT} a minute. Retry in ${rate.retryAfter}s.`, retry_after: rate.retryAfter }];
+      }
       const r = await searchDocs(v.value);
       return r.dbError ? [503, { error: 'Temporarily unavailable' }] : [200, r];
     },
@@ -107,7 +118,7 @@ async function handler(req, res) {
     return authHint(req, res, { error: scope ? `Sign in as the owner, or send Authorization: Bearer <token> with the ${scope} scope` : 'Owner only', hint: refusalHint(req, HINTS.missing), scope });
   }
 
-  const [status, payload] = await action.run({ method: req.method, body, query: req.query || {} });
+  const [status, payload] = await action.run({ method: req.method, body, query: req.query || {}, req, res, agentAuth });
   if (payload === null) return res.status(status).end();
   return res.status(status).json(payload);
 }

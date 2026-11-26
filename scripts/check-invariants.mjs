@@ -370,6 +370,22 @@ const checks = [
     },
   },
   {
+    id: 'search-rate-limited',
+    why: 'Search is a LIKE scan over every row; one token or session in a loop had no backstop (adversarial review 2026-11-26). The search action checks searchRate before searchDocs().',
+    run() {
+      const doc = read('api/doc.js');
+      const action = (/\n {2}search: \{([\s\S]*?)\n {2}\},/.exec(doc) || [])[1] || '';
+      const check = action.indexOf('if (!rate.allowed)');
+      const call = action.indexOf('searchDocs(');
+      const errs = [];
+      if (!/const searchRate = rateLimiter\(\{ limit: SEARCH_RATE_LIMIT, windowMs: 60 \* 1000 \}\);/.test(doc)) errs.push('api/doc.js: keep `const searchRate = rateLimiter({ limit: SEARCH_RATE_LIMIT, windowMs: 60 * 1000 });` (api/_lib/rate-limit.js).');
+      if (!/searchRate\.check\(agentAuth\.valid \? `token:\$\{agentAuth\.id\}` : `owner:\$\{clientIp\(req\)\}`\)/.test(action)) errs.push('api/doc.js: the search action counts each call with searchRate.check(token id, or owner IP).');
+      if (check < 0 || call < 0 || check > call) errs.push('api/doc.js: answer 429 (`if (!rate.allowed)`) before searchDocs(), so a limited caller costs no query.');
+      if (!/res\.setHeader\('Retry-After'/.test(action)) errs.push('api/doc.js: a 429 from search carries Retry-After.');
+      return errs;
+    },
+  },
+  {
     id: 'guide-link-origin',
     why: 'The guide link in agent hints echoed the request Host header (adversarial review 2026-11-26); hint links use the canonical origin (api/_lib/content.js guideUrl/siteOrigin).',
     run() {

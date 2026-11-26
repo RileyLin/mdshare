@@ -46,7 +46,8 @@ GET /api/doc?action=search&q=<text>&limit=20&offset=0      full-text search (doc
      text around the first match), "created_at", "kept", "is_public", "url"}], "total",
      "next_offset"}. Title matches first, then newest; expired documents are not included.
      Read a hit with GET /v/<id>. CLI: mdshare-cli search "<text>" [--json];
-     mdshare-cli read <id or link>.
+     mdshare-cli read <id or link>. At most 60 searches a minute per token; past that 429 with
+     Retry-After (seconds) and {"retry_after"}.
 Token scopes: documents:read, documents:write, documents:publish (own docs), documents:publish:any,
 activity:read (read receipts + feedback), activity:write (resolve feedback).
 To publish (make public): PATCH /api/pin {"id", "kind": "paste", "is_public": true, "keep": true}.

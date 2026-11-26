@@ -86,6 +86,8 @@ const extraMutations = [
   ['agent-auth-hints', '/v treats a stray ?token= as an agent request', (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace('  if (parseBearer(req)) return true;\n', '  if (parseBearer(req) || apiKeyMisuse(req)) return true;\n'))],
   ['agent-auth-hints', 'api/doc.js refuses a misplaced key before the owner check', (d) => edit(d, 'api/doc.js', (s) => s.replace('  const agentAuth = await resolveAgentToken(req);\n', "  if (refusalHint(req, null)) return authHint(req, res, { error: 'Unsupported credential', hint: HINTS.missing, scope });\n  const agentAuth = await resolveAgentToken(req);\n"))],
   ['agent-auth-hints', '/raw consults the misplaced-key hint before the row lookup', (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace('  // A present-but-invalid Bearer', '  const early = refusalHint(req, null); void early;\n  // A present-but-invalid Bearer'))],
+  ['search-rate-limited', 'the search action stops checking the limit', (d) => edit(d, 'api/doc.js', (s) => s.replace('      if (!rate.allowed) {', '      if (false) {'))],
+  ['search-rate-limited', 'the limit is checked after the query runs', (d) => edit(d, 'api/doc.js', (s) => s.replace('      const r = await searchDocs(v.value);\n', '').replace('      const rate = searchRate.check(', '      const r = await searchDocs(v.value);\n      const rate = searchRate.check('))],
   ['agent-auth-hints', 'authHint stops sending WWW-Authenticate', (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace("  res.setHeader('WWW-Authenticate', `Bearer realm=\"mdshare\"${scope ? `, scope=\"${scope}\"` : ''}`);\n", ''))],
 ];
 for (const [id, label, mutate] of extraMutations) {
