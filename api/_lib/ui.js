@@ -2,7 +2,7 @@
 // card, and message pages. Visual styles live in /assets/mdshare.css; behaviour in /assets/app.js.
 // Underscore directory: not a Vercel function.
 
-export const ASSET_V = '20261125';
+export const ASSET_V = '20261126';
 
 export function esc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -26,7 +26,8 @@ const FONTS = 'https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0
 // Applies saved reader preferences before first paint (no light/dark flash).
 const PREFS_BOOT = `(function(){try{var d=document.documentElement,s=localStorage;var t=s.getItem('mdshare-theme')||'system';if(t==='system')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';d.setAttribute('data-theme',t);var z=parseFloat(s.getItem('mdshare-zoom'));if(z>=0.85&&z<=1.6)d.style.setProperty('--zoom',z);var w=s.getItem('mdshare-width');if(w==='wide')d.setAttribute('data-width','wide');var f=s.getItem('mdshare-font');if(f==='serif')d.setAttribute('data-font','serif');}catch(e){}})();`;
 
-export function head({ title, description = '' }) {
+// `alternate`: the raw Markdown URL, only for a page the viewer is allowed to read (api/render.js).
+export function head({ title, description = '', alternate = '' }) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -34,6 +35,7 @@ export function head({ title, description = '' }) {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>${esc(title)}</title>
 ${description ? `<meta name="description" content="${esc(description)}">` : ''}
+${alternate ? `<link rel="alternate" type="text/markdown" href="${esc(alternate)}">` : ''}
 <meta name="theme-color" content="#f8f5ef" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#17140f" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231f1b16'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%23e08a5a'/%3E%3C/svg%3E">
@@ -178,5 +180,7 @@ export function privateGatePage() {
     title: 'Private',
     heading: 'This content is private',
     sub: 'Sign in as the owner to view it. If it is ever shared publicly, this link will work for anyone without signing in.',
+    // Same text for every private document: tells an agent how to authenticate, says nothing about the document.
+    fine: 'Agent or script? Send <code>Authorization: Bearer &lt;token&gt;</code>. See <a href="/llms.txt">/llms.txt</a>.',
   });
 }

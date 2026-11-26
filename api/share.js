@@ -1,11 +1,11 @@
 // POST /api/share — accepts markdown, returns a shareable URL (public, rate-limited). Always
 //   creates a PRIVATE row (is_public: false) — visibility can only be changed via the auth-gated
 //   PATCH /api/visibility endpoint, never from this request body.
-// GET  /api/share?id=xxx — returns raw markdown. Private unless the owner is authenticated or the
-//   row has is_public: true.
+// GET  /api/share?id=xxx (/raw/:id) — returns raw markdown through api/_lib/raw.js, the same read
+//   path /v/:id uses for Bearer requests: owner, public, documents:read token, or the token's own row.
 // PATCH /api/share — updates content for an existing paste (auth-gated). Never touches is_public.
 import { checkAuthAndRefresh } from './auth.js';
-import { getRow, isVisible, setPrivacyHeaders } from './_lib/access.js';
+import { sendRawMarkdown, authHint, HINTS } from './_lib/raw.js';
 import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
 import { randomBytes } from 'crypto';
@@ -145,7 +145,7 @@ async function handler(req, res) {
     // 401, never a silent fallback to anonymous creation.
     const agentAuth = await resolveAgentToken(req);
     if (agentAuth.present && !agentAuth.valid) {
-      return res.status(401).json({ error: 'Invalid or expired token' });
+      return authHint(req, res, { error: 'Invalid or expired token', hint: HINTS.invalid });
     }
     // Scoped tokens (added 2026-10-08): a token minted with an explicit `scopes` array needs
     // documents:write to create. A legacy token (scopes === null, i.e. every token that predates
@@ -244,29 +244,8 @@ async function handler(req, res) {
     return res.status(200).json({ ok: true, deleted: id });
   }
 
-  if (req.method === 'GET') {
-    const { id } = req.query;
-    if (!id) return res.status(400).json({ error: 'Missing id' });
-
-    // Same fail-closed rule as POST above: an invalid bearer must 401, never silently fall back to
-    // the owner-or-public check below.
-    const agentAuth = await resolveAgentToken(req);
-    if (agentAuth.present && !agentAuth.valid) {
-      return res.status(401).json({ error: 'Invalid or expired token' });
-    }
-
-    setPrivacyHeaders(res);
-    const { row, dbError } = await getRow('mdshare_pastes', id, 'content,expires_at,is_public,created_by_token');
-    if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
-    // documents:read (library-wide read, scoped tokens only) widens visibility to any row, not
-    // just rows this exact token created — a legacy token's hasScope() call is always false, so
-    // its agentOwns stays exactly the own-row-only check it always was.
-    const agentOwns = !!(agentAuth.valid && row && (hasScope(agentAuth, 'documents:read') || row.created_by_token === agentAuth.id));
-    if (!row || !isVisible(row, req, res, { agentOwns })) return res.status(404).json({ error: 'Not found or expired' });
-
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    return res.send(row.content);
-  }
+  // Raw Markdown: the same read path as /v/:id with a Bearer token (api/_lib/raw.js).
+  if (req.method === 'GET') return sendRawMarkdown(req, res);
 
   return res.status(405).json({ error: 'Method not allowed' });
 }

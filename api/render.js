@@ -4,6 +4,8 @@
 // a private id get a same-URL sign-in page, never the title or content. The page embeds the
 // stored Markdown as JSON and /assets/render.js renders + enhances it in the browser; nothing
 // stored is rewritten. ?as=reader shows the owner what a reader sees; ?classic=1 is the old page.
+// Agents: a request with Authorization: Bearer (or the owner asking for Accept: text/markdown)
+// gets the stored Markdown through api/_lib/raw.js, under exactly the /raw/:id rules.
 import { checkAuthAndRefresh } from './auth.js';
 import { getRow, isVisible, isKept, setPrivacyHeaders, privateGateHtml } from './_lib/access.js';
 import { head, header, ownerControls, readerControls, toast, dataBlock, scripts, CSP_PAGE, notFoundPage, unavailablePage, esc } from './_lib/ui.js';
@@ -11,6 +13,7 @@ import { classicDocHtml } from './_lib/classic.js';
 import { renderDiagram } from './_lib/diagram-page.js';
 import { versionInfo } from './_lib/activity.js';
 import { withErrors } from './_lib/events.js';
+import { wantsMarkdown, sendRawMarkdown } from './_lib/raw.js';
 
 const CLASSIC_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline' cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' cdnjs.cloudflare.com fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'self'";
 
@@ -46,7 +49,8 @@ function docPage({ id, title, markdown, owner, row, version }) {
     parentId: owner ? version.parentId : null, versionNo: owner ? version.versionNo : null,
     newerId: version.newerId, newerTitle: version.newerTitle,
   };
-  return `${head({ title: `${title} — mdshare` })}
+  // Only reached after isVisible(): the viewer may read /raw/:id, so advertising it leaks nothing.
+  return `${head({ title: `${title} — mdshare`, alternate: `/raw/${encodeURIComponent(id)}` })}
 <body>
 <div class="progress" aria-hidden="true"><i id="progress"></i></div>
 ${header({ crumbs, right })}
@@ -72,8 +76,10 @@ async function handler(req, res) {
   if (req.query.kind === 'diagram') return renderDiagram(req, res);
   const { id } = req.query;
   if (!id) return res.status(400).send('Missing id');
+  if (wantsMarkdown(req, res)) return sendRawMarkdown(req, res, { contentType: 'text/markdown; charset=utf-8' });
 
   setPrivacyHeaders(res);
+  res.setHeader('Vary', 'Accept, Authorization, Cookie');
   const { row, dbError } = await getRow('mdshare_pastes', id, 'content,expires_at,is_public,pinned,created_at,parent_id,root_id,version_no');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
 
@@ -81,7 +87,10 @@ async function handler(req, res) {
   if (!row) return res.status(404).send(notFoundPage('document'));
 
   const authed = checkAuthAndRefresh(req, res);
-  if (!isVisible(row, req, res)) return res.status(401).send(privateGateHtml());
+  if (!isVisible(row, req, res)) {
+    res.setHeader('WWW-Authenticate', 'Bearer realm="mdshare"');
+    return res.status(401).send(privateGateHtml());
+  }
 
   const markdown = row.content;
   const titleMatch = markdown.match(/^#\s+(.+)$/m);
