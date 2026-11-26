@@ -87,6 +87,8 @@ GET  /api/doc?action=collection                every collection: [{"slug", "coun
 GET  /api/doc?action=collection&slug=<slug>    its contents: {"items": [{"title", "id", "kept",
      "opened", "max_scroll", "updated_at", "links": [{"id", "lang", "version", "is_public"}]}]}
      (documents:read). The /c/<slug> page itself is owner-only; tokens get the sign-in page.
+Every GET /api/doc action (search, collection, versions, reads, feedback) allows 60 calls a minute
+per token, each action on its own; past that 429 with Retry-After (seconds) and {"retry_after"}.
 CLI: mdshare-cli create paste f.md --lang zh --translation-of <id> --collection <slug>;
      mdshare-cli translate <id> --of <id>; mdshare-cli collection <id> <slug>; mdshare-cli collections [slug].
 Answer feedback by revising the passage it quotes, not by rewriting the whole document.

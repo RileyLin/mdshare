@@ -1,5 +1,5 @@
 // GET /api/doc?action=search is rate-limited per credential (ADV-A finding 2, 2026-11-26): a
-// documents:read token, or the owner session per client IP, gets SEARCH_RATE_LIMIT searches a
+// documents:read token, or the owner session per client IP, gets READ_RATE_LIMIT searches a
 // minute; past that a 429 with Retry-After and no database call. Other credentials are unaffected.
 import test from 'node:test';
 import assert from 'node:assert/strict';

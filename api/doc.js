@@ -6,15 +6,16 @@
 //   POST ?action=resolve   owner | activity:write. {ids, status, resolved_in}
 //   GET  ?action=versions  owner | documents:read. ?id=<doc> -> oldest..newest chain
 //   GET  ?action=search    owner | documents:read. ?q=<text>&limit&offset -> titles + snippets
-//                          (api/_lib/search.js: one rpc call, the text never enters a filter string;
-//                          SEARCH_RATE_LIMIT a minute per token, or per IP for the owner session -> 429)
+//                          (api/_lib/search.js: one rpc call, the text never enters a filter string)
 //   GET  ?action=collection   owner | documents:read. No slug: every collection with counts;
 //                          ?slug=<slug>: its table of contents (api/_lib/collections.js, 3 queries)
 //   POST ?action=collection   owner | documents:write or documents:publish (tokens: rows they created).
 //                          {id, collection: <slug>|null} for the document's whole version family
 //   POST ?action=translation  same auth. {id, translation_of: <id>|null, lang?: zh|en}; the target is
 //                          gated like a version parent (canUseParent)
-// Every action is declared in ACTIONS with its `auth`; scripts/check-invariants.mjs fails if one
+// Every action is declared in ACTIONS with its `auth`, and every GET action with its own `rate`
+// limiter (READ_RATE_LIMIT a minute per token, or per IP for the owner session -> 429, checked in
+// handler() after the auth check and before run()); scripts/check-invariants.mjs fails if one
 // isn't. This file never writes directly: activity writes go through api/_lib/activity.js (activity
 // tables only) and metadata writes through api/_lib/collections.js patchMeta (lang, translation_of,
 // collection only), so nothing here can change stored content, visibility or expiry.
@@ -31,9 +32,11 @@ import {
 } from './_lib/activity.js';
 import { parseCollection, SLUG_HINT, canEditMeta, familyFilter, patchMeta, listCollections, collectionToc } from './_lib/collections.js';
 
-// Search is the costly read (a LIKE scan over every row for a short query): cap each credential.
-export const SEARCH_RATE_LIMIT = 60;
-const searchRate = rateLimiter({ limit: SEARCH_RATE_LIMIT, windowMs: 60 * 1000 });
+// Reads cost real queries (search: a LIKE scan over every row; collection: a 5000-row index scan or
+// a 3-query TOC) and documents:read / activity:read tokens go to third-party agents, so every GET
+// action caps each credential (adversarial reviews 2026-11-26). Each action counts on its own.
+export const READ_RATE_LIMIT = 60;
+const readLimiter = (what) => ({ what, ...rateLimiter({ limit: READ_RATE_LIMIT, windowMs: 60 * 1000 }) });
 
 const ACTIONS = {
   read: {
@@ -48,7 +51,7 @@ const ACTIONS = {
     },
   },
   reads: {
-    auth: 'owner|activity:read', httpMethod: 'GET',
+    auth: 'owner|activity:read', httpMethod: 'GET', rate: readLimiter('read-receipt lookups'),
     async run({ query }) {
       if (query.unread === '1' || query.unread === 'true') return [200, { items: await listReads({ unread: true, days: Number(query.days) || 7 }) }];
       const ids = String(query.ids || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -57,7 +60,7 @@ const ACTIONS = {
     },
   },
   feedback: {
-    auth: { POST: 'owner', GET: 'owner|activity:read' }, httpMethod: ['POST', 'GET'],
+    auth: { POST: 'owner', GET: 'owner|activity:read' }, httpMethod: ['POST', 'GET'], rate: readLimiter('feedback lookups'),
     async run({ method, body, query }) {
       if (method === 'GET') {
         const docId = query.id ? String(query.id) : null;
@@ -82,7 +85,7 @@ const ACTIONS = {
     },
   },
   versions: {
-    auth: 'owner|documents:read', httpMethod: 'GET',
+    auth: 'owner|documents:read', httpMethod: 'GET', rate: readLimiter('version lookups'),
     async run({ query }) {
       if (!isValidId(query.id)) return [400, { error: 'Missing or invalid id' }];
       const chain = await versionChain(String(query.id));
@@ -90,21 +93,16 @@ const ACTIONS = {
     },
   },
   search: {
-    auth: 'owner|documents:read', httpMethod: 'GET',
-    async run({ query, req, res, agentAuth }) {
+    auth: 'owner|documents:read', httpMethod: 'GET', rate: readLimiter('searches'),
+    async run({ query }) {
       const v = validateSearch(query);
       if (v.error) return [400, { error: v.error }];
-      const rate = searchRate.check(agentAuth.valid ? `token:${agentAuth.id}` : `owner:${clientIp(req)}`);
-      if (!rate.allowed) {
-        res.setHeader('Retry-After', String(rate.retryAfter));
-        return [429, { error: `Too many searches: at most ${SEARCH_RATE_LIMIT} a minute. Retry in ${rate.retryAfter}s.`, retry_after: rate.retryAfter }];
-      }
       const r = await searchDocs(v.value);
       return r.dbError ? [503, { error: 'Temporarily unavailable' }] : [200, r];
     },
   },
   collection: {
-    auth: { GET: 'owner|documents:read', POST: 'owner|documents:write,documents:publish' }, httpMethod: ['GET', 'POST'],
+    auth: { GET: 'owner|documents:read', POST: 'owner|documents:write,documents:publish' }, httpMethod: ['GET', 'POST'], rate: readLimiter('collection lookups'),
     async run({ method, body, query, req, res, agentAuth }) {
       if (method === 'GET') {
         if (query.slug === undefined || query.slug === '') {
@@ -172,6 +170,17 @@ async function handler(req, res) {
     if (agentAuth.valid) return res.status(403).json({ error: `This token needs the ${String(scope).split(' ').join(' or ')} scope`, guide: '/llms.txt' });
     // Refused anyway: a token sent as x-api-key / ?key= only changes the hint (api/_lib/raw.js refusalHint).
     return authHint(req, res, { error: scope ? `Sign in as the owner, or send Authorization: Bearer <token> with the ${scope} scope` : 'Owner only', hint: refusalHint(req, HINTS.missing), scope });
+  }
+
+  // Every GET is a read with its own limiter (a GET action without `rate` throws here, and the
+  // "doc-reads-rate-limited" invariant fails): after the auth check so refused calls cost nobody's
+  // allowance, before run() so a limited call costs no query.
+  if (req.method === 'GET') {
+    const rate = action.rate.check(agentAuth.valid ? `token:${agentAuth.id}` : `owner:${clientIp(req)}`);
+    if (!rate.allowed) {
+      res.setHeader('Retry-After', String(rate.retryAfter));
+      return res.status(429).json({ error: `Too many ${action.rate.what}: at most ${READ_RATE_LIMIT} a minute. Retry in ${rate.retryAfter}s.`, retry_after: rate.retryAfter });
+    }
   }
 
   const [status, payload] = await action.run({ method: req.method, body, query: req.query || {}, req, res, agentAuth });

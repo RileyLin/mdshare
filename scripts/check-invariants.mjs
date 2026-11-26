@@ -371,18 +371,40 @@ const checks = [
     },
   },
   {
-    id: 'search-rate-limited',
-    why: 'Search is a LIKE scan over every row; one token or session in a loop had no backstop (adversarial review 2026-11-26). The search action checks searchRate before searchDocs().',
+    id: 'doc-reads-rate-limited',
+    why: 'Reads cost real queries and documents:read/activity:read tokens go to third-party agents: search had no backstop (ADV-A, 2026-11-26), then action=collection had none either (ADV-B). Every GET action in api/doc.js declares its own rate limiter, and handler() checks it after the auth check and before run().',
     run() {
+      if (!exists('api/doc.js')) return [];
       const doc = read('api/doc.js');
-      const action = (/\n {2}search: \{([\s\S]*?)\n {2}\},/.exec(doc) || [])[1] || '';
-      const check = action.indexOf('if (!rate.allowed)');
-      const call = action.indexOf('searchDocs(');
       const errs = [];
-      if (!/const searchRate = rateLimiter\(\{ limit: SEARCH_RATE_LIMIT, windowMs: 60 \* 1000 \}\);/.test(doc)) errs.push('api/doc.js: keep `const searchRate = rateLimiter({ limit: SEARCH_RATE_LIMIT, windowMs: 60 * 1000 });` (api/_lib/rate-limit.js).');
-      if (!/searchRate\.check\(agentAuth\.valid \? `token:\$\{agentAuth\.id\}` : `owner:\$\{clientIp\(req\)\}`\)/.test(action)) errs.push('api/doc.js: the search action counts each call with searchRate.check(token id, or owner IP).');
-      if (check < 0 || call < 0 || check > call) errs.push('api/doc.js: answer 429 (`if (!rate.allowed)`) before searchDocs(), so a limited caller costs no query.');
-      if (!/res\.setHeader\('Retry-After'/.test(action)) errs.push('api/doc.js: a 429 from search carries Retry-After.');
+      if (!/export const READ_RATE_LIMIT = \d+;/.test(doc)) errs.push('api/doc.js: keep `export const READ_RATE_LIMIT = <calls a minute>;`.');
+      if (!/const readLimiter = \(what\) => \(\{ what, \.\.\.rateLimiter\(\{ limit: READ_RATE_LIMIT, windowMs: 60 \* 1000 \}\) \}\);/.test(doc)) errs.push('api/doc.js: keep `const readLimiter = (what) => ({ what, ...rateLimiter({ limit: READ_RATE_LIMIT, windowMs: 60 * 1000 }) });` (api/_lib/rate-limit.js).');
+      // Each GET action carries its own limiter (a shared one would let page views eat search).
+      const table = (/const ACTIONS = \{\n([\s\S]*?)\n\};/.exec(doc) || [])[1] || '';
+      const entries = table.split(/\n(?= {2}[a-z]+: \{)/);
+      const seen = new Set();
+      for (const e of entries) {
+        const name = (/^\s*([a-z]+): \{/.exec(e) || [])[1];
+        if (!name) continue;
+        const method = (/\bhttpMethod:\s*('[^']*'|\[[^\]]*\])/.exec(e) || [])[1] || '';
+        if (!/'GET'/.test(method)) continue;
+        const rate = /\brate: readLimiter\('([^']+)'\)/.exec(e);
+        if (!rate) errs.push(`api/doc.js: GET action "${name}" has no limiter. Add rate: readLimiter('<what, plural>') next to its auth.`);
+        else if (seen.has(rate[1])) errs.push(`api/doc.js: GET action "${name}" reuses the limiter label '${rate[1]}'; give each action its own readLimiter().`);
+        else seen.add(rate[1]);
+      }
+      if (/searchRate|rateLimiter\(\{/.test(table)) errs.push('api/doc.js: actions use rate: readLimiter(...), checked once in handler(); no limiter calls inside run().');
+      const fn = (/async function handler\(req, res\) \{\n([\s\S]*?)\n\}/.exec(doc) || [])[1] || '';
+      const refused = fn.indexOf('if (!allowed(auth, req, res, agentAuth)) {');
+      const guard = fn.indexOf("  if (req.method === 'GET') {\n    const rate = action.rate.check(agentAuth.valid ? `token:${agentAuth.id}` : `owner:${clientIp(req)}`);\n    if (!rate.allowed) {");
+      const runAt = fn.indexOf('await action.run(');
+      if (guard < 0) errs.push("api/doc.js handler(): every GET counts with `if (req.method === 'GET') { const rate = action.rate.check(agentAuth.valid ? `token:${agentAuth.id}` : `owner:${clientIp(req)}`); if (!rate.allowed) {` (token id, or owner IP).");
+      else {
+        if (refused < 0 || refused > guard) errs.push('api/doc.js handler(): check the rate limit after the auth check, so refused requests use up no one\'s allowance.');
+        if (runAt < 0 || runAt < guard) errs.push('api/doc.js handler(): answer 429 before action.run(), so a limited caller costs no query.');
+        const block = fn.slice(guard, runAt);
+        if (!/res\.setHeader\('Retry-After', String\(rate\.retryAfter\)\);\n\s*return res\.status\(429\)/.test(block)) errs.push('api/doc.js handler(): a limited read answers 429 with Retry-After.');
+      }
       return errs;
     },
   },

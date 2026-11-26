@@ -86,8 +86,27 @@ const extraMutations = [
   ['agent-auth-hints', '/v treats a stray ?token= as an agent request', (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace('  if (parseBearer(req)) return true;\n', '  if (parseBearer(req) || apiKeyMisuse(req)) return true;\n'))],
   ['agent-auth-hints', 'api/doc.js refuses a misplaced key before the owner check', (d) => edit(d, 'api/doc.js', (s) => s.replace('  const agentAuth = await resolveAgentToken(req);\n', "  if (refusalHint(req, null)) return authHint(req, res, { error: 'Unsupported credential', hint: HINTS.missing, scope });\n  const agentAuth = await resolveAgentToken(req);\n"))],
   ['agent-auth-hints', '/raw consults the misplaced-key hint before the row lookup', (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace('  // A present-but-invalid Bearer', '  const early = refusalHint(req, null); void early;\n  // A present-but-invalid Bearer'))],
-  ['search-rate-limited', 'the search action stops checking the limit', (d) => edit(d, 'api/doc.js', (s) => s.replace('      if (!rate.allowed) {', '      if (false) {'))],
-  ['search-rate-limited', 'the limit is checked after the query runs', (d) => edit(d, 'api/doc.js', (s) => s.replace('      const r = await searchDocs(v.value);\n', '').replace('      const rate = searchRate.check(', '      const r = await searchDocs(v.value);\n      const rate = searchRate.check('))],
+  // Every GET action is rate-limited (search: ADV-A; collection and the rest: ADV-B, 2026-11-26).
+  ['doc-reads-rate-limited', 'the handler stops checking the limit', (d) => edit(d, 'api/doc.js', (s) => s.replace('    if (!rate.allowed) {', '    if (false) {'))],
+  ['doc-reads-rate-limited', 'only search is limited', (d) => edit(d, 'api/doc.js', (s) => s.replace("  if (req.method === 'GET') {\n    const rate", "  if (req.method === 'GET' && name === 'search') {\n    const rate"))],
+  ['doc-reads-rate-limited', 'the collection action loses its limiter', (d) => edit(d, 'api/doc.js', (s) => s.replace(", rate: readLimiter('collection lookups')", ''))],
+  ['doc-reads-rate-limited', 'a new GET action has no limiter', (d) => edit(d, 'api/doc.js', (s) => s.replace('const ACTIONS = {\n', "const ACTIONS = {\n  stats: {\n    auth: 'owner|documents:read', httpMethod: 'GET',\n    async run() { return [200, {}]; },\n  },\n"))],
+  ['doc-reads-rate-limited', 'two actions share one allowance', (d) => edit(d, 'api/doc.js', (s) => s.replace("rate: readLimiter('version lookups')", "rate: readLimiter('searches')"))],
+  ['doc-reads-rate-limited', 'the limit is checked after the query runs', (d) => edit(d, 'api/doc.js', (s) => {
+    const start = s.indexOf("  if (req.method === 'GET') {\n    const rate");
+    const end = s.indexOf('  const [status, payload] = await action.run(');
+    const block = s.slice(start, end);
+    const after = s.indexOf('\n', end) + 1;
+    return s.slice(0, start) + s.slice(end, after) + block + s.slice(after);
+  })],
+  ['doc-reads-rate-limited', 'refused requests are counted', (d) => edit(d, 'api/doc.js', (s) => {
+    const start = s.indexOf("  if (req.method === 'GET') {\n    const rate");
+    const end = s.indexOf('  const [status, payload] = await action.run(');
+    const block = s.slice(start, end);
+    const gate = s.indexOf('  if (!allowed(auth, req, res, agentAuth)) {');
+    return s.slice(0, gate) + block + s.slice(gate, start) + s.slice(end);
+  })],
+  ['doc-reads-rate-limited', 'a limiter call moves back inside run()', (d) => edit(d, 'api/doc.js', (s) => s.replace('      const r = await searchDocs(v.value);', "      const extra = rateLimiter({ limit: 1000, windowMs: 1000 }); void extra;\n      const r = await searchDocs(v.value);"))],
   ['agent-auth-hints', 'authHint stops sending WWW-Authenticate', (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace("  res.setHeader('WWW-Authenticate', `Bearer realm=\"mdshare\"${scope ? `, scope=\"${scope}\"` : ''}`);\n", ''))],
 ];
 for (const [id, label, mutate] of extraMutations) {
