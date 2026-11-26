@@ -259,6 +259,8 @@ Or set it for the whole document with `tables: cards` (or `table`, `compact`, `a
 
 Publish with `POST /api/share` and a JSON body `{"markdown": "...", "keep": true}`. Send `Authorization: Bearer <token>` to publish as yourself; `keep` is honoured for tokens and the owner. The plain-text version of this guide, written for models, is at [/llms.txt](/llms.txt).
 
+Agents read a document by fetching its `/v/<id>` link with `Authorization: Bearer <token>`: they get the Markdown instead of the page, under the same rules as `/raw/<id>`. Full-text search is `GET /api/doc?action=search&q=<text>` (titles and bodies, Chinese too) with a `documents:read` token; the Library search box uses the same search. When a request is refused, the answer says how to authenticate (send the token as `Authorization: Bearer`, not `x-api-key`). After you create a token in Settings, copy the agent block shown with it: it has this site's address, the token, and ready-made whoami, read, search and publish commands.
+
 The create response includes `checks`: a list of problems the page will show (an unclosed code block or `:::` block, a table row with extra cells, a mermaid block that won't draw, a local file link). Fix them and publish again with `"parent": "<old id>"`; the old page then points readers to the new version, and the new one has **What changed**.
 
 ## Reading and feedback

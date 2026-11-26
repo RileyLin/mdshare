@@ -13,9 +13,10 @@
 //
 // Usage:
 //   mdshare-cli status
-//   mdshare-cli search [--q TERM] [--kind paste|diagram|archify|all] [--limit N] [--offset N]
+//   mdshare-cli search "<text>" [--limit N] [--offset N] [--json]   (full text, Chinese too)
+//   mdshare-cli search [--q TERM] [--kind paste|diagram|archify|all] [--limit N] [--offset N]  (catalog)
 //   mdshare-cli recent [--kind K] [--limit N] [--offset N]      (alias for search with no --q)
-//   mdshare-cli read <id> --kind paste|diagram|archify
+//   mdshare-cli read <id | /v/ /raw/ /d/ /a/ link> [--kind paste|diagram|archify]
 //   mdshare-cli create <kind> <file> [--ttl SECONDS] [--title TITLE]   (kind: paste|diagram|archify)
 //   mdshare-cli publish <id> --kind K --public true|false
 //   mdshare-cli create paste <file> --keep --parent ID --origin SESSION [--strict]
@@ -197,7 +198,31 @@ async function cmdStatus(flags) {
   printJson(data);
 }
 
-async function cmdSearch(flags) {
+// Full-text search (GET /api/doc?action=search, documents:read): `search "<text>"`. Prints one
+// line per hit (id, title, link, snippet) or the raw JSON with --json. The older flag form
+// (`search --q TERM --kind K`) is the catalog listing below and keeps working unchanged.
+async function cmdFullTextSearch(text, flags) {
+  const params = new URLSearchParams({ action: 'search', q: text });
+  if (flags.limit) params.set('limit', String(flags.limit));
+  if (flags.offset) params.set('offset', String(flags.offset));
+  const res = await fetch(`${BASE_URL}/api/doc?${params.toString()}`, { headers: authHeaders(flags) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) fail(`search failed (${res.status}): ${data.error || 'unknown error'}${data.hint ? ` — ${data.hint}` : ''}`);
+  if (flags.json) return printJson(data);
+  const results = Array.isArray(data.results) ? data.results : [];
+  if (!results.length) { process.stdout.write(`no documents contain "${text}"\n`); return; }
+  const lines = results.map((r) => `${r.id}  ${r.title}${r.kept ? '  ⭐' : ''}${r.is_public ? '  (public)' : ''}\n    ${BASE_URL}/v/${r.id}\n    ${r.snippet || ''}`);
+  process.stdout.write(`${lines.join('\n')}\n${data.total} match${data.total === 1 ? '' : 'es'}${data.next_offset != null ? ` · more: --offset ${data.next_offset}` : ''}\n`);
+}
+
+async function cmdSearch(flagsOrPositional, maybeFlags) {
+  // search "<text>" -> full text; search --q/--kind (flags only) -> catalog, as before.
+  if (Array.isArray(flagsOrPositional)) {
+    const flags = maybeFlags || {};
+    if (flagsOrPositional.length) return cmdFullTextSearch(flagsOrPositional.join(' '), flags);
+    return cmdSearch(flags);
+  }
+  const flags = flagsOrPositional || {};
   const params = new URLSearchParams();
   if (flags.q) params.set('q', flags.q);
   if (flags.kind) params.set('kind', flags.kind);
@@ -209,16 +234,36 @@ async function cmdSearch(flags) {
   printJson(data);
 }
 
+// `read` takes an id or a full link (/v/<id>, /raw/<id>, /d/<id>, /a/<id>). A link on another host
+// is refused: the token is only ever sent to MDSHARE_BASE_URL, never to a host named in an argument.
+const LINK_KIND = { v: 'paste', raw: 'paste', d: 'diagram', a: 'archify' };
+function parseReadTarget(arg, flags) {
+  const s = String(arg || '').trim();
+  if (/^https?:\/\//i.test(s)) {
+    let u;
+    try { u = new URL(s); } catch { fail(`not a valid link: ${s}`); }
+    const base = new URL(BASE_URL);
+    if (u.host !== base.host || u.protocol !== base.protocol) fail(`that link is on ${u.origin}, but this CLI talks to ${base.origin}; set MDSHARE_BASE_URL=${u.origin} to read it (the token is only sent to MDSHARE_BASE_URL)`);
+    const m = u.pathname.match(/^\/(v|raw|d|a)\/([A-Za-z0-9_-]{1,64})\/?$/);
+    if (!m) fail(`not a document link (expected /v/<id>, /raw/<id>, /d/<id> or /a/<id>): ${s}`);
+    if (flags.kind && flags.kind !== LINK_KIND[m[1]]) fail(`--kind ${flags.kind} does not match a /${m[1]}/ link`);
+    return { id: m[2], kind: LINK_KIND[m[1]] };
+  }
+  const m = s.match(/^\/?(v|raw|d|a)\/([A-Za-z0-9_-]{1,64})\/?$/);
+  if (m) return { id: m[2], kind: flags.kind || LINK_KIND[m[1]] };
+  return { id: s, kind: flags.kind || 'paste' };
+}
+
 async function cmdRead(positional, flags) {
-  const [id] = positional;
-  const kind = flags.kind;
-  if (!id || !kind) fail('usage: mdshare-cli read <id> --kind paste|diagram|archify');
+  if (!positional[0]) fail('usage: mdshare-cli read <id or link> [--kind paste|diagram|archify]');
+  const { id, kind } = parseReadTarget(positional[0], flags);
+  if (!id) fail('usage: mdshare-cli read <id or link> [--kind paste|diagram|archify]');
   const path = READ_WRITE_PATH[kind];
   if (!path) fail(`unknown kind: ${kind}`);
   const res = await fetch(`${BASE_URL}${path}?id=${encodeURIComponent(id)}`, { headers: authHeaders(flags) });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    fail(`read failed (${res.status}): ${data.error || 'unknown error'}`);
+    fail(`read failed (${res.status}): ${data.error || 'unknown error'}${data.hint ? ` — ${data.hint}` : ''}`);
   }
   const text = await res.text();
   process.stdout.write(text.endsWith('\n') ? text : text + '\n');
@@ -309,7 +354,7 @@ async function main() {
   switch (command) {
     case 'login': return cmdLogin(flags);
     case 'status': return cmdStatus(flags);
-    case 'search': return cmdSearch(flags);
+    case 'search': return cmdSearch(positional, flags);
     case 'recent': return cmdSearch({ ...flags, q: undefined });
     case 'read': return cmdRead(positional, flags);
     case 'create': return cmdCreate(positional, flags);
@@ -331,9 +376,10 @@ async function main() {
         '      writing a file. Never pass the password as an argument — type it when prompted,',
         '      or set MDSHARE_OWNER_PASSWORD for non-interactive use.',
         '  status',
-        '  search [--q TERM] [--kind paste|diagram|archify|all] [--limit N] [--offset N]',
+        '  search "<text>" [--limit N] [--offset N] [--json]   full text over titles + bodies (中文 too)',
+        '  search [--q TERM] [--kind paste|diagram|archify|all] [--limit N] [--offset N]   catalog',
         '  recent [--kind K] [--limit N] [--offset N]',
-        '  read <id> --kind paste|diagram|archify',
+        '  read <id | https://<site>/v/<id> link> [--kind paste|diagram|archify]',
         '  create paste|diagram <file> [--ttl SECONDS] [--title TITLE] [--keep]',
         '        [--parent ID] [--origin SESSION] [--strict]   (prints publish checks to stderr)',
         '  feedback [<doc id>] [--status open|resolved|dismissed]   (default: all open feedback)',
@@ -363,6 +409,6 @@ if (isDirectRun) {
 
 export {
   parseArgs, resolveToken, authHeaders, readHiddenPassword,
-  cmdLogin, cmdStatus, cmdSearch, cmdRead, cmdCreate, cmdPublish, cmdFeedback, cmdResolve, cmdReads, cmdVersions, main,
+  cmdLogin, cmdStatus, cmdSearch, cmdFullTextSearch, cmdRead, parseReadTarget, cmdCreate, cmdPublish, cmdFeedback, cmdResolve, cmdReads, cmdVersions, main,
   DEFAULT_TOKEN_FILE, CliError,
 };

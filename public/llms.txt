@@ -29,8 +29,23 @@ cells, a mermaid block that won't draw, a redaction placeholder, a local file li
 publish again with "parent" set to the broken id. "keep_ignored" explains a keep that didn't apply.
 
 Other endpoints: POST /api/diagram {"svg", "title", "markdown"?, "keep"?} -> /d/<id>;
-GET /raw/<id> returns stored Markdown (needs owner, public doc, or documents:read token);
-GET /api/pastes?q=<text> searches the library (documents:read token).
+GET /api/pastes?q=<text>&kind=paste|diagram|archify lists the catalog (documents:read token).
+
+## Read and search
+
+Send the token as "Authorization: Bearer <token>" (not x-api-key, not ?key=; those get a 401 that
+says so). A 401 carries WWW-Authenticate: Bearer, a "hint" and this guide's URL.
+GET /v/<id>   with Authorization: Bearer -> the stored Markdown (text/markdown), so a /v/ link
+              someone gave you works as-is. GET /raw/<id> is the same (text/plain). Readable for
+              the owner, a public doc, a documents:read token, or the token that created it.
+              Anything else is 404 {"error", "hint"}, the same for a private id and a missing one.
+GET /api/doc?action=search&q=<text>&limit=20&offset=0      full-text search (documents:read)
+     q: 1-200 characters, matched literally and case-insensitively in titles and bodies (Chinese
+     works: q=缓存命中). URL-encode it. Response: {"results": [{"id", "title", "snippet" (plain
+     text around the first match), "created_at", "kept", "is_public", "url"}], "total",
+     "next_offset"}. Title matches first, then newest; expired documents are not included.
+     Read a hit with GET /v/<id>. CLI: mdshare-cli search "<text>" [--json];
+     mdshare-cli read <id or link>.
 Token scopes: documents:read, documents:write, documents:publish (own docs), documents:publish:any,
 activity:read (read receipts + feedback), activity:write (resolve feedback).
 To publish (make public): PATCH /api/pin {"id", "kind": "paste", "is_public": true, "keep": true}.
