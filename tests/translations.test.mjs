@@ -1,6 +1,6 @@
 // Chinese/English versions linked (migration 012). Contracts proven here:
-//  - linking a translation is gated exactly like a version parent: the owner, a documents:read
-//    token, or the token's own row; anonymous never, even to a public document
+//  - linking a translation: the owner, any pair; a token only a pair it created (target and its
+//    group), never via documents:read; anonymous never, even to a public document
 //  - translation_of always stores the group root; versions inherit lang/translation_of
 //  - the reader page shows the 中文/English switch to the owner, and to a reader only when the
 //    translation is public; ?as=reader is the reader view
@@ -54,7 +54,7 @@ async function seed(extra = {}) {
   return id;
 }
 
-test('linking at publish is gated like a version parent; anonymous never, even to a public document', async () => {
+test('linking at publish: the owner or the token that created the target; anonymous never, even to a public document', async () => {
   const en = await seed({ lang: 'en' });
   const pub = await seed({ lang: 'en', is_public: true });
   const before = db.sb.tables.mdshare_pastes.length;
@@ -71,11 +71,12 @@ test('linking at publish is gated like a version parent; anonymous never, even t
   assert.equal(ownZh.statusCode, 200, 'a token may translate its own document');
   assert.equal(row(ownZh.body.id).translation_of, own.body.id);
 
+  // Changed by ADV-B finding 2 (2026-11-26): documents:read no longer lets a token link onto a
+  // document it did not create (see the last test in this file).
   const reader = await tok(['documents:read', 'documents:write']);
   const r = await create({ markdown: ZH, lang: 'zh', translation_of: en }, bearer(reader));
-  assert.equal(r.statusCode, 200, 'documents:read may link to any document');
-  assert.equal(r.body.lang, 'zh');
-  assert.equal(r.body.translation_of, en);
+  assert.equal(r.statusCode, 404, 'documents:read does not let a token link onto the owner\'s document');
+  assert.equal(r.body.translation_of, undefined);
   const o = await create({ markdown: ZH, translation_of: pub }, OWNER);
   assert.equal(o.statusCode, 200);
   assert.equal(o.body.lang, 'zh', 'lang is detected from the text when not given');
@@ -209,7 +210,7 @@ test('translation action: auth matrix, same 404 for not-yours and missing, famil
   assert.equal(JSON.stringify(db.sb.tables.mdshare_pastes.map((p) => [p.id, p.content, p.is_public, p.expires_at, p.pinned])), contentBefore, 'content, visibility and expiry untouched');
   assert.match((await page(en, OWNER)).body, new RegExp(`href="/v/${zh2}" lang="zh"`));
 
-  // A token with documents:publish on its own rows; the target still needs canUseParent.
+  // A token with documents:publish on its own rows; the target must be its own too (canLinkTranslation).
   const pubTok = await tok(['documents:write', 'documents:publish']);
   const mine = await create({ markdown: ZH, lang: 'zh' }, bearer(pubTok));
   assert.equal((await link({ id: mine.body.id, translation_of: en }, bearer(pubTok))).statusCode, 404, 'target not readable by this token');
@@ -228,4 +229,60 @@ test('translation action: auth matrix, same 404 for not-yours and missing, famil
   assert.equal(unl.statusCode, 200);
   assert.equal(row(zh1).translation_of, null, 'null unlinks the family');
   assert.doesNotMatch((await page(en, OWNER)).body, /lang-switch/);
+});
+
+// ADV-B finding 2 (2026-11-26): a token links a translation only between documents it created
+// itself, the target and the group the link joins; documents:read is not enough. The owner can
+// link any pair. Refusals are the same 404 as a missing id, at publish and in the action.
+test('a token links only a pair it created; never its document to the owner\'s, private or public', async () => {
+  const t = await tok(['documents:read', 'documents:write', 'documents:publish']);
+  const missingPub = await create({ markdown: ZH, lang: 'zh', translation_of: 'zzzzzzzzz0' }, bearer(t));
+  const missingAct = await link({ id: (await create({ markdown: ZH, lang: 'zh' }, bearer(t))).body.id, translation_of: 'zzzzzzzzz0' }, bearer(t));
+  assert.equal(missingPub.statusCode, 404);
+  assert.equal(missingAct.statusCode, 404);
+
+  // Its own pair: fine at publish and through the action.
+  const myEn = await create({ markdown: EN, lang: 'en' }, bearer(t));
+  const myZh = await create({ markdown: ZH, lang: 'zh', translation_of: myEn.body.id }, bearer(t));
+  assert.equal(myZh.statusCode, 200, 'own pair at publish');
+  assert.equal(row(myZh.body.id).translation_of, myEn.body.id);
+  const myZh2 = await create({ markdown: ZH, lang: 'zh' }, bearer(t));
+  const myEn2 = await create({ markdown: EN, lang: 'en' }, bearer(t));
+  assert.equal((await link({ id: myZh2.body.id, translation_of: myEn2.body.id }, bearer(t))).statusCode, 200, 'own pair through the action');
+
+  // The owner's documents, private or public: refused, with the same answer as a missing id.
+  for (const [label, extra] of [['private', {}], ['public', { is_public: true }]]) {
+    const ownerEn = await seed({ lang: 'en', ...extra });
+    const before = db.sb.tables.mdshare_pastes.length;
+    const pub = await create({ markdown: ZH, lang: 'zh', translation_of: ownerEn }, bearer(t));
+    assert.equal(pub.statusCode, 404, `publish onto the owner's ${label} document`);
+    assert.deepEqual(pub.body, missingPub.body, `${label}: same 404 as a missing target at publish`);
+    assert.equal(db.sb.tables.mdshare_pastes.length, before, `${label}: nothing was inserted`);
+    const mine = await create({ markdown: ZH, lang: 'zh' }, bearer(t));
+    const act = await link({ id: mine.body.id, translation_of: ownerEn }, bearer(t));
+    assert.equal(act.statusCode, 404, `action onto the owner's ${label} document`);
+    assert.deepEqual(act.body, missingAct.body, `${label}: same 404 as a missing target in the action`);
+    assert.equal(row(mine.body.id).translation_of, null, `${label}: not linked`);
+    assert.doesNotMatch((await page(ownerEn, OWNER)).body, /lang-switch/, `${label}: no switch on the owner's page`);
+  }
+
+  // Its own version of the owner's document is not its own group: the link would join the owner's
+  // original (translation_of stores the group root), so it is refused too.
+  const ownerV1 = await seed({ lang: 'en' });
+  const tokV2 = await create({ markdown: EN + '\n\nv2', parent: ownerV1 }, bearer(t));
+  assert.equal(tokV2.statusCode, 200, 'documents:read may still make a version (unchanged)');
+  assert.equal((await create({ markdown: ZH, lang: 'zh', translation_of: tokV2.body.id }, bearer(t))).statusCode, 404, 'own version of the owner\'s document');
+  assert.doesNotMatch((await page(ownerV1, OWNER)).body, /lang-switch/);
+
+  // The other direction: the owner's document can't be linked onto the token's.
+  const ownerZh = await seed({ lang: 'zh', content: ZH });
+  assert.equal((await link({ id: ownerZh, translation_of: myEn.body.id }, bearer(t))).statusCode, 404, 'not the token\'s document to edit');
+
+  // The owner may link any pair, including onto a token's document.
+  assert.equal((await link({ id: ownerZh, translation_of: myEn2.body.id }, OWNER)).statusCode, 200, 'owner: the owner\'s document onto a token\'s');
+  const ownerEn = await seed({ lang: 'en' });
+  assert.equal((await link({ id: ownerZh, translation_of: ownerEn }, OWNER)).statusCode, 200, 'owner: own pair');
+  const tokZh = await create({ markdown: ZH, lang: 'zh' }, bearer(t));
+  assert.equal((await link({ id: tokZh.body.id, translation_of: ownerEn }, OWNER)).statusCode, 200, 'owner: a token\'s document onto the owner\'s');
+  assert.equal((await create({ markdown: ZH, lang: 'zh', translation_of: myEn.body.id }, OWNER)).statusCode, 200, 'owner: publish onto a token\'s document');
 });

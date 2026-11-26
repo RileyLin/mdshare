@@ -11,8 +11,8 @@
 //                          ?slug=<slug>: its table of contents (api/_lib/collections.js, 3 queries)
 //   POST ?action=collection   owner | documents:write or documents:publish (tokens: rows they created).
 //                          {id, collection: <slug>|null} for the document's whole version family
-//   POST ?action=translation  same auth. {id, translation_of: <id>|null, lang?: zh|en}; the target is
-//                          gated like a version parent (canUseParent)
+//   POST ?action=translation  same auth. {id, translation_of: <id>|null, lang?: zh|en}; a token links
+//                          only documents it created, target and group too (canLinkTranslation)
 // Every action is declared in ACTIONS with its `auth`, and every GET action with its own `rate`
 // limiter (READ_RATE_LIMIT a minute per token, or per IP for the owner session -> 429, checked in
 // handler() after the auth check and before run()); scripts/check-invariants.mjs fails if one
@@ -28,7 +28,7 @@ import { refusalHint, authHint, HINTS } from './_lib/raw.js';
 import { rateLimiter, clientIp } from './_lib/rate-limit.js';
 import {
   allowed, recordRead, listReads, validateFeedback, createFeedback, listFeedback, resolveFeedback, versionChain, FEEDBACK_STATUSES,
-  canUseParent, translationFields, translationRoot, parseLang,
+  canLinkTranslation, translationFields, translationRoot, parseLang,
 } from './_lib/activity.js';
 import { parseCollection, SLUG_HINT, canEditMeta, familyFilter, patchMeta, listCollections, collectionToc } from './_lib/collections.js';
 
@@ -132,9 +132,9 @@ const ACTIONS = {
       const patch = lang ? { lang } : {};
       if (body.translation_of === null) patch.translation_of = null;
       else if (body.translation_of !== undefined) {
-        const t = await canUseParent(body.translation_of, req, res, agentAuth);
+        const t = await canLinkTranslation(body.translation_of, req, res, agentAuth);
         if (t.dbError) return [503, { error: 'Temporarily unavailable' }];
-        if (!t.ok) return [404, { error: 'translation_of not found, expired, or not readable with this credential' }];
+        if (!t.ok) return [404, { error: 'translation_of not found, expired, or not linkable with this credential' }];
         const own = e.row.root_id || e.row.id;
         const link = translationFields(t.row).translation_of;
         if ((t.row.root_id || t.row.id) === own || link === own) return [400, { error: 'translation_of is this document or already its translation; link the translation to the original instead' }];

@@ -430,30 +430,47 @@ const checks = [
   },
   {
     id: 'translation-gated',
-    why: 'A translation link puts a 中文/English switch on another document; like a version parent, only the owner or a token that can read the target may create one, never because it is public, and a reader sees the switch only when the translation is public (2026-11-26).',
+    why: 'A translation link puts a 中文/English switch on every page of a group. The owner links any pair; a token only a pair it created, target and group (ADV-B, 2026-11-26: documents:read let a token plant a switch on the owner\'s private document); never because it is public; a reader sees the switch only when the translation is public (2026-11-26).',
     run() {
       const errs = [];
+      const act = exists('api/_lib/activity.js') ? read('api/_lib/activity.js') : '';
+      const gateFn = (/export async function canLinkTranslation\(targetId, req, res, agentAuth\) \{\n([\s\S]*?)\n\}/.exec(act) || [])[1];
+      if (gateFn === undefined) errs.push('api/_lib/activity.js: keep `export async function canLinkTranslation(targetId, req, res, agentAuth)`, the one gate for translation links.');
+      else {
+        const body = gateFn.split('\n').filter((l) => !isCommentLine(l)).join('\n');
+        if (/is_public|hasScope|documents:read/.test(body)) errs.push('api/_lib/activity.js: canLinkTranslation() must not grant a link because the target is public or the token has a scope; a token links only documents it created.');
+        if (!/const mine = \(r\) => !!\(r && agentAuth && agentAuth\.valid && r\.created_by_token && r\.created_by_token === agentAuth\.id\);/.test(body)) errs.push('api/_lib/activity.js: canLinkTranslation() defines `const mine = (r) => !!(r && agentAuth && agentAuth.valid && r.created_by_token && r.created_by_token === agentAuth.id);`.');
+        const owner = body.indexOf('if (checkAuthAndRefresh(req, res)) return { ok: true, row };');
+        const target = body.indexOf('if (!mine(row)) return { ok: false };');
+        const group = body.indexOf('const group = translationRoot(row);');
+        const groupOk = body.indexOf('return mine(g.row) ? { ok: true, row } : { ok: false };');
+        if (owner < 0 || target < 0 || owner > target) errs.push('api/_lib/activity.js: canLinkTranslation(): the owner first, then `if (!mine(row)) return { ok: false };` for a token.');
+        if (group < 0 || groupOk < 0 || group < target) errs.push('api/_lib/activity.js: canLinkTranslation() also requires the token to have created the group it joins (`const group = translationRoot(row);` ... `return mine(g.row) ? { ok: true, row } : { ok: false };`), since that is what gets stored.');
+        const lookup = body.indexOf("if (group === row.id) return { ok: true, row };\n  const g = await getRow('mdshare_pastes', group, ");
+        if (lookup < 0 || lookup < group || lookup > groupOk) errs.push("api/_lib/activity.js: canLinkTranslation() skips the group lookup only when the target is its own group root: `if (group === row.id) return { ok: true, row };` then `const g = await getRow('mdshare_pastes', group, ...)`.");
+        if ((body.match(/return \{ ok: true, row \};/g) || []).length !== 2) errs.push('api/_lib/activity.js: canLinkTranslation() grants only for the owner and for a target that is its own group root.');
+      }
       const share = read('api/share.js');
       if (/translation_of:/.test(share)) {
-        const gate = share.search(/const t = await canUseParent\(body\.translation_of, req, res, agentAuth\);/);
+        const gate = share.search(/const t = await canLinkTranslation\(body\.translation_of, req, res, agentAuth\);/);
         const store = share.search(/translationOf = translationFields\(t\.row\)\.translation_of;/);
-        if (gate < 0) errs.push('api/share.js: check `const t = await canUseParent(body.translation_of, req, res, agentAuth);` before linking a translation.');
-        if (store < 0 || store < gate) errs.push('api/share.js: store the link as `translationOf = translationFields(t.row).translation_of;` after the canUseParent() check, never from the request body.');
+        if (gate < 0) errs.push('api/share.js: check `const t = await canLinkTranslation(body.translation_of, req, res, agentAuth);` before linking a translation.');
+        if (store < 0 || store < gate) errs.push('api/share.js: store the link as `translationOf = translationFields(t.row).translation_of;` after the canLinkTranslation() check, never from the request body.');
         if (!/translation_of: links\.translationOf \|\| null/.test(share)) errs.push('api/share.js: the insert stores `translation_of: links.translationOf || null` (set only from the gated row or the gated parent).');
         lines('api/share.js').forEach((l, i) => {
-          if (!isCommentLine(l) && /body\??\.translation_of/.test(l) && !/canUseParent\(body\.translation_of|body\?\.translation_of != null/.test(l)) errs.push(`api/share.js:${i + 1}: body.translation_of may only be passed to canUseParent() ("${l.trim()}").`);
+          if (!isCommentLine(l) && /body\??\.translation_of/.test(l) && !/canLinkTranslation\(body\.translation_of|body\?\.translation_of != null/.test(l)) errs.push(`api/share.js:${i + 1}: body.translation_of may only be passed to canLinkTranslation() ("${l.trim()}").`);
         });
       }
       const doc = read('api/doc.js');
       const action = (/\n {2}translation: \{([\s\S]*?)\n {2}\},/.exec(doc) || [])[1];
       if (action !== undefined) {
-        const gate = action.indexOf('await canUseParent(body.translation_of, req, res, agentAuth)');
+        const gate = action.indexOf('await canLinkTranslation(body.translation_of, req, res, agentAuth)');
         const write = action.indexOf('patchMeta(');
-        if (gate < 0 || write < 0 || gate > write) errs.push('api/doc.js: the translation action checks canUseParent(body.translation_of, ...) before patchMeta().');
+        if (gate < 0 || write < 0 || gate > write) errs.push('api/doc.js: the translation action checks canLinkTranslation(body.translation_of, ...) before patchMeta().');
+        if (/canUseParent\(/.test(action)) errs.push('api/doc.js: the translation action gates with canLinkTranslation(), not canUseParent() (documents:read must not be enough).');
         if (!/patch\.translation_of = link;/.test(action) || !/const link = translationFields\(t\.row\)\.translation_of;/.test(action)) errs.push('api/doc.js: the translation action stores translationFields(t.row).translation_of, never the request body.');
         if (!/auth: 'owner\|documents:write,documents:publish'/.test(action)) errs.push("api/doc.js: translation must be auth: 'owner|documents:write,documents:publish'.");
       }
-      const act = exists('api/_lib/activity.js') ? read('api/_lib/activity.js') : '';
       const info = (/export async function versionInfo\([\s\S]*?\n\}/.exec(act) || [''])[0];
       if (!/\.filter\(\(r\) => r\.id !== root && r\.root_id !== root && \(owner \|\| r\.is_public === true\)\)/.test(info)) errs.push('api/_lib/activity.js: versionInfo() picks the translation only from `(owner || r.is_public === true)` rows outside the own version family.');
       return errs;

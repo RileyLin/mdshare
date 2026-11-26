@@ -29,15 +29,15 @@ Migrations: additive only (checked). The agent may apply an additive migration w
 - `api/doc.js` + `api/_lib/activity.js` — reading loop: read receipts, feedback, resolve, versions + zh/en translation switch (`versionInfo`). `action=search` → `api/_lib/search.js` (rpc, migration 011).
 - `api/_lib/collections.js` — collections + `patchMeta` (only lang/translation_of/collection); `/c[/:slug]` is owner-only `api/_lib/collection-page.js` (`render.js?kind=collection`).
 - `api/_lib/raw.js` — the one raw-Markdown path (`/raw/:id`, `/v/:id` + Bearer); agent 401 hints. `api/_lib/lint.js` — publish checks returned by `POST /api/share`. `/d/:id` is `api/_lib/diagram-page.js` via `render.js?kind=diagram`.
-- `node e2e/preview.mjs <file.md>` — render a document like the reader will (390 + 1280 px). Use before publishing anything long.
-- `api/_lib/ui.js` — page chrome for every server page (head, header, controls, sign-in, 404s). `api/_lib/classic.js` is the pre-redesign reader behind `?classic=1`.
+- `node e2e/preview.mjs <file.md>` — render a document as the reader will (390 + 1280 px) before publishing anything long.
+- `api/_lib/ui.js` — page chrome for every server page (head, header, sign-in, 404s). `api/_lib/classic.js` is the pre-redesign reader behind `?classic=1`.
 - `public/assets/render.js` — the one Markdown renderer (reader, editor preview, home, guide, diagram notes): marked → DOMPurify → enhancement rules. `app.js` page behaviour, `library.js` Library/Settings, `mdshare.css` the design system. Libraries are vendored in `public/vendor/`.
 - Rendering rule: stored Markdown is never rewritten. Automatic formatting happens at view time and fires only on clear patterns; `e2e` has must-not-trigger fixtures and an old-vs-new text-equivalence check. Run `node e2e/compare-docs.mjs --dir <private docs>` before changing a rule.
-- `e2e/features.json` — feature map: each user-facing feature, how to reach it, what proves it works. Add an entry when you add or change a feature. `node e2e/shots.mjs` captures every page in both themes.
-- `docs/history/` — past plans and rollout notes. Background, not current rules.
+- `e2e/features.json` — feature map: each user-facing feature, how to reach it, what proves it works. Add an entry per new or changed feature. `node e2e/shots.mjs` captures every page in both themes.
+- `docs/history/` — past plans and rollout notes (background, not rules).
 
 ## Enforced by checks — read the error message, don't re-explain here
-`npm run check` (`scripts/check-invariants.mjs`) fails on: more than 12 API functions; broken or duplicate rewrites; destructive SQL in migrations; creation routes taking visibility from the request; content routes missing `isVisible`/`setPrivacyHeaders`; unencoded ids in PostgREST filters; `allow-same-origin` in an iframe sandbox; timers without `.unref()`; credential-like strings; stray root Markdown; CLAUDE.md over 90 lines / 7000 chars; `api/doc.js` actions without auth; activity writes outside `activityWrite`; versions or translations without `canUseParent`; collection pages that aren't owner-only; the loop script on non-owner pages; a create response without `checks`; search text in a PostgREST filter; Markdown served outside `sendRawMarkdown`; agent 401s without `authHint`. `tests/invariants.test.mjs` proves each check fires.
+`npm run check` (`scripts/check-invariants.mjs`) fails on: more than 12 API functions; broken or duplicate rewrites; destructive SQL in migrations; creation routes taking visibility from the request; content routes missing `isVisible`/`setPrivacyHeaders`; unencoded ids in PostgREST filters; `allow-same-origin` in an iframe sandbox; timers without `.unref()`; credential-like strings; stray root Markdown; CLAUDE.md over 90 lines / 7000 chars; `api/doc.js` actions without auth (GETs: a rate limit); activity writes outside `activityWrite`; versions without `canUseParent`; translations without `canLinkTranslation`; collection pages that aren't owner-only; the loop script on non-owner pages; a create response without `checks`; search text in a PostgREST filter; Markdown served outside `sendRawMarkdown`; agent 401s without `authHint`. `tests/invariants.test.mjs` proves each check fires.
 
 ## When you correct a mistake
 Don't add a paragraph here. In order of preference:
@@ -53,5 +53,5 @@ No quick fixes that hide a cause (zero-delay timers, blind retries, broad try/ca
 - Auth: a single owner (`MDSHARE_PASSWORD`). Agent bearer tokens are additive. `scopes === null` is a legacy token. Scoped tokens use `documents:read|write|publish|publish:any`. `publish` covers only rows the token created.
 - Archify HTML is attacker-controlled and is only ever shown inside the sandboxed iframe built by `api/archify-render.js`.
 - Render/raw output depends on the session and on `is_public`, so it is never cacheable.
-- Keep every page usable on a phone (`e2e` mobile feature checks for horizontal overflow).
+- Keep every page usable on a phone (e2e checks horizontal overflow).
 - Authoring syntax for agents lives in `public/llms.txt` (models) and `public/guide.md` (humans); change both with the renderer.

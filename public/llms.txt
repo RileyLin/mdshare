@@ -24,9 +24,10 @@ Authorization: Bearer <token>        (optional; required for "keep")
   token or the owner. Reader feedback on this document is listed with it, so it can be routed back.
 - lang: "zh" or "en" (anything else is 400).
 - translation_of: id of the same text in the other language. Both pages then show a 中文 / English
-  switch (a reader sees it only when the other page is public too). Gated like parent: the owner, a
-  documents:read token, or a token linking to its own document; otherwise 404 and nothing is
-  created. lang is detected when you leave it out; the same language as the target is 400.
+  switch (a reader sees it only when the other page is public too). The owner can link any two
+  documents; a token only documents it created itself (the target and the original it belongs to;
+  documents:read is not enough). Otherwise 404 and nothing is created, the same as a missing id.
+  lang is detected when you leave it out; the same language as the target is 400.
 - collection: a slug (1-48 of a-z 0-9 -, e.g. "glm-study"). The owner sees it at /c/<slug>: one
   row per document (newest version only, a zh/en pair as one row), with read status. Needs a token
   or the owner (ignored otherwise; "collection_ignored" says so). Invalid slug: 400.
@@ -80,8 +81,8 @@ GET  /api/doc?action=versions&id=<id>        the version chain, oldest first (do
 
 POST /api/doc?action=translation {"id", "translation_of": "<original id>" | null, "lang"?: "zh"|"en"}
      links (or with null unlinks) the document's whole version family. Needs documents:write or
-     documents:publish, on a document this token created (the owner: any); the target is gated like
-     a parent. Otherwise 404, the same for a missing id.
+     documents:publish, on a document this token created, linked to a target it created too (the
+     owner: any pair). Otherwise 404, the same for a missing id.
 POST /api/doc?action=collection {"id", "collection": "<slug>" | null}   same rules; whole family.
 GET  /api/doc?action=collection                every collection: [{"slug", "count", "updated_at"}]
 GET  /api/doc?action=collection&slug=<slug>    its contents: {"items": [{"title", "id", "kept",

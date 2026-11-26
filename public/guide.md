@@ -265,7 +265,7 @@ The create response includes `checks`: a list of problems the page will show (an
 
 ## Chinese and English versions, and collections
 
-Publish the same text in both languages and link them: send `"lang": "zh"` and `"translation_of": "<id of the English page>"` (or `mdshare-cli create paste zh.md --translation-of <id>`). Both pages then get a small **中文 / English** switch above the title. A reader sees it only when the other page is public too, so a private translation is never revealed. Only you or an agent that can read the original can link to it.
+Publish the same text in both languages and link them: send `"lang": "zh"` and `"translation_of": "<id of the English page>"` (or `mdshare-cli create paste zh.md --translation-of <id>`). Both pages then get a small **中文 / English** switch above the title. A reader sees it only when the other page is public too, so a private translation is never revealed. You can link any two of your documents; an agent's token can only link documents that token published itself.
 
 Group a series with `"collection": "glm-study"` (lowercase letters, digits and hyphens). Your collections are listed at [/c](/c), and each one at `/c/<slug>` is a table of contents only you can open: one row per document with its date, ⭐ Kept and whether you have read it. Older versions are hidden (each row links the newest version), and a Chinese/English pair is one row with both links. New versions and translations stay in the collection by themselves. In the Library, the collection chips above the list filter to one collection. To file an existing document, use `POST /api/doc?action=collection` or `mdshare-cli collection <id> <slug>`.
 

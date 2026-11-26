@@ -75,11 +75,10 @@ export function versionFields(parentRow) {
   return { root_id: rootOf(parentRow, parentRow.id), version_no: versionNoOf(parentRow) + 1 };
 }
 
-// May this request create a new version of `parentId`, or link a translation to it? Only the
-// owner, or an agent token that can read the parent (documents:read, or it created the parent).
-// Anonymous creates never can: a stranger must not be able to attach a "newer version" banner or a
-// language switch to someone's document. Used for `parent` and `translation_of` alike
-// (invariants "version-parent-gated", "translation-gated").
+// May this request create a new version of `parentId`? Only the owner, or an agent token that can
+// read the parent (documents:read, or it created the parent). Anonymous creates never can: a
+// stranger must not be able to attach a "newer version" banner to someone's document
+// (invariant "version-parent-gated"). Translations use the stricter canLinkTranslation().
 export async function canUseParent(parentId, req, res, agentAuth) {
   if (typeof parentId !== 'string' || !isValidId(parentId)) return { ok: false };
   const { row, dbError } = await getRow('mdshare_pastes', parentId, 'id,created_by_token,expires_at,pinned,root_id,version_no,lang,translation_of,collection');
@@ -146,6 +145,28 @@ export const LANGS = ['zh', 'en'];
 export const translationRoot = (row) => (row && row.translation_of) || rootOf(row, row && row.id);
 export function translationFields(targetRow) {
   return { translation_of: translationRoot(targetRow) };
+}
+
+// May this request link a document as the translation of `targetId`? A link puts a 中文/English
+// switch on every page of the group, so: the owner, any pair; a token, only when it created both
+// the target and the group the link joins (translationRoot(target), which is what gets stored),
+// never because it can read the target (documents:read) or the target is public (ADV-B finding 2,
+// 2026-11-26). The other side, the document being linked, is the token's own: a new create, or
+// canEditMeta() in the translation action. A refusal is { ok: false }, the same as a missing id.
+// Invariant "translation-gated".
+export async function canLinkTranslation(targetId, req, res, agentAuth) {
+  if (typeof targetId !== 'string' || !isValidId(targetId)) return { ok: false };
+  const { row, dbError } = await getRow('mdshare_pastes', targetId, 'id,created_by_token,expires_at,pinned,root_id,version_no,lang,translation_of,collection');
+  if (dbError) return { ok: false, dbError: true };
+  if (!row) return { ok: false };
+  if (checkAuthAndRefresh(req, res)) return { ok: true, row };
+  const mine = (r) => !!(r && agentAuth && agentAuth.valid && r.created_by_token && r.created_by_token === agentAuth.id);
+  if (!mine(row)) return { ok: false };
+  const group = translationRoot(row);
+  if (group === row.id) return { ok: true, row };
+  const g = await getRow('mdshare_pastes', group, 'id,created_by_token,expires_at,pinned');
+  if (g.dbError) return { ok: false, dbError: true };
+  return mine(g.row) ? { ok: true, row } : { ok: false };
 }
 // 'zh' | 'en' | null for absent; undefined for anything else (the caller answers 400).
 export function parseLang(v) {

@@ -12,7 +12,7 @@ import { randomBytes } from 'crypto';
 import { wantsKeep, expiryFields, baseUrl, guideUrl, FORMAT_GUIDE_PATH } from './_lib/content.js';
 import { withErrors } from './_lib/events.js';
 import { lintMarkdown } from './_lib/lint.js';
-import { canUseParent, versionFields, translationFields, parseLang, detectLang } from './_lib/activity.js';
+import { canUseParent, canLinkTranslation, versionFields, translationFields, parseLang, detectLang } from './_lib/activity.js';
 import { parseCollection, SLUG_HINT } from './_lib/collections.js';
 
 // --- Rate Limiting (in-memory, per Vercel serverless instance) ---
@@ -80,7 +80,7 @@ async function supabaseSet(id, content, ttlSeconds, createdByToken, keep, links 
     // parent_id/root_id/version_no/origin come from the handler after canUseParent()/cleanOrigin()
     // (migrations 009, 010). root_id + version_no are stored so reads never walk the chain.
     // lang/translation_of/collection (migration 012): translation_of only from translationFields()
-    // of a row canUseParent() allowed, or inherited from the gated parent ("translation-gated").
+    // of a row canLinkTranslation() allowed, or inherited from the gated parent ("translation-gated").
     body: JSON.stringify({ id, content, expires_at: expiresAt, pinned, title, is_public: false, created_by_token: createdByToken || null, parent_id: links.parentId || null, root_id: links.rootId || null, version_no: links.versionNo || null, origin: links.origin || null, lang: links.lang || null, translation_of: links.translationOf || null, collection: links.collection || null }),
   });
   if (!res.ok) throw new Error(`Supabase insert failed: ${res.status}`);
@@ -213,17 +213,18 @@ async function handler(req, res) {
     }
 
     // Languages (migration 012): `lang` zh|en, and `translation_of` links this document to the same
-    // text in the other language. Linking is gated exactly like `parent` (canUseParent: owner,
-    // documents:read, or the token's own row; never because the target is public).
+    // text in the other language. canLinkTranslation: the owner links any pair; a token only to a
+    // document it created whose group it created too (documents:read or a public target is not
+    // enough); anonymous never. Refused or missing: the same 404, and nothing is created.
     const lang = parseLang(body?.lang);
     if (lang === undefined) return res.status(400).json({ error: 'lang must be "zh" or "en"', guide: guideUrl(req) });
     let docLang = lang || inherited.lang || null;
     let translationOf = inherited.translationOf || null;
     let targetCollection = null;
     if (body?.translation_of != null) {
-      const t = await canUseParent(body.translation_of, req, res, agentAuth);
+      const t = await canLinkTranslation(body.translation_of, req, res, agentAuth);
       if (t.dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
-      if (!t.ok) return res.status(404).json({ error: 'translation_of not found, expired, or not readable with this credential', guide: guideUrl(req) });
+      if (!t.ok) return res.status(404).json({ error: 'translation_of not found, expired, or not linkable with this credential (a token links only documents it created)', guide: guideUrl(req) });
       if (version.root_id && (t.row.root_id || t.row.id) === version.root_id) return res.status(400).json({ error: 'translation_of is a version of this same document; use parent for a revision' });
       docLang = docLang || detectLang(markdown);
       if (t.row.lang && t.row.lang === docLang) return res.status(400).json({ error: `translation_of is already a ${docLang} document; set lang to the other language` });
