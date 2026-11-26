@@ -20,7 +20,7 @@ ${scripts(['app', 'library'])}
 const LIBRARY = `<main class="page" id="library">
   <div class="page-head"><div><h1>Library</h1><p id="lib-summary">Everything you and your agents have published.</p></div></div>
   <div class="lib-tools">
-    <div class="search"><input class="input" id="search" type="search" placeholder="Search titles and text" autocomplete="off" aria-label="Search"></div>
+    <div class="search"><input class="input" id="search" type="search" placeholder="Search titles and full text (中文 too)" autocomplete="off" aria-label="Search"></div>
     <div class="seg" id="filter-seg" role="group" aria-label="Filter">
       <button type="button" data-v="all" aria-pressed="true">All<span class="n" data-count="all"></span></button>
       <button type="button" data-v="kept" aria-pressed="false">⭐ Kept<span class="n" data-count="kept"></span></button>
@@ -34,6 +34,7 @@ const LIBRARY = `<main class="page" id="library">
       <button type="button" data-v="archify" aria-pressed="false">Archify</button>
     </div>
   </div>
+  <p class="lib-search-status" id="search-status" role="status" aria-live="polite" hidden></p>
   <div class="lib-list" id="lib-list" aria-busy="true">${'<div class="skel"></div>'.repeat(6)}</div>
 </main>
 <div class="batch-bar" id="batch-bar" role="toolbar" aria-label="Selected items">
@@ -85,7 +86,8 @@ const SETTINGS = `<main class="page" id="settings">
           </div>
         </details>
       </div>
-      <div class="token-reveal" id="new-token-reveal" hidden><div class="h">Copy this now. It won't be shown again.</div><div class="row"><code id="new-token-value"></code><button class="btn sm" type="button" id="btn-copy-token">Copy</button></div></div>
+      <div class="token-reveal" id="new-token-reveal" hidden><div class="h">Copy this now. It won't be shown again.</div><div class="row"><code id="new-token-value"></code><button class="btn sm" type="button" id="btn-copy-token">Copy</button></div>
+        <div class="agent-block"><div class="agent-head"><span>For an agent: paste this block (whoami, read, search, publish)</span><button class="btn sm" type="button" id="btn-copy-agent">Copy block</button></div><pre id="new-token-agent"></pre></div></div>
       <div class="token-list" id="tokens-list"><div class="lib-empty">Loading…</div></div>
       <p class="usage">Use it as <code>Authorization: Bearer &lt;token&gt;</code> against <code id="api-base-example">/api/…</code>. Agents: see <a href="/llms.txt">/llms.txt</a>.</p>
     </section>

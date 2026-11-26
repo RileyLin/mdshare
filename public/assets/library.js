@@ -34,15 +34,80 @@
 
   // ===================== Library =====================
   var items = [], filter = 'all', type = 'any', query = '', selected = new Map();
+  // Full-text search (GET /api/doc?action=search): documents come from the server, ranked, with a
+  // snippet; diagrams/archify are still matched by title here. Until the answer for the current
+  // text arrives, the local title/preview filter is shown. Stale answers are dropped by `seq`.
+  var server = { q: '', results: null, total: 0, error: '' }, extra = new Map(), seq = 0;
   function kept(p) { return !!p.pinned || (typeof p.expires_at === 'string' && p.expires_at >= '2099'); }
   function soon(p) { return !kept(p) && (new Date(p.expires_at) - Date.now()) < 48 * 3600000; }
-  function matches(p) {
+  function inView(p) {
     if (type !== 'any' && p.kind !== type) return false;
     if (filter === 'kept' && !kept(p)) return false;
     if (filter === 'public' && !p.is_public) return false;
     if (filter === 'soon' && !soon(p)) return false;
+    return true;
+  }
+  function matches(p) {
+    if (!inView(p)) return false;
     if (query) { var q = query.toLowerCase(); if ((p.title || '').toLowerCase().indexOf(q) < 0 && (p.preview || '').toLowerCase().indexOf(q) < 0) return false; }
     return true;
+  }
+  function serverReady() { return !!query && server.q === query && Array.isArray(server.results); }
+  // Server results reuse the library's own row object when it has one (so keep/publish state is
+  // shared), otherwise become a row of their own (documents beyond the first page of the library).
+  function fromServer(r) {
+    var p = null;
+    for (var i = 0; i < items.length; i++) if (items[i].id === r.id && items[i].kind === 'paste') { p = items[i]; break; }
+    if (!p) { p = extra.get(r.id) || { id: r.id, kind: 'paste' }; extra.set(r.id, p); }
+    if (!p.title) p.title = r.title;
+    if (p.created_at == null) p.created_at = r.created_at;
+    if (p.is_public == null) p.is_public = r.is_public;
+    if (p.pinned == null) { p.pinned = r.kept; p.expires_at = r.expires_at; }
+    return p;
+  }
+  function searchNow(q) {
+    var my = ++seq;
+    api('/api/doc?action=search&limit=50&q=' + encodeURIComponent(q), {}).then(function (d) {
+      if (my !== seq) return;
+      server = { q: q, results: d.results || [], total: d.total || 0, error: '' }; render();
+    }).catch(function (e) {
+      if (my !== seq) return;
+      server = { q: q, results: null, total: 0, error: e.message }; render();
+    });
+  }
+  // The match inside a snippet is wrapped in <mark>; everything is a text node (no innerHTML).
+  function fillSnippet(el, text, q) {
+    var lower = text.toLowerCase(), needle = q.toLowerCase(), at = 0, i;
+    var exact = lower.length === text.length;
+    while (exact && needle && (i = lower.indexOf(needle, at)) >= 0) {
+      if (i > at) el.appendChild(document.createTextNode(text.slice(at, i)));
+      var m = document.createElement('mark'); m.textContent = text.slice(i, i + needle.length); el.appendChild(m);
+      at = i + needle.length;
+    }
+    if (at < text.length) el.appendChild(document.createTextNode(text.slice(at)));
+    fitSnippet(el);
+  }
+  // The snippet is clamped to 2-3 lines; on a narrow row the match could land below the clamp.
+  // Drop leading context (bounded) until the first <mark> is inside the visible lines.
+  function fitSnippet(el) {
+    var m = el.querySelector('mark');
+    for (var k = 0; m && k < 12; k++) {
+      if (m.getBoundingClientRect().bottom <= el.getBoundingClientRect().bottom + 1) return;
+      var first = el.firstChild;
+      if (!first || first.nodeType !== 3) return;
+      var t = first.textContent.replace(/^…/, '');
+      if (t.length < 4) { el.removeChild(first); return; }
+      first.textContent = '…' + t.slice(Math.max(4, Math.floor(t.length / 3)));
+    }
+  }
+  function searchStatus() {
+    var st = $('search-status'); if (!st) return;
+    st.hidden = !query;
+    if (!query) return;
+    st.textContent = serverReady()
+      ? (server.total ? server.total + (server.total === 1 ? ' document contains “' : ' documents contain “') + query + '”' + (server.total > server.results.length ? ' · showing the first ' + server.results.length : '') : 'No document contains “' + query + '”')
+      : (server.error && server.q === query ? 'Full-text search is unavailable (' + server.error + '); matching titles only' : 'Searching titles and text…');
+    st.setAttribute('data-state', serverReady() ? 'done' : (server.error && server.q === query ? 'error' : 'loading'));
   }
   // Server previews are a plain slice of the source; drop syntax a reader shouldn't see.
   function cleanPreview(s) {
@@ -52,7 +117,7 @@
       .replace(/\{(up|down|accent)\}/g, '').replace(/:badge\[([^\]]*)\](\{\w+\})?/g, '$1').replace(/==([^=]+)==/g, '$1')
       .replace(/\s+/g, ' ').trim();
   }
-  function row(p) {
+  function row(p, snip) {
     var k = kept(p), sel = selected.has(p.id);
     var tags = (p.is_public ? '<span class="tag public">Public</span>' : '') + (k ? '<span class="tag kept">⭐ Kept</span>' : '<span class="tag' + (soon(p) ? ' soon' : '') + '">' + left(p.expires_at) + '</span>');
     var kindTag = p.kind !== 'paste' ? '<span class="tag kind">' + esc(p.kind === 'archify' && p.archifyKind ? p.archifyKind : KIND_LABEL[p.kind]) + '</span>' : '';
@@ -60,7 +125,7 @@
       '<span class="cb"><input type="checkbox" aria-label="Select ' + esc(p.title) + '"' + (sel ? ' checked' : '') + '></span>' +
       '<span class="kind-ic ' + p.kind + '" aria-hidden="true">' + ICON[p.kind] + '</span>' +
       '<span class="main"><span class="title"><b>' + esc(p.title || 'Untitled') + '</b>' + kindTag + '</span>' +
-      (p.preview ? '<span class="preview" style="display:block">' + esc(cleanPreview(p.preview)) + '</span>' : '') + '</span>' +
+      (snip != null ? '<span class="preview snippet" data-snippet="' + esc(p.id) + '"></span>' : (p.preview ? '<span class="preview" style="display:block">' + esc(cleanPreview(p.preview)) + '</span>' : '')) + '</span>' +
       '<span class="side"><span class="acts">' +
         '<button class="btn sm" type="button" data-act="copy">Copy link</button>' +
         '<button class="btn sm" type="button" data-act="public">' + (p.is_public ? 'Unpublish' : 'Publish') + '</button>' +
@@ -69,15 +134,25 @@
   }
   function render() {
     var list = $('lib-list'); if (!list) return;
-    var shown = items.filter(matches);
+    var shown, snippets = {};
+    if (serverReady()) {
+      var q = query.toLowerCase();
+      var docs = server.results.map(function (r) { snippets[r.id] = r.snippet || ''; return fromServer(r); });
+      var others = items.filter(function (p) { return p.kind !== 'paste' && (p.title || '').toLowerCase().indexOf(q) >= 0; });
+      shown = docs.concat(others).filter(inView);
+    } else {
+      shown = items.filter(matches);
+    }
+    searchStatus();
     var counts = { all: items.length, kept: items.filter(kept).length, public: items.filter(function (p) { return p.is_public; }).length, soon: items.filter(soon).length };
     Object.keys(counts).forEach(function (k) { var n = document.querySelector('[data-count="' + k + '"]'); if (n) n.textContent = counts[k] ? String(counts[k]) : ''; });
     var sum = $('lib-summary');
     if (sum) sum.textContent = items.length ? (items.length + ' item' + (items.length === 1 ? '' : 's') + ' · ' + counts.kept + ' kept · ' + counts.public + ' public') : 'Nothing here yet.';
     list.setAttribute('aria-busy', 'false');
-    if (!items.length) { list.innerHTML = '<div class="lib-empty"><b>Your library is empty</b>Write something on the <a href="/#new">home page</a>, or let an agent publish through the API.</div>'; return; }
+    if (!items.length && !shown.length) { list.innerHTML = '<div class="lib-empty"><b>Your library is empty</b>Write something on the <a href="/#new">home page</a>, or let an agent publish through the API.</div>'; return; }
     if (!shown.length) { list.innerHTML = '<div class="lib-empty"><b>No matches</b>' + (query ? 'Nothing matches “' + esc(query) + '”.' : 'Nothing in this view.') + '</div>'; return; }
-    list.innerHTML = shown.map(row).join('');
+    list.innerHTML = shown.map(function (p) { return row(p, Object.prototype.hasOwnProperty.call(snippets, p.id) && p.kind === 'paste' ? snippets[p.id] : null); }).join('');
+    list.querySelectorAll('[data-snippet]').forEach(function (el) { fillSnippet(el, snippets[el.getAttribute('data-snippet')] || '', query); });
   }
   function syncBatch() {
     var bar = $('batch-bar'); if (!bar) return;
@@ -85,7 +160,7 @@
     bar.classList.toggle('show', selected.size > 0);
     document.body.classList.toggle('selecting', selected.size > 0);
   }
-  function find(id) { for (var i = 0; i < items.length; i++) if (items[i].id === id) return items[i]; return null; }
+  function find(id) { for (var i = 0; i < items.length; i++) if (items[i].id === id) return items[i]; return extra.get(id) || null; }
   async function setKeep(list, on) {
     var body = await api('/api/pin', json('PATCH', { items: list.map(function (p) { return { id: p.id, type: p.kind }; }), pinned: on }));
     var failed = {}; (body.failed || []).forEach(function (f) { failed[f.id] = true; });
@@ -109,7 +184,12 @@
   async function remove(list) {
     var ok = 0;
     for (var i = 0; i < list.length; i++) {
-      try { await api(DELETE_URL[list[i].kind] + encodeURIComponent(list[i].id), { method: 'DELETE' }); ok++; items = items.filter(function (x) { return x.id !== list[i].id; }); }
+      try {
+        await api(DELETE_URL[list[i].kind] + encodeURIComponent(list[i].id), { method: 'DELETE' }); ok++;
+        var gone = list[i].id;
+        items = items.filter(function (x) { return x.id !== gone; }); extra.delete(gone);
+        if (Array.isArray(server.results)) server.results = server.results.filter(function (r) { return r.id !== gone; });
+      }
       catch (e) { /* counted below */ }
     }
     return ok;
@@ -168,7 +248,15 @@
     }
     seg('filter-seg', function (v) { filter = v; });
     seg('type-seg', function (v) { type = v; });
-    var t; $('search').addEventListener('input', function (e) { clearTimeout(t); t = setTimeout(function () { query = e.target.value.trim(); render(); }, 120); });
+    var t; $('search').addEventListener('input', function (e) {
+      clearTimeout(t);
+      t = setTimeout(function () {
+        query = e.target.value.trim();
+        if (!query) { seq++; server = { q: '', results: null, total: 0, error: '' }; }
+        render();
+        if (query) searchNow(query);
+      }, 250);
+    });
     document.addEventListener('keydown', function (e) {
       if (e.key === '/' && document.activeElement === document.body) { e.preventDefault(); $('search').focus(); }
       if (e.key === 'Escape' && selected.size) { selected.clear(); render(); syncBatch(); }
@@ -181,7 +269,32 @@
   }
 
   // ===================== Settings =====================
-  var lastToken = '';
+  var lastToken = '', lastAgentBlock = '';
+  // Paste-ready instructions for an agent, built from the create response (shown once, with the
+  // token, like the token itself). Uses the CLI's variable names so mdshare-cli picks them up too.
+  function agentBlock(d) {
+    var scopes = Array.isArray(d.scopes) ? d.scopes : null;
+    var has = function (x) { return !!scopes && scopes.indexOf(x) >= 0; };
+    var canWrite = !scopes || has('documents:write');
+    var auth = 'curl -s -H "Authorization: Bearer $MDSHARE_AGENT_TOKEN"';
+    var lines = [
+      '# mdshare agent access: ' + d.name,
+      '# scopes: ' + (!scopes ? 'legacy (create + read its own documents)' : (scopes.length ? scopes.join(', ') : 'none (reads only documents it created)')) + ' · ' + (d.expires_at ? 'expires ' + new Date(d.expires_at).toISOString().slice(0, 10) : 'never expires'),
+      'export MDSHARE_BASE_URL=' + location.origin,
+      'export MDSHARE_AGENT_TOKEN=' + d.token,
+      '',
+      '# who am I',
+      auth + ' "$MDSHARE_BASE_URL/api/auth?action=whoami"',
+      '# read a document as Markdown (a /v/<id> link works as-is)',
+      auth + ' "$MDSHARE_BASE_URL/v/<id>"',
+    ];
+    if (has('documents:read')) lines.push('# full-text search (Chinese works too)', auth + ' "$MDSHARE_BASE_URL/api/doc?action=search&q=<url-encoded text>"');
+    else lines.push('# search needs documents:read (this token reads only documents it created)');
+    if (canWrite) lines.push('# publish (private; "keep": true never expires)', auth + ' -H "Content-Type: application/json" -d \'{"markdown": "# Title\\n\\nBody", "keep": true}\' "$MDSHARE_BASE_URL/api/share"');
+    else lines.push('# publishing needs documents:write');
+    lines.push('# CLI: mdshare-cli search "<text>" · mdshare-cli read <link> · guide: ' + location.origin + '/llms.txt');
+    return lines.join('\n');
+  }
   function tokenRow(t) {
     var scopes = !Array.isArray(t.scopes) ? '<span class="tag">legacy: create + own-read</span>'
       : (!t.scopes.length ? '<span class="tag">no scopes: own-read only</span>' : t.scopes.map(function (s) { return '<span class="tag scope">' + esc(s) + '</span>'; }).join(''));
@@ -220,6 +333,8 @@
       var data = await api('/api/auth', json('POST', payload));
       lastToken = data.token;
       $('new-token-value').textContent = data.token;
+      lastAgentBlock = agentBlock(Object.assign({ name: name }, data));
+      $('new-token-agent').textContent = lastAgentBlock;
       $('new-token-reveal').hidden = false;
       $('new-token-name').value = '';
       $('scope-legacy').checked = false; $('scope-read').checked = true; $('scope-write').checked = false; $('scope-publish').checked = false; $('scope-publish-any').checked = false; $('scope-activity-read').checked = false; $('scope-activity-write').checked = false; onLegacy();
@@ -238,6 +353,7 @@
     $('btn-create-token').addEventListener('click', createToken);
     $('new-token-name').addEventListener('keydown', function (e) { if (e.key === 'Enter') createToken(); });
     $('btn-copy-token').addEventListener('click', function () { if (lastToken) navigator.clipboard.writeText(lastToken).then(function () { toast('Copied'); }, function () { toast('Copy failed: select it manually', true); }); });
+    $('btn-copy-agent').addEventListener('click', function () { if (lastAgentBlock) navigator.clipboard.writeText(lastAgentBlock).then(function () { toast('Agent instructions copied'); }, function () { toast('Copy failed: select it manually', true); }); });
     $('tokens-list').addEventListener('click', async function (e) {
       var b = e.target.closest('[data-revoke]'); if (!b) return;
       if (!window.confirm('Revoke this token? Anything using it gets 401s immediately.')) return;

@@ -71,6 +71,15 @@ for (const [p, status, marker] of [['/dashboard', 401, 'Welcome back'], ['/setti
   check(`gate ${p} -> ${status}`, r.status === status && r.text.includes(marker), `status ${r.status}`);
 }
 
+// Agent-facing failures explain themselves (2026-11-26): search needs a credential, and a token
+// sent as x-api-key is told to use Authorization: Bearer, without any lookup.
+{
+  const s = await get('/api/doc?action=search&q=' + encodeURIComponent('缓存命中'));
+  check('gate search -> 401 Bearer challenge', s.status === 401 && /^Bearer/.test(s.headers.get('www-authenticate') || '') && !s.text.includes('"results"'), `status ${s.status}`);
+  const k = await get('/v/zzzzzzzzz0', { headers: { 'x-api-key': 'mds_release_check_not_a_token' } });
+  check('agent hint: x-api-key on /v/ gets the Bearer hint', k.status === 401 && /Authorization: Bearer/.test(k.text), `status ${k.status}`);
+}
+
 // 4. A real private create (release only): stays private, raw is denied, content never leaks.
 if (MODE === 'release') {
   const marker = `release-check-${Date.now().toString(36)}`;

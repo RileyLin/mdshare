@@ -526,5 +526,42 @@
       "dark theme redraws with dark colours",
       "on a phone the page never scrolls sideways; a wide diagram keeps its size and scrolls in its frame"
     ]
+  },
+  {
+    "id": "library-search",
+    "name": "Library full-text search (Chinese too) with highlighted snippets",
+    "path": "/dashboard search box -> GET /api/doc?action=search",
+    "steps": [
+      "seed a doc whose only match for 缓存命中 is deep in the body next to an <img onerror> tag, plus unrelated docs",
+      "owner types 缓存命中 in the Library search (1280 and 390 px)",
+      "clear the search",
+      "anonymous GET /api/doc?action=search"
+    ],
+    "assertions": [
+      "only the matching doc is listed, with the server's result count",
+      "its snippet shows the match in a <mark>, built from text nodes; the tag is not rendered and does not run",
+      "a doc beyond the first 200 library rows is still found (server search, not a browser filter)",
+      "clearing the search restores the full list",
+      "no sideways scroll on a phone",
+      "anonymous search is 401 with WWW-Authenticate: Bearer"
+    ]
+  },
+  {
+    "id": "agent-read-v",
+    "name": "Agents read /v/ links with a Bearer token; failures say how to authenticate",
+    "path": "/v/:id (Bearer, anon, owner) + Settings token reveal",
+    "steps": [
+      "create a documents:read token",
+      "fetch /v/:id with the token, with a bad token, with x-api-key",
+      "open /v/:id anonymously and as the owner",
+      "create a token in Settings"
+    ],
+    "assertions": [
+      "Bearer fetch returns the exact Markdown as text/markdown",
+      "a bad token is 401 with WWW-Authenticate and a hint; x-api-key gets the Bearer hint",
+      "anonymous browser sees the sign-in gate with the agent hint, no content and no rel=alternate",
+      "the owner page advertises the Markdown with rel=alternate",
+      "the Settings reveal shows a paste-ready agent block with this site, the token, its scopes and a search example"
+    ]
   }
 ]

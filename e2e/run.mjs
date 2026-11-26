@@ -776,6 +776,103 @@ async function runLibrary(ctx, ok) {
   });
 }
 
+// Tier 2 (2026-11-26): full-text search from the Library box. The target document is older than
+// the 100 rows the Library loads, so finding it proves the search runs on the server.
+async function runLibrarySearch(ctx, ok) {
+  const filler = 'Background paragraph about serving infrastructure and batching. '.repeat(6);
+  const target = { id: `srch${rand(6)}`, title: '推理优化笔记', content: `# 推理优化笔记\n\n${filler}\n\nKV 缓存命中率是关键 <img src=x onerror="window.__xss=1"> 命中越多，首字延迟越低。\n\n${filler}`, created_at: '2024-01-01T00:00:00.000Z', expires_at: '2098-01-01T00:00:00Z', pinned: false };
+  ctx.sb.seed('mdshare_pastes', target);
+  for (let i = 0; i < 105; i++) ctx.sb.seed('mdshare_pastes', { id: `fill${i}${rand(4)}`, title: `Filler ${i}`, content: `# Filler ${i}\n\n缓存 only, no full phrase`, created_at: new Date(Date.now() - i * 60000).toISOString(), expires_at: new Date(Date.now() + 86400000).toISOString() });
+  const other = await seedPaste(ctx.serverUrl, '# Beta unrelated\n\nnothing about caches');
+  const check = async (page, label) => {
+    await page.fill('#search', '缓存命中');
+    await page.waitForSelector('#search-status[data-state="done"]', { timeout: 5000 });
+    const r = await page.evaluate((id) => {
+      const rows = [...document.querySelectorAll('.lib-row')].map((e) => e.dataset.id);
+      const snip = document.querySelector(`.lib-row[data-id="${id}"] .snippet`);
+      const mk = snip && snip.querySelector('mark');
+      const sb = snip && snip.getBoundingClientRect(); const mb = mk && mk.getBoundingClientRect();
+      const lines = snip ? Math.round(sb.height / parseFloat(getComputedStyle(snip).lineHeight)) : 0;
+      return { lines, markVisible: !!(mb && mb.top >= sb.top - 1 && mb.bottom <= sb.bottom + 1 && mb.right <= sb.right + 1), rows, marks: snip ? [...snip.querySelectorAll('mark')].map((m) => m.textContent) : null, snippet: snip ? snip.textContent : null, imgs: document.querySelectorAll('#lib-list img').length, onlyText: snip ? [...snip.childNodes].every((n) => n.nodeType === 3 || (n.nodeName === 'MARK' && n.childNodes.length === 1 && n.firstChild.nodeType === 3)) : false, xss: window.__xss === 1, status: document.getElementById('search-status').textContent, overflow: document.documentElement.scrollWidth - window.innerWidth };
+    }, target.id);
+    ok(JSON.stringify(r.rows) === JSON.stringify([target.id]), `${label}: only the matching document is listed (got ${JSON.stringify(r.rows.slice(0, 5))})`);
+    ok(JSON.stringify(r.marks) === JSON.stringify(['缓存命中']) && /缓存命中率是关键/.test(r.snippet || ''), `${label}: the snippet highlights the match (${JSON.stringify(r.marks)} in "${r.snippet}")`);
+    ok(r.onlyText && r.imgs === 0 && !r.xss && !/onerror/.test(r.snippet || ''), `${label}: the snippet is text nodes only; the tag is neither rendered nor run`);
+    ok(/^1 document contains “缓存命中”/.test(r.status), `${label}: the status line gives the server count ("${r.status}")`);
+    ok(r.overflow <= 0, `${label}: no sideways scroll (${r.overflow})`);
+    ok(r.lines >= 1 && r.lines <= (label === '390' ? 3 : 2) && r.markVisible, `${label}: the snippet is clamped to ${label === '390' ? 3 : 2} lines and the highlighted match is inside them (lines ${r.lines}, mark visible ${r.markVisible})`);
+  };
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, '/dashboard');
+    await page.waitForSelector('.lib-row', { timeout: 5000 });
+    ok(!(await page.$(`.lib-row[data-id="${target.id}"]`)), 'the target is not in the first page of the library (older than 100 rows)');
+    await check(page, '1280');
+    await page.screenshot({ path: ctx.proofPath });
+    await page.fill('#search', '');
+    await page.waitForFunction((id) => document.querySelector(`.lib-row[data-id="${id}"]`) && document.getElementById('search-status').hidden, other.id, { timeout: 5000 });
+    ok(true, 'clearing the search restores the library list');
+  }, { viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, '/dashboard');
+    await page.waitForSelector('.lib-row', { timeout: 5000 });
+    await check(page, '390');
+    await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-phone.png') });
+  }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' });
+  const anon = await fetch(`${ctx.serverUrl}/api/doc?action=search&q=${encodeURIComponent('缓存命中')}`);
+  const anonBody = await anon.json().catch(() => ({}));
+  ok(anon.status === 401 && /^Bearer/.test(anon.headers.get('www-authenticate') || '') && !anonBody.results, `anonymous search is refused with a Bearer challenge (status ${anon.status})`);
+}
+
+// Tier 2 (2026-11-26): a /v/ link works for an agent with a token, and failures explain themselves.
+async function runAgentReadV(ctx, ok) {
+  const marker = `agent-read-marker-${rand()}`;
+  const md = `# Agent read target\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n${marker}`;
+  const { id } = await seedPaste(ctx.serverUrl, md);
+  const created = await ownerApi(ctx, 'POST', '/api/auth', { action: 'create_token', name: `agent-read ${rand()}`, scopes: ['documents:read'] });
+  const token = created.json && created.json.token;
+  ok(created.status === 200 && /^mds_/.test(token || ''), 'a documents:read token was created');
+  const auth = (t) => ({ Authorization: ['Bea', 'rer'].join('') + ' ' + t });
+  const good = await fetch(`${ctx.serverUrl}/v/${id}`, { headers: auth(token) });
+  const goodBody = await good.text();
+  ok(good.status === 200 && good.headers.get('content-type') === 'text/markdown; charset=utf-8' && goodBody === md, `GET /v/:id with the token returns the exact Markdown (status ${good.status}, ${good.headers.get('content-type')})`);
+  const bad = await fetch(`${ctx.serverUrl}/v/${id}`, { headers: auth('mds_not_a_real_token_at_all') });
+  const badBody = await bad.json().catch(() => ({}));
+  ok(bad.status === 401 && /^Bearer/.test(bad.headers.get('www-authenticate') || '') && /Authorization: Bearer/.test(badBody.hint || '') && /\/llms\.txt$/.test(badBody.guide || ''), `a bad token gets 401 + WWW-Authenticate + hint (status ${bad.status})`);
+  const key = await fetch(`${ctx.serverUrl}/v/${id}`, { headers: { 'x-api-key': token } });
+  const keyBody = await key.json().catch(() => ({}));
+  ok(key.status === 401 && /Send the token as Authorization: Bearer/.test(keyBody.hint || '') && !JSON.stringify(keyBody).includes(marker), `x-api-key gets the Bearer hint, no content (status ${key.status})`);
+  const missing = await fetch(`${ctx.serverUrl}/v/${id}x`, { headers: auth(token) });
+  ok(missing.status === 404, `a missing id with a token is a JSON 404 (status ${missing.status})`);
+  await withContext(ctx, async (context) => {
+    const page = await openAnon(ctx, context, `/v/${id}`);
+    await page.waitForSelector('#pwd', { timeout: 5000 });
+    const html = await page.content();
+    ok(!html.includes(marker) && !html.includes('Agent read target') && !(await page.$('link[rel="alternate"]')), 'anonymous browser: sign-in gate, no content, no Markdown link');
+    ok(/Authorization: Bearer &lt;token&gt;/.test(html) && (await page.isVisible('.auth-card .fine')), 'the gate tells an agent how to authenticate');
+  });
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${id}`);
+    await waitRendered(page);
+    const href = await page.getAttribute('link[rel="alternate"][type="text/markdown"]', 'href');
+    ok(href === `/raw/${id}`, `the owner page advertises its Markdown (${href})`);
+  });
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, '/settings');
+    await page.waitForSelector('#tokens-list .lib-empty, #tokens-list .token-row', { timeout: 5000 });
+    await page.fill('#new-token-name', 'Kit test');
+    await page.click('#btn-create-token');
+    await page.waitForSelector('#new-token-reveal:not([hidden])', { timeout: 5000 });
+    const shown = (await page.textContent('#new-token-value')).trim();
+    const block = await page.textContent('#new-token-agent');
+    ok(block.includes(`export MDSHARE_BASE_URL=${ctx.serverUrl}`) && block.includes(`export MDSHARE_AGENT_TOKEN=${shown}`), 'the agent block has this site and the new token');
+    ok(/scopes: documents:read · expires \d{4}-\d\d-\d\d/.test(block) && block.includes('action=whoami') && block.includes('/v/<id>') && block.includes('action=search'), 'the agent block lists scopes, expiry and whoami/read/search examples');
+    ok(block.includes('publishing needs documents:write'), 'a read-only token is told it cannot publish');
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    ok(overflow <= 0, `the reveal fits the page (${overflow})`);
+    await page.locator('#new-token-reveal').screenshot({ path: ctx.proofPath });
+  }, { viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
+}
+
 async function runSettingsSignout(ctx, ok) {
   await withContext(ctx, async (context) => {
     const page = await openOwner(ctx, context, '/settings');
@@ -1412,6 +1509,8 @@ const RUNNERS = {
   'versions': runVersions,
   'preview-tool': runPreviewTool,
   'inline-diagrams': runInlineDiagrams,
+  'library-search': runLibrarySearch,
+  'agent-read-v': runAgentReadV,
 };
 
 async function main() {
