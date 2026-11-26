@@ -20,6 +20,9 @@
 //   mdshare-cli create <kind> <file> [--ttl SECONDS] [--title TITLE]   (kind: paste|diagram|archify)
 //   mdshare-cli publish <id> --kind K --public true|false
 //   mdshare-cli create paste <file> --keep --parent ID --origin SESSION [--strict]
+//               [--lang zh|en] [--translation-of ID] [--collection SLUG]
+//   mdshare-cli translate <id> --of <original id> [--lang zh|en]  |  translate <id> --unlink
+//   mdshare-cli collection <id> <slug> | collection <id> --none | collections [<slug>] [--json]
 //   mdshare-cli feedback [<doc id>] [--status S] | resolve <fb_id>... --in <id> | reads [ids] | versions <id>
 //
 // Token resolution (first match wins): MDSHARE_AGENT_TOKEN env var, then MDSHARE_AGENT_TOKEN_FILE
@@ -284,6 +287,9 @@ async function cmdCreate(positional, flags) {
   if (flags.keep) body.keep = true;
   if (kind === 'paste' && typeof flags.parent === 'string') body.parent = flags.parent;
   if (kind === 'paste' && typeof flags.origin === 'string') body.origin = flags.origin;
+  if (kind === 'paste' && typeof flags.lang === 'string') body.lang = flags.lang;
+  if (kind === 'paste' && typeof flags['translation-of'] === 'string') body.translation_of = flags['translation-of'];
+  if (kind === 'paste' && typeof flags.collection === 'string') body.collection = flags.collection;
 
   const res = await fetch(`${BASE_URL}${path}`, { method: 'POST', headers: authHeaders(flags), body: JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
@@ -297,6 +303,7 @@ async function cmdCreate(positional, flags) {
     if (warns.length && flags.strict) fail('publish checks found problems (see "checks" above); fix and create again with --parent ' + data.id);
   }
   if (data.keep_ignored) process.stderr.write(`keep: ${data.keep_ignored}\n`);
+  if (data.collection_ignored) process.stderr.write(`collection: ${data.collection_ignored}\n`);
 }
 
 // Reading loop (2026-11-25): GET/POST /api/doc. Needs activity:read / activity:write /
@@ -327,6 +334,35 @@ async function cmdReads(positional, flags) {
 async function cmdVersions(positional, flags) {
   if (!positional[0]) fail('usage: mdshare-cli versions <id>');
   printJson(await docApi(flags, 'GET', { action: 'versions', id: positional[0] }));
+}
+
+// Translations + collections (migration 012): POST/GET /api/doc?action=translation|collection.
+// Changing them needs documents:write or documents:publish, and a token may change only documents
+// it created; listing needs documents:read.
+async function cmdTranslate(positional, flags) {
+  const [id] = positional;
+  if (!id || (typeof flags.of !== 'string' && !flags.unlink && typeof flags.lang !== 'string')) fail('usage: mdshare-cli translate <id> --of <original id> [--lang zh|en]   |   translate <id> --unlink');
+  const body = { id };
+  if (typeof flags.of === 'string') body.translation_of = flags.of;
+  if (flags.unlink) body.translation_of = null;
+  if (typeof flags.lang === 'string') body.lang = flags.lang;
+  printJson(await docApi(flags, 'POST', { action: 'translation' }, body));
+}
+async function cmdCollection(positional, flags) {
+  const [id, slug] = positional;
+  if (!id || (!slug && !flags.none)) fail('usage: mdshare-cli collection <id> <slug>   |   collection <id> --none');
+  printJson(await docApi(flags, 'POST', { action: 'collection' }, { id, collection: flags.none ? null : slug }));
+}
+async function cmdCollections(positional, flags) {
+  const data = await docApi(flags, 'GET', positional[0] ? { action: 'collection', slug: positional[0] } : { action: 'collection' });
+  if (flags.json) return printJson(data);
+  if (positional[0]) {
+    for (const e of data.items || []) process.stdout.write(`${e.opened ? 'read  ' : 'unread'}  ${e.kept ? '⭐' : '  '} ${String(e.updated_at || '').slice(0, 10)}  ${e.title || 'Untitled'}  ${e.links.map((l) => `${l.lang || '?'}:${BASE_URL}/v/${l.id}`).join('  ')}\n`);
+    if (!(data.items || []).length) process.stdout.write('(empty)\n');
+    return;
+  }
+  for (const c of data.collections || []) process.stdout.write(`${c.slug}\t${c.count}\t${String(c.updated_at || '').slice(0, 10)}\t${BASE_URL}/c/${c.slug}\n`);
+  if (!(data.collections || []).length) process.stdout.write('(no collections)\n');
 }
 
 async function cmdPublish(positional, flags) {
@@ -363,6 +399,9 @@ async function main() {
     case 'resolve': return cmdResolve(positional, flags);
     case 'reads': return cmdReads(positional, flags);
     case 'versions': return cmdVersions(positional, flags);
+    case 'translate': return cmdTranslate(positional, flags);
+    case 'collection': return cmdCollection(positional, flags);
+    case 'collections': return cmdCollections(positional, flags);
     default:
       process.stderr.write([
         'mdshare-cli — portable CLI for the mdshare agent API',
@@ -382,6 +421,12 @@ async function main() {
         '  read <id | https://<site>/v/<id> link> [--kind paste|diagram|archify]',
         '  create paste|diagram <file> [--ttl SECONDS] [--title TITLE] [--keep]',
         '        [--parent ID] [--origin SESSION] [--strict]   (prints publish checks to stderr)',
+        '        [--lang zh|en] [--translation-of ID] [--collection SLUG]',
+        '      --translation-of links the same text in the other language (中文/English switch on both',
+        '      pages); --collection files it under /c/<slug>. Versions keep both.',
+        '  translate <id> --of <original id> [--lang zh|en]  |  translate <id> --unlink',
+        '  collection <id> <slug>  |  collection <id> --none   (the whole version family)',
+        '  collections [<slug>] [--json]   list collections, or one collection\'s contents',
         '  feedback [<doc id>] [--status open|resolved|dismissed]   (default: all open feedback)',
         '  resolve <fb_id>... [--in <new doc id>] [--status resolved|dismissed|open]',
         '  reads [<doc id>...] [--days N]   (no ids: documents the owner has not opened yet)',
@@ -409,6 +454,7 @@ if (isDirectRun) {
 
 export {
   parseArgs, resolveToken, authHeaders, readHiddenPassword,
-  cmdLogin, cmdStatus, cmdSearch, cmdFullTextSearch, cmdRead, parseReadTarget, cmdCreate, cmdPublish, cmdFeedback, cmdResolve, cmdReads, cmdVersions, main,
+  cmdLogin, cmdStatus, cmdSearch, cmdFullTextSearch, cmdRead, parseReadTarget, cmdCreate, cmdPublish, cmdFeedback, cmdResolve, cmdReads, cmdVersions,
+  cmdTranslate, cmdCollection, cmdCollections, main,
   DEFAULT_TOKEN_FILE, CliError,
 };

@@ -100,3 +100,48 @@ test('read accepts a full /v/ link on this site and refuses a link on another ho
   mockFetch({ status: 404, body: { error: 'Not found or expired', hint: 'Private documents need the owner session or a token with documents:read' } });
   await assert.rejects(capture(() => cli.cmdRead(['abc123'], {})), /read failed \(404\): Not found or expired — Private documents need/);
 });
+
+// Tier 2 Batch B (2026-11-26): translations and collections.
+test('create sends --lang/--translation-of/--collection; translate, collection, collections hit /api/doc', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cli-'));
+  const f = join(dir, 'zh.md'); writeFileSync(f, '# 中文\n');
+  let calls = mockFetch({ status: 200, body: { id: 'zh1', url: 'u', kept: true, lang: 'zh', translation_of: 'en1', collection: 'glm-study', checks: { ok: true, warnings: [] } } });
+  await capture(() => cli.cmdCreate(['paste', f], { lang: 'zh', 'translation-of': 'en1', collection: 'glm-study' }));
+  const body = JSON.parse(calls[0].opts.body);
+  assert.deepEqual([body.lang, body.translation_of, body.collection], ['zh', 'en1', 'glm-study']);
+  calls = mockFetch({ status: 200, body: { id: 'a', collection_ignored: 'collection needs the owner session or an agent token', checks: { ok: true, warnings: [] } } });
+  const ign = await capture(() => cli.cmdCreate(['paste', f], { collection: 'x' }));
+  assert.equal(JSON.parse(calls[0].opts.body).collection, 'x');
+  assert.match(ign.err, /collection: collection needs the owner session/);
+
+  calls = mockFetch({ status: 200, body: { ok: true } });
+  await capture(() => cli.cmdTranslate(['zh1'], { of: 'en1', lang: 'zh' }));
+  assert.match(calls[0].url, /\/api\/doc\?action=translation$/);
+  assert.equal(calls[0].opts.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[0].opts.body), { id: 'zh1', translation_of: 'en1', lang: 'zh' });
+  calls = mockFetch({ status: 200, body: { ok: true } });
+  await capture(() => cli.cmdTranslate(['zh1'], { unlink: true }));
+  assert.deepEqual(JSON.parse(calls[0].opts.body), { id: 'zh1', translation_of: null });
+  await assert.rejects(capture(() => cli.cmdTranslate(['zh1'], {})), /usage: mdshare-cli translate/);
+
+  calls = mockFetch({ status: 200, body: { ok: true } });
+  await capture(() => cli.cmdCollection(['doc1', 'glm-study'], {}));
+  assert.match(calls[0].url, /action=collection$/);
+  assert.deepEqual(JSON.parse(calls[0].opts.body), { id: 'doc1', collection: 'glm-study' });
+  calls = mockFetch({ status: 200, body: { ok: true } });
+  await capture(() => cli.cmdCollection(['doc1'], { none: true }));
+  assert.deepEqual(JSON.parse(calls[0].opts.body), { id: 'doc1', collection: null });
+  await assert.rejects(capture(() => cli.cmdCollection(['doc1'], {})), /usage: mdshare-cli collection/);
+
+  calls = mockFetch({ status: 200, body: { collections: [{ slug: 'glm-study', count: 3, updated_at: '2026-11-26T00:00:00Z' }] } });
+  const list = await capture(() => cli.cmdCollections([], {}));
+  assert.match(calls[0].url, /action=collection$/);
+  assert.match(list.out, /^glm-study\t3\t2026-11-26\t\S+\/c\/glm-study\n$/);
+  calls = mockFetch({ status: 200, body: { slug: 'glm-study', items: [{ title: 'Part 1', opened: true, kept: true, updated_at: '2026-11-26T00:00:00Z', links: [{ lang: 'zh', id: 'zh1' }, { lang: 'en', id: 'en2' }] }] } });
+  const toc = await capture(() => cli.cmdCollections(['glm-study'], {}));
+  assert.match(calls[0].url, /action=collection&slug=glm-study$/);
+  assert.match(toc.out, /^read {4}⭐ 2026-11-26 {2}Part 1 {2}zh:\S+\/v\/zh1 {2}en:\S+\/v\/en2\n$/);
+  mockFetch({ status: 403, body: { error: 'This token needs the documents:write or documents:publish scope' } });
+  await assert.rejects(capture(() => cli.cmdCollection(['doc1', 'x'], {})), /collection failed \(403\): This token needs the documents:write or documents:publish scope/);
+  assert.doesNotMatch(list.out + toc.out + ign.err, /mds_test_token_value/, 'token never printed');
+});

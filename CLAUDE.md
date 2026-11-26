@@ -8,7 +8,7 @@ npm ci --include=dev   # this container sets NODE_ENV=production; --include=dev 
 npm run verify         # invariants + lint + unit tests (seconds)
 npm run e2e            # real Chromium against a local stack + fake Supabase -> e2e/proof/
 ```
-Put the verify/e2e output in your completion message, plus `e2e/proof/*.png` for UI changes. To look at one page while working: `node e2e/drive.mjs open <path> --as owner|anon --screenshot out.png`.
+Put the verify/e2e output in your completion message, plus `e2e/proof/*.png` for UI changes. To look at one page: `node e2e/drive.mjs open <path> --as owner|anon --screenshot out.png`.
 
 ## How changes ship
 1. Work on a branch named `agent/<task>` and push it. `main` is protected: only commits that passed verify + e2e land, no force-push.
@@ -26,17 +26,18 @@ Migrations: additive only (checked). The agent may apply an additive migration w
 - `api/auth.js` — owner password login, signed 180-day session cookie, token management.
 - `api/health.js` + `api/_lib/events.js` — liveness/commit, client error intake, `withErrors()` (every handler must use it; checked).
 - `api/pin.js` — keep ("pin") / unkeep (fresh 7-day expiry) and the only `is_public` toggle (`keep: true` keeps in the same write).
-- `api/doc.js` + `api/_lib/activity.js` — reading loop: owner read receipts, select-text feedback, resolve, version chain (`public/assets/loop.js`, owner pages only). `action=search` → `api/_lib/search.js` (rpc `mdshare_search`, migration 011).
+- `api/doc.js` + `api/_lib/activity.js` — reading loop: read receipts, feedback, resolve, versions + zh/en translation switch (`versionInfo`). `action=search` → `api/_lib/search.js` (rpc, migration 011).
+- `api/_lib/collections.js` — collections + `patchMeta` (only lang/translation_of/collection); `/c[/:slug]` is owner-only `api/_lib/collection-page.js` (`render.js?kind=collection`).
 - `api/_lib/raw.js` — the one raw-Markdown path (`/raw/:id`, `/v/:id` + Bearer); agent 401 hints. `api/_lib/lint.js` — publish checks returned by `POST /api/share`. `/d/:id` is `api/_lib/diagram-page.js` via `render.js?kind=diagram`.
-- `node e2e/preview.mjs <file.md>` — render a document like the reader will (390 + 1280 px): JSON report + screenshots. Use it before publishing anything long.
-- `api/_lib/ui.js` — page chrome for every server page (head, header, owner controls, sign-in card, 404s). `api/_lib/classic.js` is the pre-redesign reader behind `?classic=1`.
+- `node e2e/preview.mjs <file.md>` — render a document like the reader will (390 + 1280 px). Use before publishing anything long.
+- `api/_lib/ui.js` — page chrome for every server page (head, header, controls, sign-in, 404s). `api/_lib/classic.js` is the pre-redesign reader behind `?classic=1`.
 - `public/assets/render.js` — the one Markdown renderer (reader, editor preview, home, guide, diagram notes): marked → DOMPurify → enhancement rules. `app.js` page behaviour, `library.js` Library/Settings, `mdshare.css` the design system. Libraries are vendored in `public/vendor/`.
 - Rendering rule: stored Markdown is never rewritten. Automatic formatting happens at view time and fires only on clear patterns; `e2e` has must-not-trigger fixtures and an old-vs-new text-equivalence check. Run `node e2e/compare-docs.mjs --dir <private docs>` before changing a rule.
 - `e2e/features.json` — feature map: each user-facing feature, how to reach it, what proves it works. Add an entry when you add or change a feature. `node e2e/shots.mjs` captures every page in both themes.
-- `docs/history/` — past plans, rollout notes and the previous long CLAUDE.md. Background only, not current rules.
+- `docs/history/` — past plans and rollout notes. Background, not current rules.
 
 ## Enforced by checks — read the error message, don't re-explain here
-`npm run check` (`scripts/check-invariants.mjs`) fails on: more than 12 API functions (Vercel Hobby cap); broken or duplicate rewrites; destructive SQL in migrations; creation routes taking visibility from the request; content routes missing `isVisible`/`setPrivacyHeaders`; unencoded ids in PostgREST filters; `allow-same-origin` in an iframe sandbox; timers without `.unref()`; credential-like strings (the repo is public); stray root Markdown; CLAUDE.md over 90 lines / 7000 chars; `api/doc.js` actions without auth; activity writes outside `activityWrite`; versions without `canUseParent`; the loop script on non-owner pages; a create response without `checks`; search text in a PostgREST filter; Markdown served outside `sendRawMarkdown`; agent 401s without `authHint`. `tests/invariants.test.mjs` proves each check fires.
+`npm run check` (`scripts/check-invariants.mjs`) fails on: more than 12 API functions; broken or duplicate rewrites; destructive SQL in migrations; creation routes taking visibility from the request; content routes missing `isVisible`/`setPrivacyHeaders`; unencoded ids in PostgREST filters; `allow-same-origin` in an iframe sandbox; timers without `.unref()`; credential-like strings; stray root Markdown; CLAUDE.md over 90 lines / 7000 chars; `api/doc.js` actions without auth; activity writes outside `activityWrite`; versions or translations without `canUseParent`; collection pages that aren't owner-only; the loop script on non-owner pages; a create response without `checks`; search text in a PostgREST filter; Markdown served outside `sendRawMarkdown`; agent 401s without `authHint`. `tests/invariants.test.mjs` proves each check fires.
 
 ## When you correct a mistake
 Don't add a paragraph here. In order of preference:
