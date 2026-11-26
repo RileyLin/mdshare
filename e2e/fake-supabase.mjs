@@ -14,6 +14,7 @@
 //   PATCH  /rest/v1/<table>?id=eq.<id>[&revoked_at=is.null]  (partial update; also doc_id=eq., id=in.())
 //   GET    ...&<col>=in.(a,b,c)  &<col>=gte.<iso>                (activity tables, migration 009)
 //   DELETE /rest/v1/<table>?id=eq.<id>
+//   POST   /rest/v1/rpc/mdshare_search {q, lim, skip}   (migration 011; same semantics as the SQL)
 //
 // Anything that doesn't match one of the above shapes gets a 501 naming the unmatched
 // method+path+query, so a harness gap is loud (visible in report.json / terminal) instead of a
@@ -271,9 +272,38 @@ export async function startFakeSupabase({ port = 0 } = {}) {
     res.end(JSON.stringify(removed));
   }
 
+  // Mirrors migrations/011_search.sql: literal, case-insensitive substring of the trimmed q in
+  // title or content (LIKE wildcards escaped there, so a plain includes() here); expired unkept
+  // rows excluded; title matches first, then newest, then id; lim 1-50, skip 0-1000; an excerpt
+  // window around the first match; total = all matching rows.
+  async function handleRpc(name, req, res) {
+    if (name !== 'mdshare_search') throw new UnsupportedQueryError(`unknown rpc: ${name}`);
+    let args;
+    try { args = JSON.parse((await readBody(req)) || '{}'); } catch { throw new UnsupportedQueryError('rpc body was not valid JSON'); }
+    const q = String(args.q ?? '').trim();
+    const lq = q.toLowerCase();
+    const clamp = (v, d, lo, hi) => { const n = Number.isInteger(v) ? v : d; return Math.min(hi, Math.max(lo, n)); };
+    const lim = clamp(args.lim, 20, 1, 50);
+    const skip = clamp(args.skip, 0, 0, 1000);
+    const now = Date.now();
+    const hits = !q || [...q].length > 200 ? [] : tables.mdshare_pastes
+      .filter((r) => r.pinned === true || !r.expires_at || new Date(r.expires_at).getTime() > now)
+      .map((r) => ({ r, tm: r.title != null && String(r.title).toLowerCase().includes(lq), pos: String(r.content || '').toLowerCase().indexOf(lq) }))
+      .filter((h) => h.tm || h.pos >= 0)
+      .sort((a, b) => (b.tm - a.tm) || (new Date(b.r.created_at) - new Date(a.r.created_at)) || String(a.r.id).localeCompare(String(b.r.id)));
+    const page = hits.slice(skip, skip + lim).map(({ r, tm, pos }) => {
+      const from = Math.max(0, pos - 240);
+      return { id: r.id, title: r.title ?? null, created_at: r.created_at, expires_at: r.expires_at ?? null, pinned: r.pinned === true, is_public: r.is_public === true, title_match: tm, excerpt: String(r.content || '').slice(from, from + 480 + q.length), total: hits.length };
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(page));
+  }
+
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://fake-supabase.local');
+      const rpc = url.pathname.match(/^\/rest\/v1\/rpc\/([a-zA-Z_]+)\/?$/);
+      if (rpc && req.method === 'POST') return await handleRpc(rpc[1], req, res);
       const m = url.pathname.match(/^\/rest\/v1\/([a-zA-Z_]+)\/?$/);
       if (!m) {
         throw new UnsupportedQueryError(`unrecognized path: ${url.pathname}`);

@@ -5,6 +5,8 @@
 //   GET  ?action=feedback  owner | activity:read. ?id=<doc>  and/or  ?status=open|resolved|dismissed
 //   POST ?action=resolve   owner | activity:write. {ids, status, resolved_in}
 //   GET  ?action=versions  owner | documents:read. ?id=<doc> -> oldest..newest chain
+//   GET  ?action=search    owner | documents:read. ?q=<text>&limit&offset -> titles + snippets
+//                          (api/_lib/search.js: one rpc call, the text never enters a filter string)
 // Every action is declared in ACTIONS with its `auth`; scripts/check-invariants.mjs fails if one
 // isn't. This file never writes directly (all writes go through api/_lib/activity.js, which only
 // accepts the activity tables), so nothing here can change stored content or visibility.
@@ -12,6 +14,8 @@ import { getRow, isValidId, setPrivacyHeaders } from './_lib/access.js';
 import { resolveAgentToken } from './_lib/agent-tokens.js';
 import { parseJsonBody } from './_lib/body.js';
 import { withErrors } from './_lib/events.js';
+import { validateSearch, searchDocs } from './_lib/search.js';
+import { apiKeyMisuse, authHint, HINTS } from './_lib/raw.js';
 import {
   allowed, recordRead, listReads, validateFeedback, createFeedback, listFeedback, resolveFeedback, versionChain, FEEDBACK_STATUSES,
 } from './_lib/activity.js';
@@ -70,6 +74,15 @@ const ACTIONS = {
       return chain ? [200, { id: query.id, versions: chain }] : [404, { error: 'Not found' }];
     },
   },
+  search: {
+    auth: 'owner|documents:read', httpMethod: 'GET',
+    async run({ query }) {
+      const v = validateSearch(query);
+      if (v.error) return [400, { error: v.error }];
+      const r = await searchDocs(v.value);
+      return r.dbError ? [503, { error: 'Temporarily unavailable' }] : [200, r];
+    },
+  },
 };
 
 async function handler(req, res) {
@@ -83,16 +96,16 @@ async function handler(req, res) {
   if (!methods.includes(req.method)) return res.status(405).json({ error: `${name} takes ${methods.join(' or ')}` });
 
   const auth = typeof action.auth === 'string' ? action.auth : action.auth[req.method];
+  const scope = auth.includes('|') ? auth.split('|')[1] : null;
+  // A token sent as x-api-key / ?key= is not a credential here; say how to send it (api/_lib/raw.js).
+  if (!action.silent && apiKeyMisuse(req)) return authHint(req, res, { error: 'Unsupported credential', hint: HINTS.misplaced, scope });
   const agentAuth = await resolveAgentToken(req);
-  if (agentAuth.present && !agentAuth.valid) return res.status(401).json({ error: 'Invalid or expired token' });
+  if (agentAuth.present && !agentAuth.valid) return authHint(req, res, { error: 'Invalid or expired token', hint: HINTS.invalid, scope });
   if (!allowed(auth, req, res, agentAuth)) {
     // The read beacon answers 204 either way, so a page can't tell who is signed in from it.
     if (action.silent) return res.status(204).end();
-    const scope = auth.includes('|') ? auth.split('|')[1] : null;
-    return res.status(agentAuth.valid ? 403 : 401).json({
-      error: agentAuth.valid ? `This token needs the ${scope} scope` : (scope ? `Sign in as the owner, or send Authorization: Bearer <token> with the ${scope} scope` : 'Owner only'),
-      guide: '/llms.txt',
-    });
+    if (agentAuth.valid) return res.status(403).json({ error: `This token needs the ${scope} scope`, guide: '/llms.txt' });
+    return authHint(req, res, { error: scope ? `Sign in as the owner, or send Authorization: Bearer <token> with the ${scope} scope` : 'Owner only', hint: HINTS.missing, scope });
   }
 
   const [status, payload] = await action.run({ method: req.method, body, query: req.query || {} });
