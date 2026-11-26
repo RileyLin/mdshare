@@ -49,12 +49,13 @@ const inList = (ids) => encodeURIComponent(`(${ids.join(',')})`);
 
 // ---------- Auth ----------
 // Who may call an activity action. 'owner' = the owner session cookie only. 'owner|<scope>' =
-// the owner, or a valid scoped agent token holding <scope>. Never anonymous, never a legacy token.
+// the owner, or a valid scoped agent token holding <scope>; 'owner|<a>,<b>' = holding either.
+// Never anonymous, never a legacy token.
 export function allowed(auth, req, res, agentAuth) {
   if (checkAuthAndRefresh(req, res)) return true;
   if (auth === 'owner') return false;
-  const scope = auth.split('|')[1];
-  return !!(scope && agentAuth && agentAuth.valid && hasScope(agentAuth, scope));
+  const scopes = (auth.split('|')[1] || '').split(',').filter(Boolean);
+  return !!(scopes.length && agentAuth && agentAuth.valid && scopes.some((s) => hasScope(agentAuth, s)));
 }
 
 // ---------- Versions ----------
@@ -74,12 +75,14 @@ export function versionFields(parentRow) {
   return { root_id: rootOf(parentRow, parentRow.id), version_no: versionNoOf(parentRow) + 1 };
 }
 
-// May this request create a new version of `parentId`? Only the owner, or an agent token that can
-// read the parent (documents:read, or it created the parent). Anonymous creates never can: a
-// stranger must not be able to attach a "newer version" banner to someone's document.
+// May this request create a new version of `parentId`, or link a translation to it? Only the
+// owner, or an agent token that can read the parent (documents:read, or it created the parent).
+// Anonymous creates never can: a stranger must not be able to attach a "newer version" banner or a
+// language switch to someone's document. Used for `parent` and `translation_of` alike
+// (invariants "version-parent-gated", "translation-gated").
 export async function canUseParent(parentId, req, res, agentAuth) {
   if (typeof parentId !== 'string' || !isValidId(parentId)) return { ok: false };
-  const { row, dbError } = await getRow('mdshare_pastes', parentId, 'id,created_by_token,expires_at,pinned,root_id,version_no');
+  const { row, dbError } = await getRow('mdshare_pastes', parentId, 'id,created_by_token,expires_at,pinned,root_id,version_no,lang,translation_of,collection');
   if (dbError) return { ok: false, dbError: true };
   if (!row) return { ok: false };
   if (checkAuthAndRefresh(req, res)) return { ok: true, row };
@@ -87,26 +90,41 @@ export async function canUseParent(parentId, req, res, agentAuth) {
   return { ok: false };
 }
 
-// Version facts for the reader page. Owner: parent id, version number, newest later version.
-// Reader: only the newest later version, and only when it is public. One query. "Later" means a
-// higher version number in the same family, so a branch (two v2s of one v1) points at the newest
-// of them. A DB error degrades to "no version info" rather than breaking the page.
+// Version + translation facts for the reader page, from ONE query however large the family:
+// my version family (root_id = R) plus the translation group G (its root's family and every row
+// whose translation_of is G). Owner: parent id, version number, newest later version, the
+// translation. Reader: the newest later version and the translation only when they are public.
+// "Later" means a higher version number in the same family, so a branch (two v2s of one v1)
+// points at the newest of them. A DB error degrades to "no version info" rather than breaking the page.
 export async function versionInfo(id, row, { owner }) {
   const mine = versionNoOf(row);
-  const out = { parentId: row && row.parent_id ? row.parent_id : null, versionNo: owner ? mine : null, newerId: null, newerTitle: null };
+  const out = { parentId: row && row.parent_id ? row.parent_id : null, versionNo: owner ? mine : null, newerId: null, newerTitle: null, translation: null, lang: (row && row.lang) || null };
   try {
     const root = rootOf(row, id);
-    if (!isValidId(root)) return out;
-    const later = (await sbSelect('mdshare_pastes', `root_id=eq.${encodeURIComponent(root)}&version_no=gt.${mine}&select=id,title,is_public,expires_at,pinned,version_no,created_at&order=version_no.desc,created_at.desc&limit=10`))
-      .filter((r) => alive(r) && r.id !== id && versionNoOf(r) > mine)
-      .sort((a, b) => byVersion(b, a));
+    const group = (row && row.translation_of) || root;
+    if (!isValidId(root) || !isValidId(group)) return out;
+    const conds = group === root ? `root_id.eq.${root},id.eq.${root},translation_of.eq.${root}` : `root_id.eq.${root},id.eq.${group},root_id.eq.${group},translation_of.eq.${group}`;
+    const family = (await sbSelect('mdshare_pastes', `or=${encodeURIComponent(`(${conds})`)}&select=id,title,is_public,expires_at,pinned,version_no,created_at,root_id,lang,translation_of&order=created_at.desc&limit=${MAX_VERSIONS * 2}`))
+      .filter((r) => alive(r) && r.id !== id);
+    const later = family.filter((r) => r.root_id === root && versionNoOf(r) > mine).sort((a, b) => byVersion(b, a));
     const newest = later[0];
     if (newest && (owner || newest.is_public === true)) {
       out.newerId = newest.id;
       out.newerTitle = newest.title || null;
     }
+    // The translation: outside my version family, in another language, visible to this viewer.
+    const myLang = out.lang;
+    const sibling = family
+      .filter((r) => r.id !== root && r.root_id !== root && (owner || r.is_public === true))
+      .filter((r) => (myLang ? (r.lang || otherLang(myLang)) !== myLang : !!r.lang))
+      .sort((a, b) => byVersion(b, a))[0];
+    if (sibling) {
+      const lang = sibling.lang || otherLang(myLang);
+      out.translation = { id: sibling.id, lang, title: sibling.title || null, isPublic: sibling.is_public === true };
+      out.lang = myLang || otherLang(lang);
+    }
   } catch {
-    return { parentId: owner ? out.parentId : null, versionNo: owner ? out.versionNo : null, newerId: null, newerTitle: null };
+    return { parentId: owner ? out.parentId : null, versionNo: owner ? out.versionNo : null, newerId: null, newerTitle: null, translation: null, lang: (row && row.lang) || null };
   }
   return out;
 }
@@ -120,6 +138,24 @@ export async function versionChain(id) {
   const family = await sbSelect('mdshare_pastes', `or=${encodeURIComponent(`(id.eq.${root},root_id.eq.${root})`)}&select=id,title,created_at,parent_id,expires_at,pinned,version_no&limit=${MAX_VERSIONS}`);
   return family.sort(byVersion).map((r) => ({ id: r.id, title: r.title || null, created_at: r.created_at || null, version: versionNoOf(r), parent: r.parent_id || null, expired: !alive(r) }));
 }
+
+// ---------- Translations (migration 012) ----------
+// A translation group is named by its root: the version root of the original document. Linking to
+// any member stores that root, so one query finds the whole group (see versionInfo).
+export const LANGS = ['zh', 'en'];
+export const translationRoot = (row) => (row && row.translation_of) || rootOf(row, row && row.id);
+export function translationFields(targetRow) {
+  return { translation_of: translationRoot(targetRow) };
+}
+// 'zh' | 'en' | null for absent; undefined for anything else (the caller answers 400).
+export function parseLang(v) {
+  if (v === undefined || v === null || v === '') return null;
+  const s = typeof v === 'string' ? v.trim().toLowerCase() : '';
+  return LANGS.includes(s) ? s : undefined;
+}
+// The reader's own heuristic (api/render.js): more than 30 CJK characters is a Chinese document.
+export const detectLang = (markdown) => ((String(markdown || '').match(/[\u3400-\u9fff]/g) || []).length > 30 ? 'zh' : 'en');
+const otherLang = (l) => (l === 'zh' ? 'en' : l === 'en' ? 'zh' : null);
 
 // ---------- Read receipts (owner only; called by api/doc.js after the auth check) ----------
 export async function recordRead(id, { scroll, seconds, open }) {
@@ -138,6 +174,13 @@ export async function recordRead(id, { scroll, seconds, open }) {
     max_scroll: Math.max(r.max_scroll || 0, s),
     active_seconds: Math.min(2147483647, (r.active_seconds || 0) + sec),
   });
+}
+
+// Read receipts for a set of document ids (the collection page's read status). One query.
+export async function readsFor(ids) {
+  const list = [...new Set(ids || [])].filter(isValidId);
+  if (!list.length) return [];
+  return sbSelect('mdshare_reads', `doc_id=in.(${list.map(encodeURIComponent).join(',')})&select=doc_id,max_scroll,open_count,last_opened_at`);
 }
 
 // Reads for a set of ids, or the unread documents created in the last `days` days.

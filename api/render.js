@@ -1,5 +1,6 @@
 // GET /api/render?id=xxx (/v/:id) — the document reader. GET /api/render?kind=diagram&id=xxx (/d/:id)
-// is the diagram page (api/_lib/diagram-page.js), merged here to stay under the 12-function cap.
+// is the diagram page (api/_lib/diagram-page.js), and ?kind=collection (/c, /c/:slug) the owner-only
+// collection pages (api/_lib/collection-page.js), merged here to stay under the 12-function cap.
 // Private unless the owner is authenticated or the row has is_public: true. Anonymous requests for
 // a private id get a same-URL sign-in page, never the title or content. The page embeds the
 // stored Markdown as JSON and /assets/render.js renders + enhances it in the browser; nothing
@@ -11,6 +12,7 @@ import { getRow, isVisible, isKept, setPrivacyHeaders, privateGateHtml } from '.
 import { head, header, ownerControls, readerControls, toast, dataBlock, scripts, CSP_PAGE, notFoundPage, unavailablePage, esc } from './_lib/ui.js';
 import { classicDocHtml } from './_lib/classic.js';
 import { renderDiagram } from './_lib/diagram-page.js';
+import { renderCollection } from './_lib/collection-page.js';
 import { versionInfo } from './_lib/activity.js';
 import { withErrors } from './_lib/events.js';
 import { wantsMarkdown, sendRawMarkdown, refusalHint } from './_lib/raw.js';
@@ -32,6 +34,18 @@ function versionHtml({ markdown, owner, version }) {
   return out;
 }
 
+// 中文 / English switch (migration 012) when the document has a translation the viewer may open:
+// the owner always, a reader only when the translation is public (api/_lib/activity.js versionInfo).
+const LANG_LABEL = { zh: '中文', en: 'English' };
+function langSwitchHtml({ owner, version }) {
+  const t = version.translation;
+  if (!t || !LANG_LABEL[t.lang] || !LANG_LABEL[version.lang] || t.lang === version.lang) return '';
+  const items = ['zh', 'en'].map((l) => (l === version.lang
+    ? `<span class="on" aria-current="true" lang="${l}">${LANG_LABEL[l]}</span>`
+    : `<a href="/v/${esc(t.id)}" lang="${l}" hreflang="${l}" id="lang-other"${t.title ? ` title="${esc(t.title)}"` : ''}>${LANG_LABEL[l]}${owner && !t.isPublic ? '<i class="lock" title="Private: readers don\'t see this switch until it is public" aria-label="private">🔒</i>' : ''}</a>`)).join('');
+  return `<nav class="lang-switch" id="lang-switch" aria-label="${version.lang === 'zh' ? '语言' : 'Language'}">${items}</nav>`;
+}
+
 function docPage({ id, title, markdown, owner, row, version }) {
   const crumbs = owner
     ? `<a href="/dashboard">Library</a><span class="sep">›</span><b id="crumb-title">${esc(title)}</b>`
@@ -48,6 +62,7 @@ function docPage({ id, title, markdown, owner, row, version }) {
     // learns about a newer version when that newer version is itself public.
     parentId: owner ? version.parentId : null, versionNo: owner ? version.versionNo : null,
     newerId: version.newerId, newerTitle: version.newerTitle,
+    lang: version.lang || null, translationId: version.translation ? version.translation.id : null,
   };
   // Only reached after isVisible(): the viewer may read /raw/:id, so advertising it leaks nothing.
   return `${head({ title: `${title} — mdshare`, alternate: `/raw/${encodeURIComponent(id)}` })}
@@ -57,6 +72,7 @@ ${header({ crumbs, right })}
 <div class="doc-layout">
   <aside class="toc" id="toc" hidden aria-label="Contents"></aside>
   <article>
+    ${langSwitchHtml({ owner, version })}
     ${versionHtml({ id, markdown, owner, version })}
     <details class="toc-mobile" id="toc-mobile" hidden><summary>Contents</summary><nav></nav></details>
     <div class="doc-meta" id="doc-meta"></div>
@@ -74,13 +90,14 @@ ${scripts(owner ? ['marked', 'purify', 'hljs', 'render', 'app', 'loop'] : ['mark
 
 async function handler(req, res) {
   if (req.query.kind === 'diagram') return renderDiagram(req, res);
+  if (req.query.kind === 'collection') return renderCollection(req, res);
   const { id } = req.query;
   if (!id) return res.status(400).send('Missing id');
   if (wantsMarkdown(req, res)) return sendRawMarkdown(req, res, { contentType: 'text/markdown; charset=utf-8' });
 
   setPrivacyHeaders(res);
   res.setHeader('Vary', 'Accept, Authorization, Cookie');
-  const { row, dbError } = await getRow('mdshare_pastes', id, 'content,expires_at,is_public,pinned,created_at,parent_id,root_id,version_no');
+  const { row, dbError } = await getRow('mdshare_pastes', id, 'content,expires_at,is_public,pinned,created_at,parent_id,root_id,version_no,lang,translation_of');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
 
   if (dbError) return res.status(503).send(unavailablePage());

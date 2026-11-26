@@ -10,6 +10,14 @@
       "destination": "/api/render?kind=diagram&id=:id"
     },
     {
+      "source": "/c",
+      "destination": "/api/render?kind=collection"
+    },
+    {
+      "source": "/c/:slug",
+      "destination": "/api/render?kind=collection&slug=:slug"
+    },
+    {
       "source": "/raw/:id",
       "destination": "/api/share?id=:id"
     },

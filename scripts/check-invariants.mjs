@@ -179,8 +179,9 @@ const checks = [
         for (const rule of auth[1].match(/'[^']*'/g) || []) {
           const r = rule.slice(1, -1);
           if (['POST', 'GET'].includes(r)) continue;
+          // 'owner|a,b' (since 2026-11-26): the owner, or a token holding either scope.
           const [who, scope] = r.split('|');
-          if (who !== 'owner' || (scope !== undefined && !scopes.includes(scope))) errs.push(`api/doc.js: action "${name}" auth '${r}' must be 'owner' or 'owner|<one of ${scopes.join(', ')}>'.`);
+          if (who !== 'owner' || (scope !== undefined && !scope.split(',').every((x) => scopes.includes(x)))) errs.push(`api/doc.js: action "${name}" auth '${r}' must be 'owner' or 'owner|<one or more of ${scopes.join(', ')}, comma-separated>'.`);
         }
       }
       if (!entries.some((e) => /^\s*[a-z]+: \{/.test(e))) errs.push('api/doc.js: ACTIONS table is empty or unparseable.');
@@ -402,6 +403,92 @@ const checks = [
           if (!isCommentLine(l) && /\bguide: /.test(l) && /baseUrl\(|headers\.host|headers\[['"]host|\$\{base\}/.test(l)) errs.push(`${f}:${i + 1}: build the guide link with guideUrl(req) (canonical origin), not the request Host ("${l.trim()}").`);
         });
       }
+      return errs;
+    },
+  },
+  {
+    id: 'translation-gated',
+    why: 'A translation link puts a 中文/English switch on another document; like a version parent, only the owner or a token that can read the target may create one, never because it is public, and a reader sees the switch only when the translation is public (2026-11-26).',
+    run() {
+      const errs = [];
+      const share = read('api/share.js');
+      if (/translation_of:/.test(share)) {
+        const gate = share.search(/const t = await canUseParent\(body\.translation_of, req, res, agentAuth\);/);
+        const store = share.search(/translationOf = translationFields\(t\.row\)\.translation_of;/);
+        if (gate < 0) errs.push('api/share.js: check `const t = await canUseParent(body.translation_of, req, res, agentAuth);` before linking a translation.');
+        if (store < 0 || store < gate) errs.push('api/share.js: store the link as `translationOf = translationFields(t.row).translation_of;` after the canUseParent() check, never from the request body.');
+        if (!/translation_of: links\.translationOf \|\| null/.test(share)) errs.push('api/share.js: the insert stores `translation_of: links.translationOf || null` (set only from the gated row or the gated parent).');
+        lines('api/share.js').forEach((l, i) => {
+          if (!isCommentLine(l) && /body\??\.translation_of/.test(l) && !/canUseParent\(body\.translation_of|body\?\.translation_of != null/.test(l)) errs.push(`api/share.js:${i + 1}: body.translation_of may only be passed to canUseParent() ("${l.trim()}").`);
+        });
+      }
+      const doc = read('api/doc.js');
+      const action = (/\n {2}translation: \{([\s\S]*?)\n {2}\},/.exec(doc) || [])[1];
+      if (action !== undefined) {
+        const gate = action.indexOf('await canUseParent(body.translation_of, req, res, agentAuth)');
+        const write = action.indexOf('patchMeta(');
+        if (gate < 0 || write < 0 || gate > write) errs.push('api/doc.js: the translation action checks canUseParent(body.translation_of, ...) before patchMeta().');
+        if (!/patch\.translation_of = link;/.test(action) || !/const link = translationFields\(t\.row\)\.translation_of;/.test(action)) errs.push('api/doc.js: the translation action stores translationFields(t.row).translation_of, never the request body.');
+        if (!/auth: 'owner\|documents:write,documents:publish'/.test(action)) errs.push("api/doc.js: translation must be auth: 'owner|documents:write,documents:publish'.");
+      }
+      const act = exists('api/_lib/activity.js') ? read('api/_lib/activity.js') : '';
+      const info = (/export async function versionInfo\([\s\S]*?\n\}/.exec(act) || [''])[0];
+      if (!/\.filter\(\(r\) => r\.id !== root && r\.root_id !== root && \(owner \|\| r\.is_public === true\)\)/.test(info)) errs.push('api/_lib/activity.js: versionInfo() picks the translation only from `(owner || r.is_public === true)` rows outside the own version family.');
+      return errs;
+    },
+  },
+  {
+    id: 'collection-owner-only',
+    why: 'Collection pages list private titles; /c and /c/:slug are owner-only and answer everyone else with the same gate before any query, so they never reveal whether a collection exists. Metadata writes can only touch lang/translation_of/collection, and a page costs a fixed number of queries (2026-11-26).',
+    run() {
+      const errs = [];
+      if (!exists('api/_lib/collection-page.js')) return ['api/_lib/collection-page.js is missing: /c and /c/:slug render there (render.js kind=collection).'];
+      const page = read('api/_lib/collection-page.js');
+      const fn = (/export async function renderCollection\(req, res\) \{\n([\s\S]*?)\n\}/.exec(page) || [])[1] || '';
+      const gate = fn.indexOf('if (!checkAuthAndRefresh(req, res)) {');
+      const gated = fn.indexOf('return res.status(401).send(privateGateHtml(');
+      const firstQuery = Math.min(...['listCollections(', 'collectionToc(', 'sbSelect(', 'fetch('].map((k) => { const i = fn.indexOf(k); return i < 0 ? Infinity : i; }));
+      if (!/setPrivacyHeaders\(res\);/.test(fn) || fn.indexOf('setPrivacyHeaders(res);') > gate) errs.push('api/_lib/collection-page.js: renderCollection() starts with setPrivacyHeaders(res).');
+      if (gate < 0 || gated < 0 || gated < gate || firstQuery < gated) errs.push('api/_lib/collection-page.js: renderCollection() answers `if (!checkAuthAndRefresh(req, res)) { ... return res.status(401).send(privateGateHtml(...)); }` before any query or slug check.');
+      if (fn.indexOf('parseCollection(') > -1 && fn.indexOf('parseCollection(') < gated) errs.push('api/_lib/collection-page.js: validate the slug only after the owner gate, so a bad slug looks like any other.');
+      lines('api/_lib/collection-page.js').forEach((l, i) => {
+        if (!isCommentLine(l) && /resolveAgentToken|parseBearer|isVisible\(|agentAuth|hasScope\(/.test(l)) errs.push(`api/_lib/collection-page.js:${i + 1}: collection pages are owner-only; no token or public-document access ("${l.trim()}").`);
+      });
+      if (!/if \(req\.query\.kind === 'collection'\) return renderCollection\(req, res\);/.test(read('api/render.js'))) errs.push("api/render.js: dispatch `if (req.query.kind === 'collection') return renderCollection(req, res);`.");
+      const v = JSON.parse(read('vercel.json'));
+      for (const [src, dest] of [['/c', '/api/render?kind=collection'], ['/c/:slug', '/api/render?kind=collection&slug=:slug']]) {
+        if (!(v.rewrites || []).some((r) => r.source === src && r.destination === dest)) errs.push(`vercel.json: rewrite ${src} -> ${dest}.`);
+      }
+      const doc = read('api/doc.js');
+      const action = (/\n {2}collection: \{([\s\S]*?)\n {2}\},/.exec(doc) || [])[1];
+      if (!action) errs.push('api/doc.js: the collection action must be a plain `collection: { ... }` ACTIONS entry.');
+      else {
+        if (!/auth: \{ GET: 'owner\|documents:read', POST: 'owner\|documents:write,documents:publish' \}/.test(action)) errs.push("api/doc.js: collection must be auth: { GET: 'owner|documents:read', POST: 'owner|documents:write,documents:publish' }.");
+        const check = action.indexOf('await canEditMeta(body.id, req, res, agentAuth)');
+        const write = action.indexOf('patchMeta(');
+        if (check < 0 || write < check) errs.push('api/doc.js: the collection action checks canEditMeta(body.id, ...) before patchMeta().');
+        if (!/familyFilter\(e\.row, e\.owner \? null : agentAuth\.id\)/.test(action)) errs.push('api/doc.js: a token may change only rows it created: familyFilter(e.row, e.owner ? null : agentAuth.id).');
+      }
+      const lib = exists('api/_lib/collections.js') ? read('api/_lib/collections.js') : '';
+      if (!/export const META_FIELDS = \['lang', 'translation_of', 'collection'\];/.test(lib)) errs.push("api/_lib/collections.js: META_FIELDS must be exactly ['lang', 'translation_of', 'collection'].");
+      if (!/export async function patchMeta\(filter, patch\) \{\n\s*const keys = Object\.keys\(patch \|\| \{\}\);\n\s*if \(!keys\.length \|\| keys\.some\(\(k\) => !META_FIELDS\.includes\(k\)\)\) throw/.test(lib)) errs.push('api/_lib/collections.js: patchMeta() must start by throwing for any field outside META_FIELDS.');
+      if ((lib.match(/method: '(PATCH|POST|DELETE|PUT)'/g) || []).length !== 1) errs.push('api/_lib/collections.js: patchMeta() is the only write in this file.');
+      const can = (/export async function canEditMeta\([\s\S]*?\n\}/.exec(lib) || [''])[0];
+      if (/is_public|hasScope/.test(can) || !/row\.created_by_token === agentAuth\.id/.test(can)) errs.push('api/_lib/collections.js: canEditMeta() allows the owner or the token that created the row, nothing else.');
+      const toc = (/export async function collectionToc\([\s\S]*?\n\}/.exec(lib) || [''])[0];
+      const queries = (toc.match(/\bawait (sbSelect|readsFor)\(/g) || []).length;
+      if (!toc || queries > 3) errs.push(`api/_lib/collections.js: collectionToc() makes ${queries} queries (max 3: rows, families, reads).`);
+      lib.split('\n').forEach((l, i) => {
+        if (!isCommentLine(l) && /\b(for|while)\s*\(.*\bawait\b|\.(forEach|map|reduce|flatMap)\([^)]*\basync\b/.test(l)) errs.push(`api/_lib/collections.js:${i + 1}: no queries in loops ("${l.trim()}").`);
+      });
+      let depth = 0;
+      lib.split('\n').forEach((l, i) => {
+        if (isCommentLine(l)) return;
+        if (depth > 0 && /\bawait\b/.test(l)) errs.push(`api/_lib/collections.js:${i + 1}: no await inside a loop body ("${l.trim()}").`);
+        if (/^\s*for \(.*\{\s*$/.test(l)) depth++;
+        else if (depth > 0) depth += (l.match(/\{/g) || []).length - (l.match(/\}/g) || []).length;
+        if (depth < 0) depth = 0;
+      });
       return errs;
     },
   },

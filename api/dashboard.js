@@ -34,6 +34,7 @@ const LIBRARY = `<main class="page" id="library">
       <button type="button" data-v="archify" aria-pressed="false">Archify</button>
     </div>
   </div>
+  <div class="coll-chips" id="coll-chips" role="group" aria-label="Collections" hidden></div>
   <p class="lib-search-status" id="search-status" role="status" aria-live="polite" hidden></p>
   <div class="lib-list" id="lib-list" aria-busy="true">${'<div class="skel"></div>'.repeat(6)}</div>
 </main>

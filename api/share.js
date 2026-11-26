@@ -12,7 +12,8 @@ import { randomBytes } from 'crypto';
 import { wantsKeep, expiryFields, baseUrl, guideUrl, FORMAT_GUIDE_PATH } from './_lib/content.js';
 import { withErrors } from './_lib/events.js';
 import { lintMarkdown } from './_lib/lint.js';
-import { canUseParent, versionFields } from './_lib/activity.js';
+import { canUseParent, versionFields, translationFields, parseLang, detectLang } from './_lib/activity.js';
+import { parseCollection, SLUG_HINT } from './_lib/collections.js';
 
 // --- Rate Limiting (in-memory, per Vercel serverless instance) ---
 // Vercel functions can be cold-started, so this is "best effort" rate limiting.
@@ -78,7 +79,9 @@ async function supabaseSet(id, content, ttlSeconds, createdByToken, keep, links 
     // token (see handler below) — never read from the request body either.
     // parent_id/root_id/version_no/origin come from the handler after canUseParent()/cleanOrigin()
     // (migrations 009, 010). root_id + version_no are stored so reads never walk the chain.
-    body: JSON.stringify({ id, content, expires_at: expiresAt, pinned, title, is_public: false, created_by_token: createdByToken || null, parent_id: links.parentId || null, root_id: links.rootId || null, version_no: links.versionNo || null, origin: links.origin || null }),
+    // lang/translation_of/collection (migration 012): translation_of only from translationFields()
+    // of a row canUseParent() allowed, or inherited from the gated parent ("translation-gated").
+    body: JSON.stringify({ id, content, expires_at: expiresAt, pinned, title, is_public: false, created_by_token: createdByToken || null, parent_id: links.parentId || null, root_id: links.rootId || null, version_no: links.versionNo || null, origin: links.origin || null, lang: links.lang || null, translation_of: links.translationOf || null, collection: links.collection || null }),
   });
   if (!res.ok) throw new Error(`Supabase insert failed: ${res.status}`);
 }
@@ -195,27 +198,60 @@ async function handler(req, res) {
 
     // Versions: `parent` makes this document the next version of an existing one. Only the owner
     // or a token that can read the parent may do it (canUseParent); otherwise 404, never a silent
-    // unlinked create, so an agent learns its revision did not link.
+    // unlinked create, so an agent learns its revision did not link. A new version keeps the
+    // parent's language, translation link and collection unless the request sets them.
     let parentId = null;
     let version = {};
+    let inherited = {};
     if (body?.parent != null) {
       const p = await canUseParent(body.parent, req, res, agentAuth);
       if (p.dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
       if (!p.ok) return res.status(404).json({ error: 'parent not found, expired, or not readable with this credential', guide: guideUrl(req) });
       parentId = p.row.id;
       version = versionFields(p.row);
+      inherited = { lang: p.row.lang || null, translationOf: p.row.translation_of || null, collection: p.row.collection || null };
     }
+
+    // Languages (migration 012): `lang` zh|en, and `translation_of` links this document to the same
+    // text in the other language. Linking is gated exactly like `parent` (canUseParent: owner,
+    // documents:read, or the token's own row; never because the target is public).
+    const lang = parseLang(body?.lang);
+    if (lang === undefined) return res.status(400).json({ error: 'lang must be "zh" or "en"', guide: guideUrl(req) });
+    let docLang = lang || inherited.lang || null;
+    let translationOf = inherited.translationOf || null;
+    let targetCollection = null;
+    if (body?.translation_of != null) {
+      const t = await canUseParent(body.translation_of, req, res, agentAuth);
+      if (t.dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
+      if (!t.ok) return res.status(404).json({ error: 'translation_of not found, expired, or not readable with this credential', guide: guideUrl(req) });
+      if (version.root_id && (t.row.root_id || t.row.id) === version.root_id) return res.status(400).json({ error: 'translation_of is a version of this same document; use parent for a revision' });
+      docLang = docLang || detectLang(markdown);
+      if (t.row.lang && t.row.lang === docLang) return res.status(400).json({ error: `translation_of is already a ${docLang} document; set lang to the other language` });
+      translationOf = translationFields(t.row).translation_of;
+      targetCollection = t.row.collection || null;
+    }
+
+    // Collections: honoured for the owner or a valid token (like origin); anonymous creates can't
+    // put documents into the owner's collections. Versions and translations inherit it.
+    const coll = parseCollection(body?.collection);
+    if (coll === undefined) return res.status(400).json({ error: SLUG_HINT, guide: guideUrl(req) });
+    const collection = trusted ? (coll || inherited.collection || targetCollection || null) : null;
+
     // Where feedback on this document should be sent (an agent's session or chat id). Stored only
     // for the owner or a valid token; anonymous creates can't plant routing data.
     const origin = trusted ? cleanOrigin(body?.origin) : null;
 
-    await supabaseSet(id, markdown, ttl, agentAuth.valid ? agentAuth.id : null, keep, { parentId, rootId: version.root_id, versionNo: version.version_no, origin });
+    await supabaseSet(id, markdown, ttl, agentAuth.valid ? agentAuth.id : null, keep, { parentId, rootId: version.root_id, versionNo: version.version_no, origin, lang: docLang, translationOf, collection });
 
     const base = baseUrl(req);
     const out = { url: `${base}/v/${id}`, id, expires_in: keep ? null : ttl, kept: keep, format_guide: `${base}${FORMAT_GUIDE_PATH}`, checks: lintMarkdown(markdown) };
     if (body?.keep === true && !keep) out.keep_ignored = 'keep:true needs the owner session or an agent token (Authorization: Bearer <token>); this document expires normally.';
     if (parentId) out.parent = parentId;
     if (origin) out.origin = origin;
+    if (docLang) out.lang = docLang;
+    if (translationOf) out.translation_of = translationOf;
+    if (collection) out.collection = collection;
+    if (coll && !trusted) out.collection_ignored = 'collection needs the owner session or an agent token (Authorization: Bearer <token>); this document is in no collection.';
     return res.status(200).json(out);
   }
 

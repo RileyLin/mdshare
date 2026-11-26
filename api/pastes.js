@@ -82,7 +82,7 @@ async function handler(req, res) {
   const expiryFilter = `or=(expires_at.gt.${encodeURIComponent(nowIso)},pinned.eq.true)`;
 
   const dbRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/mdshare_pastes?select=id,title,content,created_at,pinned,expires_at,is_public&${expiryFilter}&order=${orderClause}&limit=100`,
+    `${SUPABASE_URL}/rest/v1/mdshare_pastes?select=id,title,content,created_at,pinned,expires_at,is_public,collection,lang&${expiryFilter}&order=${orderClause}&limit=100`,
     {
       headers: {
         Authorization: `Bearer ${SUPABASE_KEY}`,
@@ -130,6 +130,8 @@ async function handler(req, res) {
       expires_at: row.expires_at,
       expired,
       is_public: row.is_public === true,
+      collection: row.collection || null,
+      lang: row.lang || null,
     };
   }).filter(p => !p.expired); // hide expired non-pinned pastes
 

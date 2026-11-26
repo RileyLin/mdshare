@@ -2,7 +2,7 @@
 // card, and message pages. Visual styles live in /assets/mdshare.css; behaviour in /assets/app.js.
 // Underscore directory: not a Vercel function.
 
-export const ASSET_V = '20261126';
+export const ASSET_V = '20261126b';
 
 export function esc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -73,7 +73,7 @@ export function header({ crumbs = '', right = '', nav = '' }) {
 
 export function libraryNav(current) {
   const item = (href, label, key) => `<a href="${href}"${current === key ? ' aria-current="page"' : ''}>${label}</a>`;
-  return `<nav class="hdr-nav hide-sm" aria-label="Main">${item('/dashboard', 'Library', 'library')}${item('/settings', 'Settings', 'settings')}</nav>`;
+  return `<nav class="hdr-nav hide-sm" aria-label="Main">${item('/dashboard', 'Library', 'library')}${item('/c', 'Collections', 'collections')}${item('/settings', 'Settings', 'settings')}</nav>`;
 }
 
 // "Aa" reading settings — used by every reading surface (owner and reader).
