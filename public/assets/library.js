@@ -97,7 +97,8 @@
       if (!first || first.nodeType !== 3) return;
       var t = first.textContent.replace(/^…/, '');
       if (t.length < 4) { el.removeChild(first); return; }
-      first.textContent = '…' + t.slice(Math.max(4, Math.floor(t.length / 3)));
+      // Drop a partial Latin word at the new edge (CJK has no spaces to snap to).
+      first.textContent = '…' + t.slice(Math.max(4, Math.floor(t.length / 3))).replace(/^[A-Za-z0-9]+(?=[^A-Za-z0-9])/, '').replace(/^\s+/, '');
     }
   }
   function searchStatus() {
