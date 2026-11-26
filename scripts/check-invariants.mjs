@@ -33,7 +33,8 @@ const apiFiles = () => walk('api', (f) => f.endsWith('.js'));
 
 // Content routes: each one returns stored content and must gate it and keep it out of caches.
 // api/_lib/diagram-page.js is the /d/:id page, dispatched from api/render.js (kind=diagram) since 2026-11-25.
-const CONTENT_ROUTES = ['api/render.js', 'api/_lib/diagram-page.js', 'api/archify-render.js', 'api/share.js', 'api/diagram.js', 'api/archify.js'];
+// api/share.js GET (/raw/:id) serves through api/_lib/raw.js since 2026-11-26 ("markdown-route-gating").
+const CONTENT_ROUTES = ['api/render.js', 'api/_lib/diagram-page.js', 'api/archify-render.js', 'api/_lib/raw.js', 'api/diagram.js', 'api/archify.js'];
 const CREATE_ROUTES = ['api/share.js', 'api/diagram.js', 'api/archify.js'];
 
 const checks = [
@@ -68,12 +69,14 @@ const checks = [
     why: 'Migrations are applied by hand and may be rerun; a backfill UPDATE silently reset owner choices on rerun (fixed in 2cf0397).',
     run() {
       const errs = [];
-      const bad = /\b(UPDATE\s+\w+|DELETE\s+FROM|TRUNCATE|DROP\s+(TABLE|COLUMN|SCHEMA|INDEX|TYPE|FUNCTION))\b/i;
+      // CREATE OR REPLACE: a rerun of an old migration would silently overwrite a newer function or
+      // view body (2026-11-26); create only if absent (DO block + pg_proc check), like 011.
+      const bad = /\b(UPDATE\s+\w+|DELETE\s+FROM|TRUNCATE|DROP\s+(TABLE|COLUMN|SCHEMA|INDEX|TYPE|FUNCTION)|CREATE\s+OR\s+REPLACE)\b/i;
       for (const f of walk('migrations', (p) => p.endsWith('.sql'))) {
         lines(f).forEach((l, i) => {
           const code = l.replace(/--.*$/, '');
           if (bad.test(code) && !/--\s*invariant-allow:\s*\S/.test(l)) {
-            errs.push(`${f}:${i + 1}: destructive statement in a migration: "${l.trim()}". Make it additive (ADD COLUMN ... DEFAULT already backfills once) or mark the line "-- invariant-allow: <reason>" after the owner agrees.`);
+            errs.push(`${f}:${i + 1}: destructive statement in a migration: "${l.trim()}". Make it additive (ADD COLUMN ... DEFAULT already backfills once; CREATE FUNCTION inside IF NOT EXISTS (SELECT 1 FROM pg_proc ...)) or mark the line "-- invariant-allow: <reason>" after the owner agrees.`);
           }
         });
       }
@@ -267,6 +270,81 @@ const checks = [
       const selects = (m[1].match(/\bawait sbSelect\(/g) || []).length;
       if (selects > 3) errs.push(`api/_lib/activity.js: the Versions section makes ${selects} sbSelect calls (max 3: page view 1, API 2).`);
       if (!/root_id: links\.rootId/.test(read('api/share.js'))) errs.push('api/share.js: a new version must store root_id and version_no (versionFields(parentRow)).');
+      return errs;
+    },
+  },
+  {
+    id: 'search-no-filter-injection',
+    why: 'PostgREST parses "," "(" ")" "*" inside filter values, so search text spliced into or=(...ilike...) can rewrite the filter; search goes through the mdshare_search rpc with a JSON body (2026-11-26).',
+    run() {
+      if (!exists('api/_lib/search.js')) return ['api/_lib/search.js is missing: full-text search must live there (rpc mdshare_search, migration 011).'];
+      const errs = [];
+      const src = read('api/_lib/search.js');
+      if (!/rest\/v1\/rpc\/mdshare_search`/.test(src)) errs.push('api/_lib/search.js: call `${SUPABASE_URL}/rest/v1/rpc/mdshare_search` (migration 011).');
+      if (!/body: JSON\.stringify\(\{ q,/.test(src)) errs.push('api/_lib/search.js: send the search text in the JSON body: body: JSON.stringify({ q, lim, skip }).');
+      if ((src.match(/\bfetch\(/g) || []).length !== 1) errs.push('api/_lib/search.js: exactly one fetch() per search (one database call, however many rows match).');
+      const filterish = /rest\/v1\/mdshare_|[?&]or=|\bor=\(|\.(i?like|fts|plfts|phfts|wfts|match|imatch)\.|=(i?like|fts|plfts|phfts|wfts|match|imatch)\./;
+      for (const f of ['api/_lib/search.js', 'api/doc.js']) {
+        lines(f).forEach((l, i) => {
+          if (!isCommentLine(l) && filterish.test(l)) errs.push(`${f}:${i + 1}: no PostgREST filter strings on the search path ("${l.trim()}"). Pass the text to searchDocs(), which sends it as an rpc JSON body.`);
+        });
+      }
+      const doc = read('api/doc.js');
+      const action = (/\n {2}search: \{([\s\S]*?)\n {2}\},/.exec(doc) || [])[1];
+      if (!action) errs.push('api/doc.js: the search action must be a plain `search: { ... }` ACTIONS entry.');
+      else {
+        if (!/auth: 'owner\|documents:read'/.test(action)) errs.push("api/doc.js: search must be auth: 'owner|documents:read'.");
+        if (!/validateSearch\(query\)/.test(action) || !/searchDocs\(v\.value\)/.test(action)) errs.push('api/doc.js: search must pass the query only through validateSearch(query) -> searchDocs(v.value).');
+        if (/query\.q\b/.test(action)) errs.push('api/doc.js: the search action must not read query.q itself; validateSearch() trims and bounds it.');
+      }
+      return errs;
+    },
+  },
+  {
+    id: 'markdown-route-gating',
+    why: '/v/:id serves Markdown to Bearer requests; it must use the exact /raw/:id rules, so both go through sendRawMarkdown() in api/_lib/raw.js, which checks isVisible() (2026-11-26).',
+    run() {
+      if (!exists('api/_lib/raw.js')) return ['api/_lib/raw.js is missing: /raw/:id and /v/:id Markdown share sendRawMarkdown() there.'];
+      const errs = [];
+      const raw = read('api/_lib/raw.js');
+      const body = (/export async function sendRawMarkdown\([\s\S]*?\n\}/.exec(raw) || [''])[0];
+      if (!body) errs.push('api/_lib/raw.js: sendRawMarkdown() is missing.');
+      else {
+        const pos = (re) => { const m = re.exec(body); return m ? m.index : -1; };
+        const vis = pos(/isVisible\(row, req, res, \{ agentOwns \}\)/);
+        const send = pos(/\.send\(row\.content\)/);
+        if (vis < 0) errs.push('api/_lib/raw.js: sendRawMarkdown() must check isVisible(row, req, res, { agentOwns }).');
+        if (send < 0 || send < vis) errs.push('api/_lib/raw.js: sendRawMarkdown() may send row.content only after the isVisible() check.');
+        if (!/setPrivacyHeaders\(res\)/.test(body)) errs.push('api/_lib/raw.js: sendRawMarkdown() must call setPrivacyHeaders(res).');
+        if (!/agentAuth\.present && !agentAuth\.valid\) return authHint\(/.test(body)) errs.push('api/_lib/raw.js: an invalid Bearer must be a 401 (authHint), never a fallback to the owner/public check.');
+        if (/is_public === true\) return|row\.is_public\s*\)/.test(body)) errs.push('api/_lib/raw.js: decide visibility only with isVisible().');
+      }
+      const render = read('api/render.js');
+      if (!/if \(wantsMarkdown\(req, res\)\) return sendRawMarkdown\(req, res, \{ contentType: 'text\/markdown; charset=utf-8' \}\);/.test(render)) errs.push("api/render.js: answer agent requests with `if (wantsMarkdown(req, res)) return sendRawMarkdown(req, res, { contentType: 'text/markdown; charset=utf-8' });`.");
+      lines('api/render.js').forEach((l, i) => {
+        if (!isCommentLine(l) && /text\/markdown|text\/plain|\.send\(row\.content\)|\.send\(markdown\)/.test(l) && !/sendRawMarkdown\(/.test(l)) errs.push(`api/render.js:${i + 1}: Markdown leaves this route only through sendRawMarkdown() ("${l.trim()}").`);
+      });
+      if (!/if \(req\.method === 'GET'\) return sendRawMarkdown\(req, res\);/.test(read('api/share.js'))) errs.push("api/share.js: GET (/raw/:id) must be `if (req.method === 'GET') return sendRawMarkdown(req, res);`.");
+      return errs;
+    },
+  },
+  {
+    id: 'agent-auth-hints',
+    why: 'Agents failed silently on bare 401s and on tokens sent as x-api-key (diagnosis 2026-11-15); every agent-facing 401 says how to authenticate, and a misplaced key is refused before any lookup (2026-11-26).',
+    run() {
+      const errs = [];
+      const raw = exists('api/_lib/raw.js') ? read('api/_lib/raw.js') : '';
+      if (!/export function authHint\([^)]*\) \{\n\s*res\.setHeader\('WWW-Authenticate', `Bearer/.test(raw)) errs.push("api/_lib/raw.js: authHint() must start by setting WWW-Authenticate: Bearer.");
+      const body = (/export async function sendRawMarkdown\([\s\S]*?\n\}/.exec(raw) || [''])[0];
+      const misuse = body.indexOf('if (apiKeyMisuse(req)) return authHint(');
+      const lookup = body.indexOf('getRow(');
+      if (misuse < 0 || lookup < 0 || misuse > lookup) errs.push('api/_lib/raw.js: refuse a misplaced key (apiKeyMisuse -> authHint) before getRow(), so the answer is the same for every id.');
+      for (const f of ['api/doc.js', 'api/_lib/raw.js', 'api/share.js']) {
+        lines(f).forEach((l, i) => {
+          if (!isCommentLine(l) && /status\(401\)/.test(l) && !/Unauthorized/.test(l)) errs.push(`${f}:${i + 1}: send agent-facing 401s through authHint() (WWW-Authenticate + hint + guide): "${l.trim()}"`);
+        });
+      }
+      if (!/apiKeyMisuse\(req\)\) return authHint\(/.test(read('api/doc.js'))) errs.push('api/doc.js: answer x-api-key / ?key= with authHint(... HINTS.misplaced ...).');
       return errs;
     },
   },

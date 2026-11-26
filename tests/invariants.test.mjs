@@ -65,7 +65,39 @@ const mutations = {
   'loop-owner-only': (d) => edit(d, 'api/_lib/diagram-page.js', (s) => s.replace("${scripts(['marked', 'purify', 'hljs', 'render', 'app'])}", "${scripts(['marked', 'purify', 'hljs', 'render', 'app', 'loop'])}")),
   'publish-checks': (d) => edit(d, 'api/share.js', (s) => s.replace(', checks: lintMarkdown(markdown) }', ' }')),
   'version-reads-constant': (d) => edit(d, 'api/_lib/activity.js', (s) => s.replace("  const mine = versionNoOf(row);", "  const mine = versionNoOf(row);\n  for (let cur = row && row.parent_id, k = 0; cur && k < 20; k++) cur = (await sbSelect('mdshare_pastes', `id=eq.${encodeURIComponent(cur)}&select=parent_id`))[0]?.parent_id;")),
+  // Search + agent access (2026-11-26).
+  'search-no-filter-injection': (d) => edit(d, 'api/_lib/search.js', (s) => s.replace('`${process.env.SUPABASE_URL}/rest/v1/rpc/mdshare_search`', '`${process.env.SUPABASE_URL}/rest/v1/mdshare_pastes?or=(title.ilike.*${encodeURIComponent(q)}*,content.ilike.*${encodeURIComponent(q)}*)`')),
+  'markdown-route-gating': (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace('if (!row || !isVisible(row, req, res, { agentOwns })) {', 'if (!row || !(row.is_public === true || agentOwns)) {')),
+  'agent-auth-hints': (d) => edit(d, 'api/doc.js', (s) => s.replace("return authHint(req, res, { error: 'Invalid or expired token', hint: HINTS.invalid, scope });", "return res.status(401).json({ error: 'Invalid or expired token' });")),
 };
+
+// More ways to break the 2026-11-26 rules; each must be caught by the named check.
+const extraMutations = [
+  ['migrations-additive', 'a migration replaces a function body', (d) => writeFileSync(join(d, 'migrations', '998_replace.sql'), 'CREATE OR REPLACE FUNCTION public.mdshare_search(q text) RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;\n')],
+  ['search-no-filter-injection', 'the search action passes raw query.q', (d) => edit(d, 'api/doc.js', (s) => s.replace('const r = await searchDocs(v.value);', 'const r = await searchDocs({ ...v.value, q: query.q });'))],
+  ['search-no-filter-injection', 'api/doc.js builds an ilike filter', (d) => edit(d, 'api/doc.js', (s) => s.replace('const r = await searchDocs(v.value);', 'const r = await searchDocs(v.value); const f = `title=ilike.*${encodeURIComponent(v.value.q)}*`; void f;'))],
+  ['search-no-filter-injection', 'search makes a second database call', (d) => edit(d, 'api/_lib/search.js', (s) => s.replace('  if (!Array.isArray(rows)) return { dbError: true };', '  if (!Array.isArray(rows)) return { dbError: true };\n  await fetch(`${process.env.SUPABASE_URL}/rest/v1/rpc/mdshare_search`, { method: \'POST\' });'))],
+  ['search-no-filter-injection', 'search is reachable without documents:read', (d) => edit(d, 'api/doc.js', (s) => s.replace("  search: {\n    auth: 'owner|documents:read',", "  search: {\n    auth: 'owner|documents:write',"))],
+  ['markdown-route-gating', '/v serves Markdown itself', (d) => edit(d, 'api/render.js', (s) => s.replace("  if (wantsMarkdown(req, res)) return sendRawMarkdown(req, res, { contentType: 'text/markdown; charset=utf-8' });", "  if (req.headers.authorization) { const { row: r0 } = await getRow('mdshare_pastes', id, 'content'); res.setHeader('Content-Type', 'text/markdown; charset=utf-8'); return res.send(r0.content); }"))],
+  ['markdown-route-gating', '/raw stops using the shared read path', (d) => edit(d, 'api/share.js', (s) => s.replace("  if (req.method === 'GET') return sendRawMarkdown(req, res);", "  if (req.method === 'GET') return res.status(200).send('');"))],
+  ['markdown-route-gating', 'an invalid Bearer falls back to the public check', (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace("  if (agentAuth.present && !agentAuth.valid) return authHint(req, res, { error: 'Invalid or expired token', hint: HINTS.invalid });\n", ''))],
+  ['agent-auth-hints', 'a misplaced key is checked after the row lookup', (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace("  if (apiKeyMisuse(req)) return authHint(req, res, { error: 'Unsupported credential', hint: HINTS.misplaced });\n", '').replace("  if (dbError) return res.status(503)", "  if (apiKeyMisuse(req)) return authHint(req, res, { error: 'Unsupported credential', hint: HINTS.misplaced });\n  if (dbError) return res.status(503)"))],
+  ['agent-auth-hints', 'authHint stops sending WWW-Authenticate', (d) => edit(d, 'api/_lib/raw.js', (s) => s.replace("  res.setHeader('WWW-Authenticate', `Bearer realm=\"mdshare\"${scope ? `, scope=\"${scope}\"` : ''}`);\n", ''))],
+];
+for (const [id, label, mutate] of extraMutations) {
+  test(`invariant "${id}" fails when ${label}`, () => {
+    const dir = copyRepo();
+    try {
+      const before = readFileSync(join(dir, 'api', 'doc.js'), 'utf8') + readFileSync(join(dir, 'api', '_lib', 'raw.js'), 'utf8') + readFileSync(join(dir, 'api', '_lib', 'search.js'), 'utf8') + readFileSync(join(dir, 'api', 'render.js'), 'utf8') + readFileSync(join(dir, 'api', 'share.js'), 'utf8');
+      mutate(dir);
+      const after = readFileSync(join(dir, 'api', 'doc.js'), 'utf8') + readFileSync(join(dir, 'api', '_lib', 'raw.js'), 'utf8') + readFileSync(join(dir, 'api', '_lib', 'search.js'), 'utf8') + readFileSync(join(dir, 'api', 'render.js'), 'utf8') + readFileSync(join(dir, 'api', 'share.js'), 'utf8');
+      if (!/migrations/.test(id)) assert.notEqual(after, before, 'the mutation applied');
+      const r = run(dir);
+      assert.equal(r.code, 1, `expected failure for ${id} (${label})\n${r.out}`);
+      assert.match(r.out, new RegExp(`✗ ${id.replace(/[-]/g, '\\-')} `), r.out);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+}
 
 // Second mutation for the write allowlist: a direct write from api/doc.js.
 test('invariant "activity-writes-allowlist" fails when api/doc.js writes directly', () => {
