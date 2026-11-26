@@ -66,7 +66,7 @@ for (const [p, marker, type] of [
 }
 
 // 3. Gates and error pages.
-for (const [p, status, marker] of [['/dashboard', 401, 'Welcome back'], ['/settings', 401, 'Welcome back'], ['/v/zzzzzzzzz0', 404, 'This link has expired'], ['/d/zzzzzzzzz0', 404, 'This link has expired'], ['/a/zzzzzzzzz0', 404, 'This link has expired']]) {
+for (const [p, status, marker] of [['/dashboard', 401, 'Welcome back'], ['/settings', 401, 'Welcome back'], ['/v/zzzzzzzzz0', 404, 'This link has expired'], ['/d/zzzzzzzzz0', 404, 'This link has expired'], ['/a/zzzzzzzzz0', 404, 'This link has expired'], ['/c', 401, 'This content is private'], ['/c/zzzzzzzzz0', 401, 'This content is private']]) {
   const r = await get(p);
   check(`gate ${p} -> ${status}`, r.status === status && r.text.includes(marker), `status ${r.status}`);
 }

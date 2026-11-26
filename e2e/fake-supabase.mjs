@@ -15,6 +15,7 @@
 //   GET    ...&<col>=in.(a,b,c)  &<col>=gte.<iso>                (activity tables, migration 009)
 //   DELETE /rest/v1/<table>?id=eq.<id>
 //   POST   /rest/v1/rpc/mdshare_search {q, lim, skip}   (migration 011; same semantics as the SQL)
+//   GET    ...&or=(id.in.(a,b),root_id.in.(a,b),translation_of.eq.x)  &collection=not.is.null  (migration 012)
 //
 // Anything that doesn't match one of the above shapes gets a 501 naming the unmatched
 // method+path+query, so a harness gap is loud (visible in report.json / terminal) instead of a
@@ -27,7 +28,7 @@ const KNOWN_TABLES = ['mdshare_pastes', 'mdshare_diagrams', 'mdshare_archify', '
 // not already set (the app always sets most of these explicitly on create; this only covers what
 // a real Postgres DEFAULT would silently fill in).
 const TABLE_DEFAULTS = {
-  mdshare_pastes: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, title: null, parent_id: null, root_id: null, version_no: null, origin: null }),
+  mdshare_pastes: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, title: null, parent_id: null, root_id: null, version_no: null, origin: null, lang: null, translation_of: null, collection: null }),
   mdshare_diagrams: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, markdown: null }),
   mdshare_archify: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, ir: null, markdown: null }),
   mdshare_agent_tokens: () => ({ created_at: new Date().toISOString(), revoked_at: null, last_used_at: null, scopes: null, expires_at: null }),
@@ -102,6 +103,11 @@ function evalCondition(row, { col, op, val }) {
       return !coerceEq(row[col], val);
     case 'is':
       return val === 'null' ? row[col] === null || row[col] === undefined : coerceEq(row[col], val);
+    case 'not': {
+      // not.<op>.<value>, e.g. collection=not.is.null
+      const inner = parseConditionString(`${col}.${val}`);
+      return !evalCondition(row, inner);
+    }
     case 'gt':
       return compareRange(row[col], val) > 0;
     case 'gte':
@@ -123,13 +129,22 @@ function evalCondition(row, { col, op, val }) {
   }
 }
 
-// Parses one `or=(cond,cond,...)` group into a list of {col,op,val}. Not expected to contain
-// nested parens/commas inside a value — true for every or= group this app's code ever builds
-// (see api/pastes.js's expiryFilter and api/_lib/catalog.js's buildIlikeOr).
+// Parses one `or=(cond,cond,...)` group into a list of {col,op,val}. Commas inside a nested
+// in.(a,b) list belong to that list (migration 012's family queries); values themselves never
+// contain commas or parens (validated ids, ISO timestamps, escaped search terms).
 function parseOrGroup(group) {
   const trimmed = group.trim();
   const inner = trimmed.startsWith('(') && trimmed.endsWith(')') ? trimmed.slice(1, -1) : trimmed;
-  return inner.split(',').map(parseConditionString);
+  const parts = [];
+  let depth = 0, cur = '';
+  for (const ch of inner) {
+    if (ch === '(') depth++;
+    if (ch === ')') depth--;
+    if (ch === ',' && depth === 0) { parts.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  parts.push(cur);
+  return parts.map(parseConditionString);
 }
 
 function buildFilterFn(searchParams) {

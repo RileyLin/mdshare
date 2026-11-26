@@ -38,6 +38,11 @@
   // snippet; diagrams/archify are still matched by title here. Until the answer for the current
   // text arrives, the local title/preview filter is shown. Stale answers are dropped by `seq`.
   var server = { q: '', results: null, total: 0, error: '' }, extra = new Map(), seq = 0;
+  // Collections (GET /api/doc?action=collection): chips above the list. A selected chip lists that
+  // collection's table of contents from the server (newest version of each document, both
+  // languages), so it is complete even beyond the first page of the library.
+  var collections = [], coll = { slug: '', items: null, error: '' }, collSeq = 0;
+  var LANG_TAG = { zh: '中文', en: 'EN' };
   function kept(p) { return !!p.pinned || (typeof p.expires_at === 'string' && p.expires_at >= '2099'); }
   function soon(p) { return !kept(p) && (new Date(p.expires_at) - Date.now()) < 48 * 3600000; }
   function inView(p) {
@@ -52,7 +57,47 @@
     if (query) { var q = query.toLowerCase(); if ((p.title || '').toLowerCase().indexOf(q) < 0 && (p.preview || '').toLowerCase().indexOf(q) < 0) return false; }
     return true;
   }
-  function serverReady() { return !!query && server.q === query && Array.isArray(server.results); }
+  function serverReady() { return !coll.slug && !!query && server.q === query && Array.isArray(server.results); }
+  // Library rows for the selected collection: one per language link, reusing loaded rows.
+  function collRows() {
+    var out = [];
+    (coll.items || []).forEach(function (e) {
+      e.links.forEach(function (l) {
+        var p = find(l.id);
+        if (!p) { p = extra.get(l.id) || { id: l.id, kind: 'paste' }; extra.set(l.id, p); }
+        if (!p.title) p.title = l.title || e.title;
+        if (p.created_at == null) p.created_at = l.created_at;
+        if (p.is_public == null) p.is_public = l.is_public;
+        if (p.pinned == null) { p.pinned = l.pinned; p.expires_at = l.expires_at; }
+        if (p.lang == null) p.lang = l.lang;
+        if (!p.collection && l.in_collection) p.collection = coll.slug;
+        out.push(p);
+      });
+    });
+    return out;
+  }
+  function selectCollection(slug) {
+    var my = ++collSeq;
+    coll = { slug: slug, items: null, error: '' };
+    try { var u = new URL(location.href); if (slug) u.searchParams.set('collection', slug); else u.searchParams.delete('collection'); history.replaceState(null, '', u.pathname + u.search); } catch (e) { /* ignore */ }
+    renderChips(); render();
+    if (!slug) return;
+    api('/api/doc?action=collection&slug=' + encodeURIComponent(slug), {}).then(function (d) {
+      if (my !== collSeq) return;
+      coll = { slug: slug, items: d.items || [], error: '' }; render();
+    }).catch(function (e) {
+      if (my !== collSeq) return;
+      coll = { slug: slug, items: [], error: e.message }; render();
+    });
+  }
+  function renderChips() {
+    var box = $('coll-chips'); if (!box) return;
+    box.hidden = !collections.length;
+    if (!collections.length) { box.innerHTML = ''; return; }
+    box.innerHTML = '<span class="lbl">Collections</span>' + collections.map(function (c) {
+      return '<button type="button" data-slug="' + esc(c.slug) + '" aria-pressed="' + (coll.slug === c.slug ? 'true' : 'false') + '">' + esc(c.slug) + '<span class="n">' + esc(c.count) + '</span></button>';
+    }).join('') + (coll.slug ? '<a href="/c/' + encodeURIComponent(coll.slug) + '" id="coll-open">Open page →</a>' : '<a href="/c" id="coll-all">All →</a>');
+  }
   // Server results reuse the library's own row object when it has one (so keep/publish state is
   // shared), otherwise become a row of their own (documents beyond the first page of the library).
   function fromServer(r) {
@@ -103,6 +148,12 @@
   }
   function searchStatus() {
     var st = $('search-status'); if (!st) return;
+    if (coll.slug) {
+      st.hidden = false;
+      st.textContent = coll.items ? (coll.error ? 'Could not load the collection (' + coll.error + ')' : 'Collection “' + coll.slug + '” · ' + coll.items.length + (coll.items.length === 1 ? ' document' : ' documents') + (collRows().length > coll.items.length ? ' (' + collRows().length + ' pages with translations)' : '') + (query ? ' · titles matching “' + query + '”' : '')) : 'Loading the collection…';
+      st.setAttribute('data-state', coll.items ? (coll.error ? 'error' : 'done') : 'loading');
+      return;
+    }
     st.hidden = !query;
     if (!query) return;
     st.textContent = serverReady()
@@ -122,6 +173,8 @@
     var k = kept(p), sel = selected.has(p.id);
     var tags = (p.is_public ? '<span class="tag public">Public</span>' : '') + (k ? '<span class="tag kept">⭐ Kept</span>' : '<span class="tag' + (soon(p) ? ' soon' : '') + '">' + left(p.expires_at) + '</span>');
     var kindTag = p.kind !== 'paste' ? '<span class="tag kind">' + esc(p.kind === 'archify' && p.archifyKind ? p.archifyKind : KIND_LABEL[p.kind]) + '</span>' : '';
+    if (p.lang && LANG_TAG[p.lang]) kindTag += '<span class="tag kind lang" lang="' + esc(p.lang) + '">' + LANG_TAG[p.lang] + '</span>';
+    if (p.collection && p.collection !== coll.slug) kindTag += '<span class="tag coll" title="Collection ' + esc(p.collection) + '">' + esc(p.collection) + '</span>';
     return '<a class="lib-row' + (sel ? ' sel' : '') + '" href="' + HREF[p.kind] + encodeURIComponent(p.id) + '" data-id="' + esc(p.id) + '">' +
       '<span class="cb"><input type="checkbox" aria-label="Select ' + esc(p.title) + '"' + (sel ? ' checked' : '') + '></span>' +
       '<span class="kind-ic ' + p.kind + '" aria-hidden="true">' + ICON[p.kind] + '</span>' +
@@ -136,7 +189,9 @@
   function render() {
     var list = $('lib-list'); if (!list) return;
     var shown, snippets = {};
-    if (serverReady()) {
+    if (coll.slug) {
+      shown = coll.items ? collRows().filter(matches) : [];
+    } else if (serverReady()) {
       var q = query.toLowerCase();
       var docs = server.results.map(function (r) { snippets[r.id] = r.snippet || ''; return fromServer(r); });
       var others = items.filter(function (p) { return p.kind !== 'paste' && (p.title || '').toLowerCase().indexOf(q) >= 0; });
@@ -151,7 +206,7 @@
     if (sum) sum.textContent = items.length ? (items.length + ' item' + (items.length === 1 ? '' : 's') + ' · ' + counts.kept + ' kept · ' + counts.public + ' public') : 'Nothing here yet.';
     list.setAttribute('aria-busy', 'false');
     if (!items.length && !shown.length) { list.innerHTML = '<div class="lib-empty"><b>Your library is empty</b>Write something on the <a href="/#new">home page</a>, or let an agent publish through the API.</div>'; return; }
-    if (!shown.length) { list.innerHTML = '<div class="lib-empty"><b>No matches</b>' + (query ? 'Nothing matches “' + esc(query) + '”.' : 'Nothing in this view.') + '</div>'; return; }
+    if (!shown.length) { list.innerHTML = coll.slug && !coll.items ? '<div class="skel"></div>'.repeat(3) : '<div class="lib-empty"><b>No matches</b>' + (query ? 'Nothing matches “' + esc(query) + '”.' : 'Nothing in this view.') + '</div>'; return; }
     list.innerHTML = shown.map(function (p) { return row(p, Object.prototype.hasOwnProperty.call(snippets, p.id) && p.kind === 'paste' ? snippets[p.id] : null); }).join('');
     list.querySelectorAll('[data-snippet]').forEach(function (el) { fillSnippet(el, snippets[el.getAttribute('data-snippet')] || '', query); });
   }
@@ -264,6 +319,17 @@
     });
     [['b-keep', 'keep'], ['b-unkeep', 'unkeep'], ['b-public', 'public'], ['b-private', 'private'], ['b-delete', 'delete']].forEach(function (x) { $(x[0]).addEventListener('click', function () { batch(x[1]); }); });
     $('b-clear').addEventListener('click', function () { selected.clear(); render(); syncBatch(); });
+    var chips = $('coll-chips');
+    if (chips) chips.addEventListener('click', function (e) {
+      var b = e.target.closest('button[data-slug]'); if (!b) return;
+      var slug = b.getAttribute('data-slug');
+      selectCollection(coll.slug === slug ? '' : slug);
+    });
+    var wanted = ''; try { wanted = new URL(location.href).searchParams.get('collection') || ''; } catch (e) { /* ignore */ }
+    api('/api/doc?action=collection', {}).then(function (d) {
+      collections = d.collections || [];
+      if (wanted && collections.some(function (c) { return c.slug === wanted; })) selectCollection(wanted); else renderChips();
+    }).catch(function () { collections = []; renderChips(); });
     api('/api/pastes', {}).then(function (data) { items = Array.isArray(data) ? data : []; render(); }).catch(function (e) {
       list.innerHTML = '<div class="lib-empty"><b>Couldn’t load your library</b>' + esc(e.message) + '</div>';
     });

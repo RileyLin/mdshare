@@ -10,7 +10,8 @@ POST /api/share
 Content-Type: application/json
 Authorization: Bearer <token>        (optional; required for "keep")
 
-{"markdown": "<the document>", "keep": true, "ttl": 86400, "parent": "<id>", "origin": "<where feedback goes>"}
+{"markdown": "<the document>", "keep": true, "ttl": 86400, "parent": "<id>", "origin": "<where feedback goes>",
+ "lang": "zh", "translation_of": "<id>", "collection": "<slug>"}
 
 - markdown: required, max 100 KB.
 - keep: true = never expires. Honoured for a valid token or the signed-in owner; ignored otherwise.
@@ -21,8 +22,18 @@ Authorization: Bearer <token>        (optional; required for "keep")
   parent (documents:read, or it created the parent); otherwise 404 and nothing is created.
 - origin: your session or chat id (letters, digits, : . @ / # + - _; max 200). Stored only for a
   token or the owner. Reader feedback on this document is listed with it, so it can be routed back.
+- lang: "zh" or "en" (anything else is 400).
+- translation_of: id of the same text in the other language. Both pages then show a 中文 / English
+  switch (a reader sees it only when the other page is public too). Gated like parent: the owner, a
+  documents:read token, or a token linking to its own document; otherwise 404 and nothing is
+  created. lang is detected when you leave it out; the same language as the target is 400.
+- collection: a slug (1-48 of a-z 0-9 -, e.g. "glm-study"). The owner sees it at /c/<slug>: one
+  row per document (newest version only, a zh/en pair as one row), with read status. Needs a token
+  or the owner (ignored otherwise; "collection_ignored" says so). Invalid slug: 400.
+  A new version (parent) keeps the parent's lang, translation_of and collection; a translation
+  joins its original's collection.
 Response: {"url", "id", "kept", "expires_in", "format_guide", "checks", "parent"?, "origin"?,
-"keep_ignored"?}. Give the user the url. Read "checks" first: {"ok", "warnings": [{"rule",
+"lang"?, "translation_of"?, "collection"?, "keep_ignored"?}. Give the user the url. Read "checks" first: {"ok", "warnings": [{"rule",
 "severity": "warn"|"info", "line", "message"}], "stats": {"minutes", "tables", "maxColumns", ...}}.
 "warn" means the page will look broken (unclosed code block or :::block, a table row with extra
 cells, a mermaid block that won't draw, a redaction placeholder, a local file link). Fix and
@@ -64,6 +75,20 @@ GET  /api/doc?action=feedback&status=open   open feedback: {id, doc_id, doc_titl
 POST /api/doc?action=resolve {"ids": ["fb_..."], "status": "resolved", "resolved_in": "<new id>"}
      after you publish the fix as a new version (activity:write).
 GET  /api/doc?action=versions&id=<id>        the version chain, oldest first (documents:read).
+
+## Translations and collections (link or file existing documents)
+
+POST /api/doc?action=translation {"id", "translation_of": "<original id>" | null, "lang"?: "zh"|"en"}
+     links (or with null unlinks) the document's whole version family. Needs documents:write or
+     documents:publish, on a document this token created (the owner: any); the target is gated like
+     a parent. Otherwise 404, the same for a missing id.
+POST /api/doc?action=collection {"id", "collection": "<slug>" | null}   same rules; whole family.
+GET  /api/doc?action=collection                every collection: [{"slug", "count", "updated_at"}]
+GET  /api/doc?action=collection&slug=<slug>    its contents: {"items": [{"title", "id", "kept",
+     "opened", "max_scroll", "updated_at", "links": [{"id", "lang", "version", "is_public"}]}]}
+     (documents:read). The /c/<slug> page itself is owner-only; tokens get the sign-in page.
+CLI: mdshare-cli create paste f.md --lang zh --translation-of <id> --collection <slug>;
+     mdshare-cli translate <id> --of <id>; mdshare-cli collection <id> <slug>; mdshare-cli collections [slug].
 Answer feedback by revising the passage it quotes, not by rewriting the whole document.
 
 ## How to write a document that reads well

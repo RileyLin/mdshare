@@ -564,5 +564,44 @@
       "the owner page advertises the Markdown with rel=alternate",
       "the Settings reveal shows a paste-ready agent block with this site, the token, its scopes and a search example"
     ]
+  },
+  {
+    "id": "translation-switch",
+    "name": "Chinese/English versions linked: 中文 / English switch on the reader page",
+    "path": "POST /api/share {lang, translation_of} -> /v/:id (owner, reader, phone)",
+    "steps": [
+      "owner publishes an English doc, then its Chinese translation with translation_of",
+      "anonymous create with translation_of",
+      "owner opens the English page and clicks 中文",
+      "owner publishes English only; a reader opens it",
+      "owner publishes Chinese; a reader on a 390px phone opens English and switches"
+    ],
+    "assertions": [
+      "publishing links the pair and detects zh",
+      "an anonymous create cannot attach a translation (404)",
+      "the switch shows the current language and links the other, outside #content, fully on screen",
+      "the owner sees a lock when the other side is private",
+      "a reader sees no switch (and no id) while the translation is private; sees it once public, with no lock",
+      "no sideways scroll on a phone; switching works for readers"
+    ]
+  },
+  {
+    "id": "collection-page",
+    "name": "Collections: /c/:slug table of contents, /c index, Library chips",
+    "path": "/c/:slug, /c, /dashboard?collection=<slug>, POST /api/doc?action=collection",
+    "steps": [
+      "owner publishes a collection with a v1->v2 document, a zh/en pair (translation inherits the collection), a long-titled doc; files another doc with the collection action; reads the zh doc",
+      "anonymous and a Bearer token open an existing and a missing /c/<slug>",
+      "owner opens /c/<slug> at 1280 and 390, /c, and the Library chip"
+    ],
+    "assertions": [
+      "the same 401 gate for existing and missing slugs and for tokens; the API serves agents with documents:read",
+      "one row per document in series order; superseded draft hidden, row links v2",
+      "the zh/en pair is one row with both links",
+      "read status and kept per row; summary counts entries",
+      "no sideways scroll and every row's content inside the row at 1280 and 390",
+      "/c lists collections with counts; the Library chip lists exactly the collection's newest versions and sets ?collection=",
+      "a missing collection is a 404 page for the owner"
+    ]
   }
 ]

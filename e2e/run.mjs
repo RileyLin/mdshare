@@ -1479,6 +1479,143 @@ async function runInlineDiagrams(ctx, ok) {
   }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' });
 }
 
+// api/share.js allows 50 creates an hour per client IP, and the full suite runs from one IP; these
+// two features publish through the real API as distinct clients (X-Forwarded-For) so they don't
+// depend on how many documents earlier features created.
+let fakeClient = 0;
+async function createAsClient(ctx, body, auth = {}) {
+  const headers = { 'Content-Type': 'application/json', 'X-Forwarded-For': `198.51.100.${(++fakeClient % 250) + 1}` };
+  if (auth.cookie) headers.cookie = auth.cookie;
+  const r = await fetch(`${ctx.serverUrl}/api/share`, { method: 'POST', headers, body: JSON.stringify(body) });
+  return { status: r.status, json: await r.json().catch(() => null) };
+}
+
+// Tier 2 Batch B (2026-11-26, migration 012): Chinese/English versions linked.
+async function runTranslationSwitch(ctx, ok) {
+  const { json: en } = await createAsClient(ctx, { markdown: fixture('pair-en.md'), lang: 'en', keep: true }, { cookie: ctx.ownerCookie });
+  const { json: zh } = await createAsClient(ctx, { markdown: fixture('pair-zh.md'), translation_of: en.id, keep: true }, { cookie: ctx.ownerCookie });
+  ok(zh.lang === 'zh' && zh.translation_of === en.id, `publishing with translation_of links the pair and detects 中文 (${zh.lang}, ${zh.translation_of})`);
+  const anonLink = await createAsClient(ctx, { markdown: '# spoof', translation_of: en.id });
+  ok(anonLink.status === 404, `an anonymous create cannot attach itself as a translation (status ${anonLink.status})`);
+  const layout = (page) => page.evaluate(() => {
+    const sw = document.getElementById('lang-switch'); const r = sw && sw.getBoundingClientRect();
+    return { present: !!sw, inContent: !!sw && document.getElementById('content').contains(sw), current: sw ? sw.querySelector('[aria-current="true"]').textContent : null, other: sw && sw.querySelector('#lang-other') ? sw.querySelector('#lang-other').getAttribute('href') : null, onScreen: !!r && r.left >= 0 && r.right <= innerWidth && r.height > 0 && r.height < 48, gap: r ? Math.round(r.top - document.querySelector('.app-header').getBoundingClientRect().bottom) : null, overflow: document.documentElement.scrollWidth - innerWidth, h1: document.querySelector('#content h1') && document.querySelector('#content h1').textContent };
+  });
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${en.id}`);
+    await waitRendered(page);
+    let r = await layout(page);
+    ok(r.present && !r.inContent && r.current === 'English' && r.other === `/v/${zh.id}`, `the owner sees English current and a 中文 link, outside the document body (${JSON.stringify(r)})`);
+    ok(r.onScreen && r.gap >= 12, `the switch is one compact row, fully on screen, clear of the header (gap ${r.gap}px)`);
+    await page.screenshot({ path: ctx.proofPath });
+    await page.click('#lang-other');
+    await page.waitForURL(`**/v/${zh.id}`);
+    await waitRendered(page);
+    r = await layout(page);
+    ok(r.current === '中文' && r.other === `/v/${en.id}` && /KV 缓存/.test(r.h1 || ''), `clicking 中文 opens the Chinese version, which links back to English (${r.current}, ${r.h1})`);
+    ok(await page.evaluate(() => !!document.querySelector('#lang-other .lock')), 'the owner sees a lock on English: it is private, so readers do not get the switch yet');
+  }, { viewport: { width: 1280, height: 860 }, reducedMotion: 'reduce' });
+  await ownerApi(ctx, 'PATCH', '/api/pin', { id: en.id, kind: 'paste', is_public: true });
+  await withContext(ctx, async (context) => {
+    const page = await openAnon(ctx, context, `/v/${en.id}`);
+    await waitRendered(page);
+    ok(!(await page.$('#lang-switch')) && !(await page.content()).includes(zh.id), 'a reader of the public English page is not told about the private Chinese one');
+  });
+  await ownerApi(ctx, 'PATCH', '/api/pin', { id: zh.id, kind: 'paste', is_public: true });
+  await withContext(ctx, async (context) => {
+    const page = await openAnon(ctx, context, `/v/${en.id}`);
+    await waitRendered(page);
+    const r = await layout(page);
+    ok(r.present && r.other === `/v/${zh.id}` && r.overflow <= 0 && r.onScreen, `once both are public a reader on a phone sees the switch, no sideways scroll (${JSON.stringify(r)})`);
+    ok(!(await page.evaluate(() => /🔒/.test(document.getElementById('lang-switch').textContent))), 'readers never see the owner\'s private marker');
+    await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-phone.png') });
+    await page.click('#lang-other');
+    await page.waitForURL(`**/v/${zh.id}`);
+    await waitRendered(page);
+    ok((await layout(page)).current === '中文', 'a reader can switch languages');
+  }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' });
+}
+
+// Tier 2 Batch B: collections at /c/:slug, owner-only, newest version of each document, pairs as one row.
+async function runCollectionPage(ctx, ok) {
+  const slug = 'kv-cache-study';
+  const O = { cookie: ctx.ownerCookie };
+  const { json: p1 } = await createAsClient(ctx, { markdown: '# Part 1: attention basics (draft)\n\nfirst draft', collection: slug, keep: true }, O);
+  const { json: p1b } = await createAsClient(ctx, { markdown: '# Part 1: attention basics\n\nrevised', parent: p1.id, keep: true }, O);
+  const { json: en } = await createAsClient(ctx, { markdown: fixture('pair-en.md'), lang: 'en', collection: slug }, O);
+  const { json: zh } = await createAsClient(ctx, { markdown: fixture('pair-zh.md'), translation_of: en.id }, O);
+  const { json: p3 } = await createAsClient(ctx, { markdown: '# Part 3: paged attention, eviction and the long road to a million-token context window on one GPU\n\nlong title', collection: slug }, O);
+  const { json: other } = await createAsClient(ctx, { markdown: '# Not in it\n\nx' }, O);
+  ok(p1b.collection === slug && zh.collection === slug, `versions and translations inherit the collection (${p1b.collection}, ${zh.collection})`);
+  const filed = await ownerApi(ctx, 'POST', '/api/doc?action=collection', { id: other.id, collection: 'misc-notes' });
+  ok(filed.status === 200 && filed.json.collection === 'misc-notes', `the collection action files an existing document (status ${filed.status})`);
+  await ownerApi(ctx, 'POST', '/api/doc?action=read', { id: zh.id, open: true, scroll: 60, seconds: 20 });
+
+  const anon = await fetch(`${ctx.serverUrl}/c/${slug}`);
+  const anonMissing = await fetch(`${ctx.serverUrl}/c/no-such-collection`);
+  const [a1, a2] = [await anon.text(), await anonMissing.text()];
+  ok(anon.status === 401 && anonMissing.status === 401 && a1 === a2 && !a1.includes('Part 1'), `anonymous gets the same gate for an existing and a missing collection (${anon.status}/${anonMissing.status}, identical ${a1 === a2})`);
+  const tokenRes = await ownerApi(ctx, 'POST', '/api/auth', { action: 'create_token', name: `coll ${rand()}`, scopes: ['documents:read'] });
+  const withToken = await fetch(`${ctx.serverUrl}/c/${slug}`, { headers: { Authorization: ['Bea', 'rer'].join('') + ' ' + tokenRes.json.token } });
+  ok(withToken.status === 401 && (await withToken.text()) === a1, 'a Bearer token gets the same gate (the page is owner-only)');
+  const tocApi = await fetch(`${ctx.serverUrl}/api/doc?action=collection&slug=${slug}`, { headers: { Authorization: ['Bea', 'rer'].join('') + ' ' + tokenRes.json.token } });
+  ok(tocApi.status === 200 && (await tocApi.json()).items.length === 3, 'agents read the same contents through the API with documents:read');
+
+  const check = async (page, label) => {
+    const r = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('.coll-row')];
+      const fits = rows.every((li) => { const b = li.getBoundingClientRect(); return b.left >= 0 && b.right <= innerWidth + 0.5 && [...li.querySelectorAll('a, .tag, time')].every((x) => { const c = x.getBoundingClientRect(); return c.right <= b.right + 0.5 && c.left >= b.left - 0.5; }); });
+      return {
+        titles: rows.map((li) => li.querySelector('.coll-title').textContent),
+        hrefs: rows.map((li) => li.querySelector('.coll-title').getAttribute('href')),
+        langs: rows.map((li) => [...li.querySelectorAll('.coll-langs a')].map((a) => `${a.dataset.lang}:${a.getAttribute('href')}`)),
+        read: rows.map((li) => li.querySelector('[data-read]').dataset.read),
+        kept: rows.map((li) => !!li.querySelector('.tag.kept')),
+        fits, overflow: document.documentElement.scrollWidth - innerWidth, summary: document.getElementById('coll-summary').textContent,
+      };
+    });
+    ok(JSON.stringify(r.titles) === JSON.stringify(['Part 1: attention basics', 'KV cache: why time to first token drops', 'Part 3: paged attention, eviction and the long road to a million-token context window on one GPU']), `${label}: one row per document in series order, newest titles (${JSON.stringify(r.titles)})`);
+    ok(r.hrefs[0] === `/v/${p1b.id}` && !(await page.content()).includes(`/v/${p1.id}"`), `${label}: the superseded draft is hidden, the row links v2`);
+    ok(JSON.stringify(r.langs[1]) === JSON.stringify([`zh:/v/${zh.id}`, `en:/v/${en.id}`]), `${label}: the zh/en pair is one row with both links (${JSON.stringify(r.langs[1])})`);
+    ok(JSON.stringify(r.read) === JSON.stringify(['0', '1', '0']) && JSON.stringify(r.kept) === JSON.stringify([true, false, false]), `${label}: read status and kept per row (${r.read} / ${r.kept})`);
+    ok(/3 documents · 1 read/.test(r.summary), `${label}: the summary counts entries (${r.summary})`);
+    ok(r.overflow <= 0 && r.fits, `${label}: no sideways scroll and every row's content fits inside it (overflow ${r.overflow}, fits ${r.fits})`);
+  };
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/c/${slug}`);
+    await page.waitForSelector('.coll-row', { timeout: 5000 });
+    await check(page, '1280');
+    await page.screenshot({ path: ctx.proofPath, fullPage: true });
+    await gotoResilient(page, `${ctx.serverUrl}/c`, { waitUntil: 'load' });
+    const idx = await page.evaluate(() => [...document.querySelectorAll('#coll-index a')].map((a) => `${a.dataset.slug}:${a.querySelector('span').textContent.split(' ·')[0]}`));
+    ok(idx.includes(`${slug}:3 documents`) && idx.includes('misc-notes:1 document'), `/c lists every collection with its count (${JSON.stringify(idx)})`);
+    await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-index.png') });
+    await gotoResilient(page, `${ctx.serverUrl}/dashboard`, { waitUntil: 'load' });
+    await page.waitForSelector(`#coll-chips button[data-slug="${slug}"]`, { timeout: 5000 });
+    await page.click(`#coll-chips button[data-slug="${slug}"]`);
+    await page.waitForSelector('#search-status[data-state="done"]', { timeout: 5000 });
+    const lib = await page.evaluate(() => ({ rows: [...document.querySelectorAll('.lib-row')].map((e) => e.dataset.id), url: location.search, status: document.getElementById('search-status').textContent }));
+    ok(JSON.stringify(lib.rows.slice().sort()) === JSON.stringify([p1b.id, zh.id, en.id, p3.id].sort()) && lib.url === `?collection=${slug}`, `the Library chip lists the collection's newest versions, both languages (${JSON.stringify(lib)})`);
+    await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-library.png') });
+    await page.click(`#coll-chips button[data-slug="${slug}"]`);
+    await page.waitForFunction((id) => !!document.querySelector(`.lib-row[data-id="${id}"]`), other.id, { timeout: 5000 });
+    ok(true, 'clicking the chip again shows the whole library');
+    const tags = await page.evaluate(() => [...document.querySelectorAll('.lib-row .title .tag')].map((t) => { const r = t.getBoundingClientRect(), c = t.closest('.main').getBoundingClientRect(); return { text: t.textContent, clipped: t.scrollWidth > t.clientWidth + 1 || r.right > c.right + 0.5 }; }));
+    ok(tags.some((t) => t.text === slug) && tags.every((t) => !t.clipped), `every row tag (collection, language) is shown whole, even next to a long title (${JSON.stringify(tags.filter((t) => t.clipped))})`);
+  }, { viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/c/${slug}`);
+    await page.waitForSelector('.coll-row', { timeout: 5000 });
+    await check(page, '390');
+    await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-phone.png'), fullPage: true });
+    await gotoResilient(page, `${ctx.serverUrl}/dashboard?collection=${slug}`, { waitUntil: 'load' });
+    await page.waitForSelector('#search-status[data-state="done"]', { timeout: 5000 });
+    ok((await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)) <= 0 && (await page.$$('.lib-row')).length === 4, 'on a phone the Library opens the collection from the URL, with no sideways scroll');
+  }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' });
+  const missing = await ownerApi(ctx, 'GET', '/c/no-such-collection');
+  ok(missing.status === 404, `the owner gets a not-found page for a missing collection (status ${missing.status})`);
+}
+
 const RUNNERS = {
   'home-page': runHomePage,
   'create-paste-ui': runCreatePasteUi,
@@ -1519,6 +1656,8 @@ const RUNNERS = {
   'inline-diagrams': runInlineDiagrams,
   'library-search': runLibrarySearch,
   'agent-read-v': runAgentReadV,
+  'translation-switch': runTranslationSwitch,
+  'collection-page': runCollectionPage,
 };
 
 async function main() {
