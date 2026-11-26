@@ -125,6 +125,40 @@ for (const [label, file, fn] of originMutations) {
   });
 }
 
+// Translations and collections (2026-11-26, migration 012): each mutation must be caught by the named check.
+const batchBMutations = [
+  ['translation-gated', 'share.js links a translation without canUseParent', 'api/share.js', (s) => s.replace('      const t = await canUseParent(body.translation_of, req, res, agentAuth);', "      const t = { ok: true, row: { id: body.translation_of } };")],
+  ['translation-gated', 'share.js stores translation_of from the request body', 'api/share.js', (s) => s.replace('      translationOf = translationFields(t.row).translation_of;', '      translationOf = body.translation_of;')],
+  ['translation-gated', 'a reader sees a private translation', 'api/_lib/activity.js', (s) => s.replace('.filter((r) => r.id !== root && r.root_id !== root && (owner || r.is_public === true))', '.filter((r) => r.id !== root && r.root_id !== root)')],
+  ['translation-gated', 'the translation action skips canUseParent', 'api/doc.js', (s) => s.replace('        const t = await canUseParent(body.translation_of, req, res, agentAuth);', "        const t = { ok: true, row: { id: body.translation_of, lang: null } };")],
+  ['translation-gated', 'the translation action stores the body value', 'api/doc.js', (s) => s.replace('        patch.translation_of = link;', '        patch.translation_of = body.translation_of;')],
+  ['version-parent-gated', 'canUseParent grants access to a public target', 'api/_lib/activity.js', (s) => s.replace("  if (checkAuthAndRefresh(req, res)) return { ok: true, row };\n  if (agentAuth", "  if (row.is_public === true || checkAuthAndRefresh(req, res)) return { ok: true, row };\n  if (agentAuth")],
+  ['collection-owner-only', 'the collection page queries before the owner gate', 'api/_lib/collection-page.js', (s) => s.replace("  res.setHeader('Vary', 'Authorization, Cookie');\n", "  res.setHeader('Vary', 'Authorization, Cookie');\n  const early = await listCollections(); void early;\n")],
+  ['collection-owner-only', 'the collection page validates the slug before the gate', 'api/_lib/collection-page.js', (s) => s.replace("  res.setHeader('Vary', 'Authorization, Cookie');\n", "  res.setHeader('Vary', 'Authorization, Cookie');\n  if (req.query.slug && !parseCollection(req.query.slug)) return res.status(404).send(notFoundPage('collection'));\n")],
+  ['collection-owner-only', 'the collection page accepts a token', 'api/_lib/collection-page.js', (s) => s.replace('  if (!checkAuthAndRefresh(req, res)) {', '  const agentAuth = await resolveAgentToken(req);\n  if (!checkAuthAndRefresh(req, res) && !agentAuth.valid) {')],
+  ['collection-owner-only', 'patchMeta accepts any field', 'api/_lib/collections.js', (s) => s.replace("  if (!keys.length || keys.some((k) => !META_FIELDS.includes(k))) throw new Error(`patchMeta: only ${META_FIELDS.join(', ')} may be changed here`);\n", '')],
+  ['collection-owner-only', 'META_FIELDS grows to include is_public', 'api/_lib/collections.js', (s) => s.replace("export const META_FIELDS = ['lang', 'translation_of', 'collection'];", "export const META_FIELDS = ['lang', 'translation_of', 'collection', 'is_public'];")],
+  ['collection-owner-only', 'canEditMeta lets any write token edit any row', 'api/_lib/collections.js', (s) => s.replace('if (row && agentAuth && agentAuth.valid && row.created_by_token === agentAuth.id)', "if (row && agentAuth && agentAuth.valid && hasScope(agentAuth, 'documents:write'))")],
+  ['collection-owner-only', 'a token edits the whole family, not just its rows', 'api/doc.js', (s) => s.replace('      const w = await patchMeta(familyFilter(e.row, e.owner ? null : agentAuth.id), { collection: coll });', '      const w = await patchMeta(familyFilter(e.row, null), { collection: coll });')],
+  ['collection-owner-only', 'the collection action POST is opened to documents:read', 'api/doc.js', (s) => s.replace("auth: { GET: 'owner|documents:read', POST: 'owner|documents:write,documents:publish' }", "auth: { GET: 'owner|documents:read', POST: 'owner|documents:read' }")],
+  ['collection-owner-only', 'the TOC queries once per entry', 'api/_lib/collections.js', (s) => s.replace('    for (const e of entries) {\n', '    for (const e of entries) {\n      e.extra = await sbSelect(\'mdshare_pastes\', `id=eq.${encodeURIComponent(e.id)}&select=id`);\n')],
+  ['collection-owner-only', 'the /c/:slug rewrite goes elsewhere', 'vercel.json', (s) => s.replace('/api/render?kind=collection&slug=:slug', '/api/pastes?collection=:slug')],
+  ['activity-actions-auth', 'a multi-scope auth names a scope that does not exist', 'api/doc.js', (s) => s.replace("auth: 'owner|documents:write,documents:publish', httpMethod: 'POST',", "auth: 'owner|documents:write,documents:everything', httpMethod: 'POST',")],
+];
+for (const [id, label, file, fn] of batchBMutations) {
+  test(`invariant "${id}" fails when ${label}`, () => {
+    const dir = copyRepo();
+    try {
+      const before = readFileSync(join(dir, file), 'utf8');
+      edit(dir, file, fn);
+      assert.notEqual(readFileSync(join(dir, file), 'utf8'), before, 'the mutation applied');
+      const r = run(dir);
+      assert.equal(r.code, 1, r.out);
+      assert.match(r.out, new RegExp(`✗ ${id.replace(/[-]/g, '\\-')} `), r.out);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+}
+
 // Second mutation for the write allowlist: a direct write from api/doc.js.
 test('invariant "activity-writes-allowlist" fails when api/doc.js writes directly', () => {
   const dir = copyRepo();
