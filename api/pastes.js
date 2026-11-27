@@ -1,4 +1,4 @@
-// GET /api/pastes — list all pastes for dashboard (auth-gated)
+// GET /api/pastes — the signed-in user's Library listing (their own rows only, api/_lib/tenant.js)
 // Returns: id, title, content preview (200 chars), created_at, pinned, expires_at
 // Default sort: pinned first, then by created_at desc. ?sort=latest switches to pure
 // created_at desc (ignores pinned priority) — a genuine "what's actually newest" view.
@@ -21,13 +21,10 @@
 // separately (see handleAgentCatalog below) before the owner-cookie branch is ever reached. The
 // owner-cookie dashboard-listing code beneath that is reached only when there is no Authorization
 // header at all.
-import { checkAuthAndRefresh } from './auth.js';
 import { resolveAgentToken, hasScope } from './_lib/agent-tokens.js';
 import { searchCatalog } from './_lib/catalog.js';
 import { withErrors } from './_lib/events.js';
-
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
+import { sessionOwner, tokenOwner, selectOwned } from './_lib/tenant.js';
 
 async function handleAgentCatalog(req, res, agentAuth) {
   res.setHeader('Cache-Control', 'no-store');
@@ -38,7 +35,8 @@ async function handleAgentCatalog(req, res, agentAuth) {
     return res.status(403).json({ error: 'Token missing documents:read scope' });
   }
   const { q, kind, limit, offset } = req.query || {};
-  const result = await searchCatalog({ q, kind, limit, offset });
+  // The token's own user's library only (catalog.js -> tenant.js selectOwned).
+  const result = await searchCatalog(tokenOwner(agentAuth), { q, kind, limit, offset });
   return res.status(200).json({ ok: true, ...result });
 }
 
@@ -64,7 +62,8 @@ async function handler(req, res) {
     return handleAgentCatalog(req, res, agentAuth);
   }
 
-  if (!checkAuthAndRefresh(req, res)) {
+  const me = sessionOwner(req, res);
+  if (!me) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -81,22 +80,12 @@ async function handler(req, res) {
   // user input), so it's always a safe literal even though it's interpolated into the URL.
   const expiryFilter = `or=(expires_at.gt.${encodeURIComponent(nowIso)},pinned.eq.true)`;
 
-  const dbRes = await fetch(
-    `${SUPABASE_URL}/rest/v1/mdshare_pastes?select=id,title,content,created_at,pinned,expires_at,is_public,collection,lang&${expiryFilter}&order=${orderClause}&limit=100`,
-    {
-      headers: {
-        Authorization: `Bearer ${SUPABASE_KEY}`,
-        apikey: SUPABASE_KEY,
-      },
-    }
-  );
-
-  if (!dbRes.ok) {
-    const err = await dbRes.text();
-    return res.status(500).json({ error: `Supabase error: ${err}` });
+  let rows;
+  try {
+    rows = await selectOwned('mdshare_pastes', me, `select=id,title,content,created_at,pinned,expires_at,is_public,collection,lang&${expiryFilter}&order=${orderClause}&limit=100`);
+  } catch (e) {
+    return res.status(500).json({ error: `Supabase error: ${e.message}` });
   }
-
-  const rows = await dbRes.json();
   const now = new Date();
 
   const pastes = rows.map(row => {
@@ -138,35 +127,29 @@ async function handler(req, res) {
   // --- Also pull diagrams so the catalog shows both pastes and SVG diagrams ---
   let diagrams = [];
   try {
-    const dgRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/mdshare_diagrams?select=id,title,markdown,created_at,expires_at,pinned,is_public&${expiryFilter}&order=${orderClause}&limit=100`,
-      { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
-    );
-    if (dgRes.ok) {
-      const dgRows = await dgRes.json();
-      diagrams = dgRows.map(row => {
-        const md = row.markdown || '';
-        const preview = md
-          .replace(/^#+\s+.+$/gm, '')
-          .replace(/\*\*(.+?)\*\*/g, '$1')
-          .replace(/`(.+?)`/g, '$1')
-          .replace(/\n+/g, ' ')
-          .trim()
-          .slice(0, 200);
-        const expired = new Date(row.expires_at) < now && !row.pinned;
-        return {
-          id: row.id,
-          title: row.title || 'Diagram',
-          preview: preview || 'SVG diagram',
-          created_at: row.created_at,
-          pinned: row.pinned || false,
-          expires_at: row.expires_at,
-          expired,
-          kind: 'diagram',
-          is_public: row.is_public === true,
-        };
-      }).filter(d => !d.expired);
-    }
+    const dgRows = await selectOwned('mdshare_diagrams', me, `select=id,title,markdown,created_at,expires_at,pinned,is_public&${expiryFilter}&order=${orderClause}&limit=100`);
+    diagrams = dgRows.map(row => {
+      const md = row.markdown || '';
+      const preview = md
+        .replace(/^#+\s+.+$/gm, '')
+        .replace(/\*\*(.+?)\*\*/g, '$1')
+        .replace(/`(.+?)`/g, '$1')
+        .replace(/\n+/g, ' ')
+        .trim()
+        .slice(0, 200);
+      const expired = new Date(row.expires_at) < now && !row.pinned;
+      return {
+        id: row.id,
+        title: row.title || 'Diagram',
+        preview: preview || 'SVG diagram',
+        created_at: row.created_at,
+        pinned: row.pinned || false,
+        expires_at: row.expires_at,
+        expired,
+        kind: 'diagram',
+        is_public: row.is_public === true,
+      };
+    }).filter(d => !d.expired);
   } catch (e) {
     // diagrams table optional — ignore if missing
   }
@@ -174,29 +157,23 @@ async function handler(req, res) {
   // --- Also pull archify diagrams (interactive architecture/workflow/sequence/dataflow/lifecycle) ---
   let archifyItems = [];
   try {
-    const arRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/mdshare_archify?select=id,title,kind,created_at,expires_at,pinned,is_public&${expiryFilter}&order=${orderClause}&limit=100`,
-      { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
-    );
-    if (arRes.ok) {
-      const arRows = await arRes.json();
-      archifyItems = arRows.map(row => {
-        const expired = new Date(row.expires_at) < now && !row.pinned;
-        const kindLabel = (row.kind || 'diagram').charAt(0).toUpperCase() + (row.kind || 'diagram').slice(1);
-        return {
-          id: row.id,
-          title: row.title || 'Diagram',
-          preview: `Interactive ${kindLabel} diagram`,
-          created_at: row.created_at,
-          pinned: row.pinned || false,
-          expires_at: row.expires_at,
-          expired,
-          kind: 'archify',
-          archifyKind: row.kind || null,
-          is_public: row.is_public === true,
-        };
-      }).filter(a => !a.expired);
-    }
+    const arRows = await selectOwned('mdshare_archify', me, `select=id,title,kind,created_at,expires_at,pinned,is_public&${expiryFilter}&order=${orderClause}&limit=100`);
+    archifyItems = arRows.map(row => {
+      const expired = new Date(row.expires_at) < now && !row.pinned;
+      const kindLabel = (row.kind || 'diagram').charAt(0).toUpperCase() + (row.kind || 'diagram').slice(1);
+      return {
+        id: row.id,
+        title: row.title || 'Diagram',
+        preview: `Interactive ${kindLabel} diagram`,
+        created_at: row.created_at,
+        pinned: row.pinned || false,
+        expires_at: row.expires_at,
+        expired,
+        kind: 'archify',
+        archifyKind: row.kind || null,
+        is_public: row.is_public === true,
+      };
+    }).filter(a => !a.expired);
   } catch (e) {
     // archify table optional — ignore if missing
   }

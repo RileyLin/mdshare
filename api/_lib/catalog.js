@@ -17,8 +17,9 @@
 // that grammar in the *value* itself, before any URL-encoding happens. clampPagination() bounds
 // limit/offset to small integers before they are ever string-interpolated.
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
+// Multi-user (2026-11-27): the catalog is the token's own user's library only (tenant.js
+// selectOwned puts owner_id first in every query); another user's rows never match.
+import { selectOwned } from './tenant.js';
 
 const MAX_QUERY_LEN = 200;
 const MIN_LIMIT = 1;
@@ -95,7 +96,7 @@ const KIND_CONFIG = {
 
 const ALL_KINDS = Object.keys(KIND_CONFIG);
 
-async function fetchKind(kind, { sanitizedTerm, limit, offset, nowIso }) {
+async function fetchKind(me, kind, { sanitizedTerm, limit, offset, nowIso }) {
   const cfg = KIND_CONFIG[kind];
   if (!cfg) return [];
   const parts = [`select=${cfg.select}`];
@@ -106,11 +107,8 @@ async function fetchKind(kind, { sanitizedTerm, limit, offset, nowIso }) {
   parts.push('order=created_at.desc');
   parts.push(`limit=${limit}`);
   parts.push(`offset=${offset}`);
-  const url = `${SUPABASE_URL}/rest/v1/${cfg.table}?${parts.join('&')}`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } });
-  if (!res.ok) return [];
-  const rows = await res.json().catch(() => []);
-  if (!Array.isArray(rows)) return [];
+  // A failed table yields no rows for that kind (same as before: the other kinds still answer).
+  const rows = await selectOwned(cfg.table, me, parts.join('&')).catch(() => []);
   return rows.map((r) => ({ kind, ...r }));
 }
 
@@ -128,7 +126,7 @@ async function fetchKind(kind, { sanitizedTerm, limit, offset, nowIso }) {
  * limit/offset sent to Supabase for that one table *is* the final page). See
  * AGENT-SEARCH-PLAN.md / AGENT-SEARCH-RESULT.md for the full writeup.
  */
-export async function searchCatalog({ q, kind, limit, offset } = {}) {
+export async function searchCatalog(me, { q, kind, limit, offset } = {}) {
   const sanitizedTerm = sanitizeSearchTerm(q);
   const { limit: boundedLimit, offset: boundedOffset } = clampPagination({ limit, offset });
   const kinds = ALL_KINDS.includes(kind) ? [kind] : ALL_KINDS;
@@ -143,7 +141,7 @@ export async function searchCatalog({ q, kind, limit, offset } = {}) {
   const perKindOffset = kinds.length > 1 ? 0 : boundedOffset;
 
   const results = await Promise.all(
-    kinds.map((k) => fetchKind(k, { sanitizedTerm, limit: perKindLimit, offset: perKindOffset, nowIso }))
+    kinds.map((k) => fetchKind(me, k, { sanitizedTerm, limit: perKindLimit, offset: perKindOffset, nowIso }))
   );
 
   const merged = results.flat().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));

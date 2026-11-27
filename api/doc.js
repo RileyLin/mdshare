@@ -19,7 +19,11 @@
 // isn't. This file never writes directly: activity writes go through api/_lib/activity.js (activity
 // tables only) and metadata writes through api/_lib/collections.js patchMeta (lang, translation_of,
 // collection only), so nothing here can change stored content, visibility or expiry.
-import { getRow, isValidId, setPrivacyHeaders } from './_lib/access.js';
+// Multi-user (2026-11-27): "owner" in an auth rule means the signed-in user acting on their own
+// documents; every action runs with `me` (tenant.js ownerOf: the token's user or the cookie's), and
+// every query below is scoped to it, so another user's id answers exactly like a missing one.
+import { isValidId, setPrivacyHeaders } from './_lib/access.js';
+import { ownerOf, readOwned } from './_lib/tenant.js';
 import { resolveAgentToken } from './_lib/agent-tokens.js';
 import { parseJsonBody } from './_lib/body.js';
 import { withErrors } from './_lib/events.js';
@@ -41,90 +45,90 @@ const readLimiter = (what) => ({ what, ...rateLimiter({ limit: READ_RATE_LIMIT, 
 const ACTIONS = {
   read: {
     auth: 'owner', httpMethod: 'POST', silent: true,
-    async run({ body }) {
+    async run({ body, me }) {
       if (!isValidId(body.id)) return [400, { error: 'Missing or invalid id' }];
-      const { row, dbError } = await getRow('mdshare_pastes', body.id, 'id,expires_at');
+      const { row, dbError } = await readOwned('mdshare_pastes', me, body.id, 'id,expires_at');
       if (dbError) return [503, { error: 'Temporarily unavailable' }];
       if (!row) return [404, { error: 'Not found or expired' }];
-      await recordRead(body.id, { scroll: body.scroll, seconds: body.seconds, open: body.open === true });
+      await recordRead(me, body.id, { scroll: body.scroll, seconds: body.seconds, open: body.open === true });
       return [204, null];
     },
   },
   reads: {
     auth: 'owner|activity:read', httpMethod: 'GET', rate: readLimiter('read-receipt lookups'),
-    async run({ query }) {
-      if (query.unread === '1' || query.unread === 'true') return [200, { items: await listReads({ unread: true, days: Number(query.days) || 7 }) }];
+    async run({ query, me }) {
+      if (query.unread === '1' || query.unread === 'true') return [200, { items: await listReads(me, { unread: true, days: Number(query.days) || 7 }) }];
       const ids = String(query.ids || '').split(',').map((s) => s.trim()).filter(Boolean);
       if (!ids.length) return [400, { error: 'Pass ids=a,b,c or unread=1' }];
-      return [200, { items: await listReads({ ids }) }];
+      return [200, { items: await listReads(me, { ids }) }];
     },
   },
   feedback: {
     auth: { POST: 'owner', GET: 'owner|activity:read' }, httpMethod: ['POST', 'GET'], rate: readLimiter('feedback lookups'),
-    async run({ method, body, query }) {
+    async run({ method, body, query, me }) {
       if (method === 'GET') {
         const docId = query.id ? String(query.id) : null;
         if (docId && !isValidId(docId)) return [400, { error: 'Invalid id' }];
         const status = query.status ? String(query.status) : null;
         if (status && !FEEDBACK_STATUSES.includes(status)) return [400, { error: `status must be one of ${FEEDBACK_STATUSES.join(', ')}` }];
-        return [200, { items: await listFeedback({ docId, status }) }];
+        return [200, { items: await listFeedback(me, { docId, status }) }];
       }
       const v = validateFeedback(body);
       if (v.error) return [400, { error: v.error }];
-      const { row, dbError } = await getRow('mdshare_pastes', v.value.doc_id, 'id,expires_at');
+      const { row, dbError } = await readOwned('mdshare_pastes', me, v.value.doc_id, 'id,expires_at');
       if (dbError) return [503, { error: 'Temporarily unavailable' }];
       if (!row) return [404, { error: 'Not found or expired' }];
-      return [200, { ok: true, feedback: await createFeedback(v.value) }];
+      return [200, { ok: true, feedback: await createFeedback(me, v.value) }];
     },
   },
   resolve: {
     auth: 'owner|activity:write', httpMethod: 'POST',
-    async run({ body }) {
-      const r = await resolveFeedback({ ids: body.ids || body.id, status: body.status || 'resolved', resolvedIn: body.resolved_in ?? null });
+    async run({ body, me }) {
+      const r = await resolveFeedback(me, { ids: body.ids || body.id, status: body.status || 'resolved', resolvedIn: body.resolved_in ?? null });
       return r.error ? [400, { error: r.error }] : [200, { ok: true, ...r }];
     },
   },
   versions: {
     auth: 'owner|documents:read', httpMethod: 'GET', rate: readLimiter('version lookups'),
-    async run({ query }) {
+    async run({ query, me }) {
       if (!isValidId(query.id)) return [400, { error: 'Missing or invalid id' }];
-      const chain = await versionChain(String(query.id));
+      const chain = await versionChain(me, String(query.id));
       return chain ? [200, { id: query.id, versions: chain }] : [404, { error: 'Not found' }];
     },
   },
   search: {
     auth: 'owner|documents:read', httpMethod: 'GET', rate: readLimiter('searches'),
-    async run({ query }) {
+    async run({ query, me }) {
       const v = validateSearch(query);
       if (v.error) return [400, { error: v.error }];
-      const r = await searchDocs(v.value);
+      const r = await searchDocs(me, v.value);
       return r.dbError ? [503, { error: 'Temporarily unavailable' }] : [200, r];
     },
   },
   collection: {
     auth: { GET: 'owner|documents:read', POST: 'owner|documents:write,documents:publish' }, httpMethod: ['GET', 'POST'], rate: readLimiter('collection lookups'),
-    async run({ method, body, query, req, res, agentAuth }) {
+    async run({ method, body, query, req, res, agentAuth, me }) {
       if (method === 'GET') {
         if (query.slug === undefined || query.slug === '') {
-          const all = await listCollections();
+          const all = await listCollections(me);
           return all.dbError ? [503, { error: 'Temporarily unavailable' }] : [200, { collections: all.items }];
         }
         const slug = parseCollection(query.slug);
         if (!slug) return [400, { error: SLUG_HINT }];
-        const toc = await collectionToc(slug);
+        const toc = await collectionToc(me, slug);
         return toc.dbError ? [503, { error: 'Temporarily unavailable' }] : [200, { slug, items: toc.items, truncated: toc.truncated, url: `/c/${slug}` }];
       }
       const coll = parseCollection(body.collection);
       if (coll === undefined || body.collection === undefined) return [400, { error: `${SLUG_HINT}; send "collection": null to remove it` }];
       const e = await canEditMeta(body.id, req, res, agentAuth);
       if (!e.ok) return [e.status, { error: e.error }];
-      const w = await patchMeta(familyFilter(e.row, e.owner ? null : agentAuth.id), { collection: coll });
+      const w = await patchMeta(me, familyFilter(e.row, e.owner ? null : agentAuth.id), { collection: coll });
       return w.dbError ? [503, { error: 'Temporarily unavailable' }] : [200, { ok: true, id: e.row.id, collection: coll, updated: w.ids }];
     },
   },
   translation: {
     auth: 'owner|documents:write,documents:publish', httpMethod: 'POST',
-    async run({ body, req, res, agentAuth }) {
+    async run({ body, req, res, agentAuth, me }) {
       const lang = parseLang(body.lang);
       if (lang === undefined) return [400, { error: 'lang must be "zh" or "en"' }];
       const e = await canEditMeta(body.id, req, res, agentAuth);
@@ -144,7 +148,7 @@ const ACTIONS = {
         patch.translation_of = link;
       }
       if (!Object.keys(patch).length) return [400, { error: 'Send translation_of (an id, or null to unlink) and/or lang' }];
-      const w = await patchMeta(familyFilter(e.row, e.owner ? null : agentAuth.id), patch);
+      const w = await patchMeta(me, familyFilter(e.row, e.owner ? null : agentAuth.id), patch);
       return w.dbError ? [503, { error: 'Temporarily unavailable' }] : [200, { ok: true, id: e.row.id, ...patch, group: patch.translation_of === undefined ? translationRoot(e.row) : (patch.translation_of || null), updated: w.ids }];
     },
   },
@@ -183,7 +187,9 @@ async function handler(req, res) {
     }
   }
 
-  const [status, payload] = await action.run({ method: req.method, body, query: req.query || {}, req, res, agentAuth });
+  // allowed() passed, so `me` is the signed-in user or the token's user; every query is scoped to it.
+  const me = ownerOf(req, res, agentAuth);
+  const [status, payload] = await action.run({ method: req.method, body, query: req.query || {}, req, res, agentAuth, me });
   if (payload === null) return res.status(status).end();
   return res.status(status).json(payload);
 }

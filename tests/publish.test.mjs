@@ -71,7 +71,7 @@ test('PATCH /api/visibility authenticated: publishes and unpublishes each kind',
     global.fetch = async (url, opts) => {
       patchedTable = String(url);
       patchedBody = JSON.parse(opts.body);
-      return { ok: true, json: async () => [{ id: 'abc1234567', is_public: patchedBody.is_public }] };
+      return { ok: true, json: async () => [{ owner_id: 1, id: 'abc1234567', is_public: patchedBody.is_public }] };
     };
     try {
       const res = responseRecorder();

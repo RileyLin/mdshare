@@ -1,11 +1,13 @@
-// /c (every collection) and /c/:slug (one collection's table of contents): owner-only pages,
-// dispatched from api/render.js (kind=collection) to stay under the 12-function cap.
-// Anyone else (anonymous, any Bearer token, a missing or malformed slug) gets the same 401 sign-in
-// card before any database call, so the response never says whether a collection exists.
+// /c (every collection) and /c/:slug (one collection's table of contents): pages for the signed-in
+// user's own collections, dispatched from api/render.js (kind=collection) to stay under the
+// 12-function cap. Anyone not signed in (anonymous, any Bearer token) gets the same 401 sign-in card
+// before any database call; a signed-in user sees only their own collections (another user's slug
+// is the same 404 as a missing one), so the response never says whether a collection exists.
 // Agents list collections through GET /api/doc?action=collection (documents:read).
 // Invariant "collection-owner-only" (scripts/check-invariants.mjs) pins the gate order.
-import { checkAuthAndRefresh } from '../auth.js';
+import { checkAuthAndRefresh } from './session.js';
 import { setPrivacyHeaders, privateGateHtml } from './access.js';
+import { sessionOwner } from './tenant.js';
 import { head, header, libraryNav, toast, scripts, CSP_PAGE, notFoundPage, unavailablePage, esc } from './ui.js';
 import { parseCollection, collectionToc, listCollections } from './collections.js';
 
@@ -78,15 +80,16 @@ export async function renderCollection(req, res) {
     return res.status(401).send(privateGateHtml({ hint: GATE_HINT }));
   }
   res.setHeader('Content-Security-Policy', CSP_PAGE);
+  const me = sessionOwner(req, res);
   const raw = req.query.slug;
   if (raw === undefined || raw === '') {
-    const all = await listCollections();
+    const all = await listCollections(me);
     if (all.dbError) return res.status(503).send(unavailablePage());
     return res.status(200).send(indexPage(all.items));
   }
   const slug = parseCollection(raw);
   if (!slug) return res.status(404).send(notFoundPage('collection'));
-  const toc = await collectionToc(slug);
+  const toc = await collectionToc(me, slug);
   if (toc.dbError) return res.status(503).send(unavailablePage());
   if (!toc.items.length) return res.status(404).send(notFoundPage('collection'));
   return res.status(200).send(tocPage(slug, toc));

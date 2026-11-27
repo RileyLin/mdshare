@@ -6,7 +6,7 @@
 // agent hint uses the canonical site origin, never a spoofed Host header.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { useFakeDb, responseRecorder } from './_fakedb.mjs';
+import { useFakeDb, responseRecorder, asUser } from './_fakedb.mjs';
 
 process.env.MDSHARE_PASSWORD = 'test-password';
 process.env.MDSHARE_HMAC_SECRET = 'test-hmac-secret';
@@ -103,7 +103,7 @@ test('owner session + ?apikey on /raw: the stored text', async () => {
 });
 
 test('a valid Bearer + a stray ?key or x-api-key reads exactly as without it', async () => {
-  const { token } = await createToken({ name: 'reader', expiresInDays: 1, scopes: ['documents:read'] });
+  const { token } = await createToken(await asUser(1), { name: 'reader', expiresInDays: 1, scopes: ['documents:read'] });
   const id = seed();
   const base = await view(id, bearer(token));
   assert.equal(base.statusCode, 200);
@@ -144,7 +144,7 @@ test('without valid credentials the misplaced-key hint is extra text on the refu
 });
 
 test('X-Content-Type-Options: nosniff on /v Markdown, /raw and the HTML page', async () => {
-  const { token } = await createToken({ name: 'r2', expiresInDays: 1, scopes: ['documents:read'] });
+  const { token } = await createToken(await asUser(1), { name: 'r2', expiresInDays: 1, scopes: ['documents:read'] });
   const id = seed();
   const pub = seed({ is_public: true });
   const cases = {

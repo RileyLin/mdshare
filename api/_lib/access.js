@@ -1,19 +1,12 @@
 // Shared visibility + Supabase access helpers for mdshare content routes.
 // Underscore-prefixed directory: Vercel does not expose files under api/_lib/* as their own
 // routes, so this is safe to import from without creating an extra public endpoint.
-import { isAuthenticated, checkAuthAndRefresh } from '../auth.js';
 import { privateGatePage } from './ui.js';
+import { sessionOwner, tokenOwner, owns, isValidId, CONTENT_TABLES } from './tenant.js';
+import { hasScope } from './agent-tokens.js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-
-// mdshare ids are nanoid(10) drawn from the base64url alphabet [A-Za-z0-9_-]. Reject anything
-// else before it reaches a PostgREST filter string built by string interpolation.
-const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-
-export function isValidId(id) {
-  return typeof id === 'string' && ID_PATTERN.test(id);
-}
+// Row reads and writes moved to api/_lib/tenant.js (multi-user, 2026-11-27); isValidId lives there.
+export { isValidId };
 
 const TABLES = {
   paste: 'mdshare_pastes',
@@ -22,87 +15,38 @@ const TABLES = {
 };
 
 export function tableFor(kind) {
-  return TABLES[kind] || null;
+  return TABLES[kind] && CONTENT_TABLES.includes(TABLES[kind]) ? TABLES[kind] : null;
 }
 
-/**
- * Fetch one row by id from a content table.
- * Returns one of:
- *   { row }                      — found (may still be expired-checked by caller via row.expires_at)
- *   { row: null }                — missing, expired, or invalid id (safe to treat as "not found")
- *   { row: null, dbError: true } — Supabase itself errored; caller MUST fail closed (never public)
- */
-export async function getRow(table, id, select) {
-  if (!isValidId(id)) return { row: null };
-  try {
-    const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/${table}?id=eq.${encodeURIComponent(id)}&select=${select}`,
-      { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
-    );
-    if (!res.ok) return { row: null, dbError: true };
-    const rows = await res.json();
-    if (!Array.isArray(rows) || rows.length === 0) return { row: null };
-    const row = rows[0];
-    if (row.expires_at && new Date(row.expires_at) < new Date()) return { row: null };
-    return { row };
-  } catch {
-    return { row: null, dbError: true };
-  }
-}
-
-/**
- * Patch a row (currently only used for the is_public toggle). Returns
- * { ok: true, row } or { ok: false, status, error }.
- */
-export async function patchRow(table, id, patch) {
-  if (!isValidId(id)) return { ok: false, status: 400, error: 'Invalid id' };
-  try {
-    const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/${table}?id=eq.${encodeURIComponent(id)}`,
-      {
-        method: 'PATCH',
-        headers: {
-          Authorization: `Bearer ${SUPABASE_KEY}`,
-          apikey: SUPABASE_KEY,
-          'Content-Type': 'application/json',
-          Prefer: 'return=representation',
-        },
-        body: JSON.stringify(patch),
-      }
-    );
-    if (!res.ok) return { ok: false, status: 502, error: await res.text() };
-    const rows = await res.json().catch(() => []);
-    if (!Array.isArray(rows) || rows.length === 0) return { ok: false, status: 404, error: 'Not found' };
-    return { ok: true, row: rows[0] };
-  } catch (e) {
-    return { ok: false, status: 502, error: String((e && e.message) || e) };
-  }
-}
-
-// Visibility rule: the owner (authenticated) can always see their own content. Everyone else can
-// only see it if is_public === true. A missing row is never visible. This is the single choke
-// point every render/raw/IR route must call before returning content.
+// Visibility rule: the signed-in user who owns the row (owner_id, api/_lib/tenant.js) can always
+// see it. Everyone else — anonymous, or any other signed-in user — only if is_public === true. A
+// missing row is never visible. This is the single choke point every render/raw/IR route must call
+// before returning content.
 //
-// Pass `res` when it's available (every HTTP handler has one) so an owner on a still-valid
-// legacy-format cookie gets silently upgraded to a fresh v2 session cookie on this same request
-// (see checkAuthAndRefresh in auth.js) — no re-login, no extra step. `res` is optional: omitting
-// it (e.g. in tests) falls back to a plain isAuthenticated() check with no side effect.
-// `opts.agentOwns` (optional 4th param) is an additional OR-branch used by the raw content GET
-// routes (api/share.js, api/diagram.js, api/archify.js) for per-agent bearer tokens: a token may
-// read back only the exact rows it itself created (see api/_lib/agent-tokens.js). Omitting `opts`
-// entirely — every call site until the bearer-token feature was added, and every HTML-chrome
-// render route (render.js/diagram-render.js/archify-render.js/archify-html.js), which do not
-// support bearer tokens at all — is byte-identical to the original two-branch check.
+// Pass `res` when it's available so a still-valid legacy-format cookie gets silently upgraded on
+// this same request (api/_lib/session.js). `opts.agentOwns` (4th param) is the bearer-token branch,
+// computed with tokenCanRead() below: the token's own user owns the row, and the token holds
+// documents:read or created the row itself. HTML render routes take no tokens and omit `opts`.
 export function isVisible(row, req, res, opts) {
   if (!row) return false;
-  if (res) {
-    if (checkAuthAndRefresh(req, res)) return true;
-  } else if (isAuthenticated(req)) {
-    return true;
-  }
+  if (owns(sessionOwner(req, res), row)) return true;
   if (row.is_public === true) return true;
   if (opts && opts.agentOwns === true) return true;
   return false;
+}
+
+// May this valid agent token read `row` even when it is private? Only a row of the token's own user,
+// and then with documents:read (that user's library) or when the token created the row. A legacy
+// token's hasScope() is always false, so it keeps the own-rows-only floor.
+export function tokenCanRead(agentAuth, row) {
+  if (!agentAuth || agentAuth.valid !== true || !row) return false;
+  if (!owns(tokenOwner(agentAuth), row)) return false;
+  return hasScope(agentAuth, 'documents:read') || (!!row.created_by_token && row.created_by_token === agentAuth.id);
+}
+
+// Is the signed-in browser user this row's owner? (Owner controls on /v, /d, /a.)
+export function viewerOwns(row, req, res) {
+  return owns(sessionOwner(req, res), row);
 }
 
 // Applied to every render/raw response (public and private alike): keep share links out of

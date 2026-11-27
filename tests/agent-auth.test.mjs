@@ -71,7 +71,7 @@ function fakeToken(raw, { id, name = 'test-agent', expiresAt = '2999-01-01T00:00
       test: new RegExp(`mdshare_agent_tokens\\?token_hash=eq\\.${hash}`),
       respond: async () => ({
         ok: true,
-        json: async () => [{ id, name, expires_at: expiresAt, revoked_at: revokedAt }],
+        json: async () => [{ id, name, expires_at: expiresAt, revoked_at: revokedAt, owner_id: 1 }],
       }),
     },
   };
@@ -123,7 +123,7 @@ test('GET /api/share: a token can read back a private row it created itself', as
     t.lookupRule,
     { method: 'GET', test: /mdshare_pastes\?id=eq\./, respond: async () => ({
       ok: true,
-      json: async () => [{ content: 'own-private-content', expires_at: '2999-01-01T00:00:00Z', is_public: false, created_by_token: 'tok_owner' }],
+      json: async () => [{ owner_id: 1, content: 'own-private-content', expires_at: '2999-01-01T00:00:00Z', is_public: false, created_by_token: 'tok_owner' }],
     }) },
   ]);
   try {
@@ -141,7 +141,7 @@ test('GET /api/share: a DIFFERENT valid token cannot read a private row it did n
     t.lookupRule,
     { method: 'GET', test: /mdshare_pastes\?id=eq\./, respond: async () => ({
       ok: true,
-      json: async () => [{ content: 'not-yours', expires_at: '2999-01-01T00:00:00Z', is_public: false, created_by_token: 'tok_owner' }],
+      json: async () => [{ owner_id: 1, content: 'not-yours', expires_at: '2999-01-01T00:00:00Z', is_public: false, created_by_token: 'tok_owner' }],
     }) },
   ]);
   try {
@@ -159,7 +159,7 @@ test('a token cannot claim a pre-existing row by id: an anonymously-created row 
     t.lookupRule,
     { method: 'GET', test: /mdshare_diagrams\?id=eq\./, respond: async () => ({
       ok: true,
-      json: async () => [{ svg: '<svg>anon</svg>', expires_at: '2999-01-01T00:00:00Z', is_public: false, created_by_token: null }],
+      json: async () => [{ owner_id: 1, svg: '<svg>anon</svg>', expires_at: '2999-01-01T00:00:00Z', is_public: false, created_by_token: null }],
     }) },
   ]);
   try {
@@ -176,7 +176,7 @@ test('public content is still readable by a valid token even though the token di
     t.lookupRule,
     { method: 'GET', test: /mdshare_diagrams\?id=eq\./, respond: async () => ({
       ok: true,
-      json: async () => [{ svg: '<svg>public</svg>', expires_at: '2999-01-01T00:00:00Z', is_public: true, created_by_token: null }],
+      json: async () => [{ owner_id: 1, svg: '<svg>public</svg>', expires_at: '2999-01-01T00:00:00Z', is_public: true, created_by_token: null }],
     }) },
   ]);
   try {
@@ -332,9 +332,9 @@ test('GET /api/auth?action=tokens requires the owner cookie and never returns to
 
   const cookie = await ownerCookie();
   global.fetch = router([
-    { method: 'GET', test: /mdshare_agent_tokens\?select=/, respond: async () => ({
+    { method: 'GET', test: /mdshare_agent_tokens\?owner_id=eq\.1&select=/, respond: async () => ({
       ok: true,
-      json: async () => [{ id: 'tok_1', name: 'Kit', created_at: '2026-09-01T00:00:00Z', expires_at: '2999-01-01T00:00:00Z', revoked_at: null, last_used_at: null }],
+      json: async () => [{ owner_id: 1, id: 'tok_1', name: 'Kit', created_at: '2026-09-01T00:00:00Z', expires_at: '2999-01-01T00:00:00Z', revoked_at: null, last_used_at: null }],
     }) },
   ]);
   try {
@@ -358,7 +358,7 @@ test('DELETE /api/auth {action:revoke_token} requires the owner cookie', async (
 test('DELETE /api/auth {action:revoke_token} (owner): revokes, is idempotent, and a revoked token then fails bearer auth', async () => {
   const cookie = await ownerCookie();
   global.fetch = router([
-    { method: 'PATCH', test: /mdshare_agent_tokens\?id=eq\.tok_1&revoked_at=is\.null/, respond: async () => ({ ok: true, json: async () => [{ id: 'tok_1', revoked_at: '2026-09-25T00:00:00Z' }] }) },
+    { method: 'PATCH', test: /mdshare_agent_tokens\?owner_id=eq\.1&id=eq\.tok_1&revoked_at=is\.null/, respond: async () => ({ ok: true, json: async () => [{ id: 'tok_1', revoked_at: '2026-09-25T00:00:00Z' }] }) },
   ]);
   try {
     const req = { method: 'DELETE', body: { action: 'revoke_token', id: 'tok_1' }, headers: { cookie } };
@@ -371,8 +371,8 @@ test('DELETE /api/auth {action:revoke_token} (owner): revokes, is idempotent, an
   // Second revoke of the same id: PATCH matches nothing (already revoked_at is not null), the
   // existence check finds it -> idempotent 200, not a false 404.
   global.fetch = router([
-    { method: 'PATCH', test: /mdshare_agent_tokens\?id=eq\.tok_1&revoked_at=is\.null/, respond: async () => ({ ok: true, json: async () => [] }) },
-    { method: 'GET', test: /mdshare_agent_tokens\?id=eq\.tok_1&select=id/, respond: async () => ({ ok: true, json: async () => [{ id: 'tok_1' }] }) },
+    { method: 'PATCH', test: /mdshare_agent_tokens\?owner_id=eq\.1&id=eq\.tok_1&revoked_at=is\.null/, respond: async () => ({ ok: true, json: async () => [] }) },
+    { method: 'GET', test: /mdshare_agent_tokens\?owner_id=eq\.1&id=eq\.tok_1&select=id/, respond: async () => ({ ok: true, json: async () => [{ id: 'tok_1' }] }) },
   ]);
   try {
     const req = { method: 'DELETE', body: { action: 'revoke_token', id: 'tok_1' }, headers: { cookie } };
@@ -385,8 +385,8 @@ test('DELETE /api/auth {action:revoke_token} (owner): revokes, is idempotent, an
 test('DELETE /api/auth {action:revoke_token} for a never-existing id is a 404', async () => {
   const cookie = await ownerCookie();
   global.fetch = router([
-    { method: 'PATCH', test: /mdshare_agent_tokens\?id=eq\./, respond: async () => ({ ok: true, json: async () => [] }) },
-    { method: 'GET', test: /mdshare_agent_tokens\?id=eq\..*select=id/, respond: async () => ({ ok: true, json: async () => [] }) },
+    { method: 'PATCH', test: /mdshare_agent_tokens\?owner_id=eq\.1&id=eq\./, respond: async () => ({ ok: true, json: async () => [] }) },
+    { method: 'GET', test: /mdshare_agent_tokens\?owner_id=eq\.1&id=eq\..*select=id/, respond: async () => ({ ok: true, json: async () => [] }) },
   ]);
   try {
     const req = { method: 'DELETE', body: { action: 'revoke_token', id: 'tok_never_existed' }, headers: { cookie } };

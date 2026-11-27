@@ -1,6 +1,7 @@
 // Raw Markdown for agents: the one read path behind /raw/:id (api/share.js GET) and /v/:id when the
 // request carries a Bearer token or asks for text/markdown (api/render.js). Same rules on both
-// URLs: the owner, a public document, a documents:read token, or the token that created the row.
+// URLs: the signed-in user who owns it, a public document, or a token of that user with
+// documents:read or that created the row (access.js tokenCanRead).
 // scripts/check-invariants.mjs "markdown-route-gating" keeps both routes on sendRawMarkdown().
 //
 // Failures say what to do. A 401 carries WWW-Authenticate: Bearer, a one-line hint and the guide
@@ -11,9 +12,10 @@
 // A request that may not read a document gets the same 404 for an existing and a missing id, so
 // nothing reveals that an id exists.
 // Underscore directory: not a Vercel function.
-import { checkAuthAndRefresh } from '../auth.js';
-import { getRow, isVisible, setPrivacyHeaders } from './access.js';
-import { parseBearer, resolveAgentToken, hasScope } from './agent-tokens.js';
+import { checkAuthAndRefresh } from './session.js';
+import { isVisible, setPrivacyHeaders, tokenCanRead } from './access.js';
+import { parseBearer, resolveAgentToken } from './agent-tokens.js';
+import { readForView } from './tenant.js';
 import { guideUrl } from './content.js';
 
 export const HINTS = {
@@ -82,12 +84,11 @@ export async function sendRawMarkdown(req, res, { contentType = 'text/plain; cha
   const agentAuth = await resolveAgentToken(req);
   if (agentAuth.present && !agentAuth.valid) return authHint(req, res, { error: 'Invalid or expired token', hint: HINTS.invalid });
 
-  const { row, dbError } = await getRow('mdshare_pastes', id, 'content,expires_at,is_public,created_by_token');
+  const { row, dbError } = await readForView('mdshare_pastes', id, 'content,expires_at,is_public,created_by_token');
   if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
-  // documents:read (library-wide read, scoped tokens only) widens visibility to any row, not just
-  // rows this exact token created; a legacy token's hasScope() is always false, so it keeps the
-  // own-row-only check it always had.
-  const agentOwns = !!(agentAuth.valid && row && (hasScope(agentAuth, 'documents:read') || row.created_by_token === agentAuth.id));
+  // documents:read widens a token's reach to its own user's whole library (not just rows this exact
+  // token created), never to another user's; a legacy token keeps the own-row-only floor.
+  const agentOwns = tokenCanRead(agentAuth, row);
   if (!row || !isVisible(row, req, res, { agentOwns })) {
     // Same body for a missing id and an existing one this request may not read.
     const hint = agentAuth.valid ? HINTS.notReadable : (checkAuthAndRefresh(req, res) ? undefined : refusalHint(req, HINTS.missing));

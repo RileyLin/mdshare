@@ -1,14 +1,15 @@
 // GET /api/render?id=xxx (/v/:id) — the document reader. GET /api/render?kind=diagram&id=xxx (/d/:id)
 // is the diagram page (api/_lib/diagram-page.js), and ?kind=collection (/c, /c/:slug) the owner-only
 // collection pages (api/_lib/collection-page.js), merged here to stay under the 12-function cap.
-// Private unless the owner is authenticated or the row has is_public: true. Anonymous requests for
-// a private id get a same-URL sign-in page, never the title or content. The page embeds the
+// Private unless the signed-in user owns it or the row has is_public: true. Anyone else (anonymous or
+// another user) gets a same-URL sign-in page for a private id, never the title or content, and the
+// reader view of a public one: owner controls and private versions/translations need ownership. The page embeds the
 // stored Markdown as JSON and /assets/render.js renders + enhances it in the browser; nothing
 // stored is rewritten. ?as=reader shows the owner what a reader sees; ?classic=1 is the old page.
 // Agents: a request with Authorization: Bearer (or the owner asking for Accept: text/markdown)
 // gets the stored Markdown through api/_lib/raw.js, under exactly the /raw/:id rules.
-import { checkAuthAndRefresh } from './auth.js';
-import { getRow, isVisible, isKept, setPrivacyHeaders, privateGateHtml } from './_lib/access.js';
+import { isVisible, viewerOwns, isKept, setPrivacyHeaders, privateGateHtml } from './_lib/access.js';
+import { readForView } from './_lib/tenant.js';
 import { head, header, ownerControls, readerControls, toast, dataBlock, scripts, CSP_PAGE, notFoundPage, unavailablePage, esc } from './_lib/ui.js';
 import { classicDocHtml } from './_lib/classic.js';
 import { renderDiagram } from './_lib/diagram-page.js';
@@ -97,13 +98,13 @@ async function handler(req, res) {
 
   setPrivacyHeaders(res);
   res.setHeader('Vary', 'Accept, Authorization, Cookie');
-  const { row, dbError } = await getRow('mdshare_pastes', id, 'content,expires_at,is_public,pinned,created_at,parent_id,root_id,version_no,lang,translation_of');
+  const { row, dbError } = await readForView('mdshare_pastes', id, 'content,expires_at,is_public,pinned,created_at,parent_id,root_id,version_no,lang,translation_of');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
 
   if (dbError) return res.status(503).send(unavailablePage());
   if (!row) return res.status(404).send(notFoundPage('document'));
 
-  const authed = checkAuthAndRefresh(req, res);
+  const authed = viewerOwns(row, req, res);
   if (!isVisible(row, req, res)) {
     res.setHeader('WWW-Authenticate', 'Bearer realm="mdshare"');
     // A token sent as x-api-key / ?key= adds one sentence to the gate; nothing else changes.

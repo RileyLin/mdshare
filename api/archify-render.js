@@ -1,5 +1,5 @@
-// GET /a/:id — renders a stored archify diagram in mdshare chrome. Private unless the owner is
-// authenticated or the row has is_public: true. Unauthenticated requests to a private id get a
+// GET /a/:id — renders a stored archify diagram in mdshare chrome. Private unless the signed-in
+// user owns it or the row has is_public: true; owner controls only for its owner. Unauthenticated requests to a private id get a
 // same-URL login prompt instead of the diagram's title/content.
 //
 // SECURITY: the stored archify HTML is reachable content (anyone can POST /api/archify with
@@ -10,8 +10,8 @@
 // allow-same-origin keeps it in an opaque, unique origin that can still run its own client-side
 // interactivity (pan/zoom/hover/theme-toggle — all local DOM work) but cannot read mdshare cookies
 // or call mdshare APIs with the owner's session. Do not change this back to inlining HTML.
-import { checkAuthAndRefresh } from './auth.js';
-import { getRow, isVisible, isKept, setPrivacyHeaders, privateGateHtml } from './_lib/access.js';
+import { isVisible, viewerOwns, isKept, setPrivacyHeaders, privateGateHtml } from './_lib/access.js';
+import { readForView } from './_lib/tenant.js';
 import { head, header, ownerControls, readerControls, toast, dataBlock, scripts, CSP_PAGE, notFoundPage, unavailablePage, messagePage, esc } from './_lib/ui.js';
 import { withErrors } from './_lib/events.js';
 
@@ -51,7 +51,7 @@ async function handler(req, res) {
   if (!id) return res.status(400).send('Missing id');
 
   setPrivacyHeaders(res);
-  const { row, dbError } = await getRow('mdshare_archify', id, 'html,ir,kind,title,expires_at,is_public,pinned');
+  const { row, dbError } = await readForView('mdshare_archify', id, 'html,ir,kind,title,expires_at,is_public,pinned');
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
 
@@ -62,7 +62,7 @@ async function handler(req, res) {
     return res.status(401).send(privateGateHtml());
   }
 
-  const authed = checkAuthAndRefresh(req, res);
+  const authed = viewerOwns(row, req, res);
   res.setHeader('Content-Security-Policy', CSP_PAGE);
 
   if (!row.html) {

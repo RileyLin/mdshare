@@ -5,7 +5,7 @@
 // content query. Refused requests (401) don't count. Each GET action is counted on its own.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { useFakeDb, responseRecorder } from './_fakedb.mjs';
+import { useFakeDb, responseRecorder, asUser } from './_fakedb.mjs';
 
 process.env.MDSHARE_PASSWORD = 'test-password';
 process.env.MDSHARE_HMAC_SECRET = 'test-hmac-secret';
@@ -25,7 +25,7 @@ db.sb.seed('mdshare_pastes', { id: 'colrate001', title: 'One', content: '# One',
 
 const LIMIT = 60;
 const bearer = (t) => ({ authorization: ['Bea', 'rer'].join('') + ' ' + t });
-const mint = async () => (await createToken({ name: `t-${Math.random()}`, expiresInDays: 1, scopes: ['documents:read', 'activity:read'] })).token;
+const mint = async () => (await createToken(await asUser(1), { name: `t-${Math.random()}`, expiresInDays: 1, scopes: ['documents:read', 'activity:read'] })).token;
 let ipn = 0;
 async function get(query, headers, ip = `10.6.0.${++ipn % 250}`) {
   const res = responseRecorder();

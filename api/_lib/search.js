@@ -1,11 +1,16 @@
-// Full-text search over documents (migration 011). api/doc.js `search` action is the HTTP surface.
-// Underscore directory: not a Vercel function.
+// Full-text search over one user's documents (migrations 011, 013). api/doc.js `search` action is
+// the HTTP surface. Underscore directory: not a Vercel function.
 //
-// Contract (scripts/check-invariants.mjs "search-no-filter-injection"): the search text reaches
-// Postgres only as a JSON body to /rest/v1/rpc/mdshare_search, never inside a PostgREST filter
-// string, where "," "(" ")" "*" would restructure the filter. One database call per search,
+// Contract (scripts/check-invariants.mjs "search-no-filter-injection", "search-owner-param"): the
+// search text reaches Postgres only as a JSON body to /rest/v1/rpc/mdshare_search_owned, never
+// inside a PostgREST filter
+// string, where "," "(" ")" "*" would restructure the filter, and always with p_owner = the
+// requester's user id (tenant.js uidOf), so results never include another user's documents.
+// One database call per search,
 // however many rows match (tests/search.test.mjs pins it). Results carry a short plain-text
 // snippet built here from a window of the body; the full content never leaves this module.
+
+import { uidOf } from './tenant.js';
 
 export const SEARCH_MAX_QUERY = 200;
 export const SEARCH_MAX_LIMIT = 50;
@@ -71,16 +76,17 @@ export function snippetFor(excerpt, q) {
 
 const kept = (r) => r.pinned === true || (typeof r.expires_at === 'string' && r.expires_at >= '2099');
 
-// One POST to the mdshare_search function. Returns {results, total, limit, offset, next_offset}
-// or {dbError: true}.
-export async function searchDocs({ q, limit, offset }) {
+// One POST to the mdshare_search_owned function for `me` (a tenant.js principal). Returns
+// {results, total, limit, offset, next_offset} or {dbError: true}.
+export async function searchDocs(me, { q, limit, offset }) {
   const key = process.env.SUPABASE_SERVICE_KEY;
+  const owner = uidOf(me);
   let rows;
   try {
-    const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/rpc/mdshare_search`, {
+    const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/rpc/mdshare_search_owned`, {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + key, apikey: key, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ q, lim: limit, skip: offset }),
+      body: JSON.stringify({ q, lim: limit, skip: offset, p_owner: owner }),
     });
     if (!res.ok) return { dbError: true };
     rows = await res.json();

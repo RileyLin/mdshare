@@ -9,9 +9,7 @@
 import { timingSafeEqual } from 'crypto';
 import { parseJsonBody } from './_lib/body.js';
 import { recordEvent, withErrors, COMMIT } from './_lib/events.js';
-
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
+import { pingDb, recentEventsAllUsers, sessionOwner } from './_lib/tenant.js';
 
 const hits = new Map(); // ip -> { n, reset }
 const sweep = setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (now > v.reset) hits.delete(k); }, 10 * 60 * 1000);
@@ -36,22 +34,12 @@ const pathOnly = (u) => {
   try { return new URL(String(u), 'https://x').pathname.replace(/^\/(v|d|a|raw)\/[^/]+/, '/$1/:id').slice(0, 200); } catch { return null; }
 };
 
-async function dbPing() {
-  try {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/mdshare_pastes?select=id&limit=1`, { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } });
-    return r.ok ? 'ok' : `error ${r.status}`;
-  } catch (e) {
-    return 'unreachable';
-  }
-}
-
 async function eventSummary(sinceMinutes) {
   const since = new Date(Date.now() - sinceMinutes * 60 * 1000).toISOString();
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/mdshare_events?select=kind,message,commit,created_at&created_at=gte.${encodeURIComponent(since)}&order=created_at.desc&limit=500`, {
-    headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY },
-  });
-  if (!r.ok) return { error: `events query failed: ${r.status}` };
-  const rows = await r.json();
+  // Every user's events, as counts and messages only: the monitor (x-monitor-key) is the operator.
+  const r = await recentEventsAllUsers(since);
+  if (r.error) return { error: r.error };
+  const rows = r.rows;
   const counts = {}, top = {};
   for (const e of rows) {
     counts[e.kind] = (counts[e.kind] || 0) + 1;
@@ -71,7 +59,7 @@ async function handler(req, res) {
       const minutes = Math.min(Math.max(parseInt(req.query.since, 10) || 60, 1), 7 * 24 * 60);
       return res.status(200).json({ commit: COMMIT, ...(await eventSummary(minutes)) });
     }
-    const db = await dbPing();
+    const db = await pingDb();
     return res.status(db === 'ok' ? 200 : 503).json({ ok: db === 'ok', commit: COMMIT, db });
   }
 
@@ -85,7 +73,7 @@ async function handler(req, res) {
     await recordEvent('client_error', clip(body.message, 300), {
       source: pathOnly(body.source), line: Number(body.line) || null, col: Number(body.col) || null,
       page: pathOnly(body.page), stack: clip(body.stack, 1500),
-    });
+    }, sessionOwner(req));
     return res.status(204).end();
   }
 

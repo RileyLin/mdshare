@@ -5,40 +5,24 @@
 // Contract: this module never writes a content table. activityWrite() only accepts
 // ACTIVITY_TABLES (checked by scripts/check-invariants.mjs "activity-writes-allowlist" and
 // tests/activity.test.mjs); content rows are only read here.
-import { isValidId, getRow } from './access.js';
+// Multi-user (2026-11-27): every query goes through api/_lib/tenant.js scoped to `me`, the
+// request's principal (ownerOf): a user's reads, feedback, versions and translations are their own.
 import { hasScope } from './agent-tokens.js';
-import { checkAuthAndRefresh } from '../auth.js';
+import { isValidId, ownerOf, rowOwner, readOwned, selectOwned, patchOwned, insertOwned } from './tenant.js';
 import { randomBytes } from 'crypto';
 
 export const ACTIVITY_TABLES = ['mdshare_reads', 'mdshare_feedback'];
 export const FEEDBACK_KINDS = ['example', 'unclear', 'wrong', 'expand', 'note'];
 export const FEEDBACK_STATUSES = ['open', 'resolved', 'dismissed'];
 
-function sbHeaders(extra) {
-  const key = process.env.SUPABASE_SERVICE_KEY;
-  return { Authorization: 'Bearer ' + key, apikey: key, ...(extra || {}) };
-}
-
-// GET any table (content tables are read-only from here). Returns rows or throws on DB error.
-export async function sbSelect(table, query) {
-  const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/${table}?${query}`, { headers: sbHeaders() });
-  if (!res.ok) throw new Error(`Supabase select ${table} failed: ${res.status}`);
-  const rows = await res.json();
-  return Array.isArray(rows) ? rows : [];
-}
-
-// The only write path in this module. Refuses anything but the activity tables.
-export async function activityWrite(table, method, query, body) {
+// The only write path in this module. Refuses anything but the activity tables; rows are `me`'s.
+export async function activityWrite(table, me, method, query, body) {
   if (!ACTIVITY_TABLES.includes(table)) throw new Error(`activityWrite: ${table} is not an activity table`);
-  if (method !== 'POST' && method !== 'PATCH') throw new Error(`activityWrite: unsupported method ${method}`);
-  const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/${table}${query ? `?${query}` : ''}`, {
-    method,
-    headers: sbHeaders({ 'Content-Type': 'application/json', Prefer: 'return=representation' }),
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`Supabase ${method} ${table} failed: ${res.status}`);
-  const rows = await res.json().catch(() => []);
-  return Array.isArray(rows) ? rows : [];
+  if (method === 'POST') return insertOwned(table, me, body, { returning: true });
+  if (method !== 'PATCH') throw new Error(`activityWrite: unsupported method ${method}`);
+  const r = await patchOwned(table, me, query, body);
+  if (!r.ok) throw new Error(`Supabase PATCH ${table} failed: ${r.error}`);
+  return r.rows;
 }
 
 const nowIso = () => new Date().toISOString();
@@ -48,11 +32,14 @@ const clip = (v, n) => (typeof v === 'string' ? v.slice(0, n) : null);
 const inList = (ids) => encodeURIComponent(`(${ids.join(',')})`);
 
 // ---------- Auth ----------
-// Who may call an activity action. 'owner' = the owner session cookie only. 'owner|<scope>' =
-// the owner, or a valid scoped agent token holding <scope>; 'owner|<a>,<b>' = holding either.
-// Never anonymous, never a legacy token.
+// Who may call an activity action. 'owner' = a signed-in user's session cookie (acting on their own
+// documents). 'owner|<scope>' = that, or a valid scoped agent token holding <scope> (acting for its
+// own user); 'owner|<a>,<b>' = holding either. A present Bearer decides (ownerOf). Never anonymous,
+// never a legacy token.
 export function allowed(auth, req, res, agentAuth) {
-  if (checkAuthAndRefresh(req, res)) return true;
+  const me = ownerOf(req, res, agentAuth || null);
+  if (!me) return false;
+  if (me.via === 'cookie') return true;
   if (auth === 'owner') return false;
   const scopes = (auth.split('|')[1] || '').split(',').filter(Boolean);
   return !!(scopes.length && agentAuth && agentAuth.valid && scopes.some((s) => hasScope(agentAuth, s)));
@@ -75,16 +62,18 @@ export function versionFields(parentRow) {
   return { root_id: rootOf(parentRow, parentRow.id), version_no: versionNoOf(parentRow) + 1 };
 }
 
-// May this request create a new version of `parentId`? Only the owner, or an agent token that can
-// read the parent (documents:read, or it created the parent). Anonymous creates never can: a
-// stranger must not be able to attach a "newer version" banner to someone's document
-// (invariant "version-parent-gated"). Translations use the stricter canLinkTranslation().
+// May this request create a new version of `parentId`? Only a document of the requester's own user:
+// the signed-in user, or an agent token of that user that can read the parent (documents:read, or
+// it created the parent). Anonymous creates never can: a stranger must not be able to attach a
+// "newer version" banner to someone's document (invariant "version-parent-gated"); another user's
+// document is the same "not found". Translations use the stricter canLinkTranslation().
 export async function canUseParent(parentId, req, res, agentAuth) {
   if (typeof parentId !== 'string' || !isValidId(parentId)) return { ok: false };
-  const { row, dbError } = await getRow('mdshare_pastes', parentId, 'id,created_by_token,expires_at,pinned,root_id,version_no,lang,translation_of,collection');
+  const me = ownerOf(req, res, agentAuth || null);
+  const { row, dbError } = await readOwned('mdshare_pastes', me, parentId, 'id,created_by_token,expires_at,pinned,root_id,version_no,lang,translation_of,collection');
   if (dbError) return { ok: false, dbError: true };
   if (!row) return { ok: false };
-  if (checkAuthAndRefresh(req, res)) return { ok: true, row };
+  if (me.via === 'cookie') return { ok: true, row };
   if (agentAuth && agentAuth.valid && (hasScope(agentAuth, 'documents:read') || row.created_by_token === agentAuth.id)) return { ok: true, row };
   return { ok: false };
 }
@@ -103,7 +92,7 @@ export async function versionInfo(id, row, { owner }) {
     const group = (row && row.translation_of) || root;
     if (!isValidId(root) || !isValidId(group)) return out;
     const conds = group === root ? `root_id.eq.${root},id.eq.${root},translation_of.eq.${root}` : `root_id.eq.${root},id.eq.${group},root_id.eq.${group},translation_of.eq.${group}`;
-    const family = (await sbSelect('mdshare_pastes', `or=${encodeURIComponent(`(${conds})`)}&select=id,title,is_public,expires_at,pinned,version_no,created_at,root_id,lang,translation_of&order=created_at.desc&limit=${MAX_VERSIONS * 2}`))
+    const family = (await selectOwned('mdshare_pastes', rowOwner(row), `or=${encodeURIComponent(`(${conds})`)}&select=id,title,is_public,expires_at,pinned,version_no,created_at,root_id,lang,translation_of&order=created_at.desc&limit=${MAX_VERSIONS * 2}`))
       .filter((r) => alive(r) && r.id !== id);
     const later = family.filter((r) => r.root_id === root && versionNoOf(r) > mine).sort((a, b) => byVersion(b, a));
     const newest = later[0];
@@ -128,13 +117,14 @@ export async function versionInfo(id, row, { owner }) {
   return out;
 }
 
-// The whole family for the API, oldest first: one query for the row, one for the family.
-export async function versionChain(id) {
-  const self = await sbSelect('mdshare_pastes', `id=eq.${encodeURIComponent(id)}&select=id,root_id`);
+// The whole family for the API, oldest first: one query for the row, one for the family. Both are
+// `me`'s rows only: another user's id is the same null as a missing one.
+export async function versionChain(me, id) {
+  const self = await selectOwned('mdshare_pastes', me, `id=eq.${encodeURIComponent(id)}&select=id,root_id`);
   if (!self[0]) return null;
   const root = rootOf(self[0], id);
   if (!isValidId(root)) return null;
-  const family = await sbSelect('mdshare_pastes', `or=${encodeURIComponent(`(id.eq.${root},root_id.eq.${root})`)}&select=id,title,created_at,parent_id,expires_at,pinned,version_no&limit=${MAX_VERSIONS}`);
+  const family = await selectOwned('mdshare_pastes', me, `or=${encodeURIComponent(`(id.eq.${root},root_id.eq.${root})`)}&select=id,title,created_at,parent_id,expires_at,pinned,version_no&limit=${MAX_VERSIONS}`);
   return family.sort(byVersion).map((r) => ({ id: r.id, title: r.title || null, created_at: r.created_at || null, version: versionNoOf(r), parent: r.parent_id || null, expired: !alive(r) }));
 }
 
@@ -148,7 +138,8 @@ export function translationFields(targetRow) {
 }
 
 // May this request link a document as the translation of `targetId`? A link puts a 中文/English
-// switch on every page of the group, so: the owner, any pair; a token, only when it created both
+// switch on every page of the group, so: only within the requester's own user (readOwned); the
+// signed-in user, any pair of theirs; a token, only when it created both
 // the target and the group the link joins (translationRoot(target), which is what gets stored),
 // never because it can read the target (documents:read) or the target is public (ADV-B finding 2,
 // 2026-11-26). The other side, the document being linked, is the token's own: a new create, or
@@ -156,15 +147,16 @@ export function translationFields(targetRow) {
 // Invariant "translation-gated".
 export async function canLinkTranslation(targetId, req, res, agentAuth) {
   if (typeof targetId !== 'string' || !isValidId(targetId)) return { ok: false };
-  const { row, dbError } = await getRow('mdshare_pastes', targetId, 'id,created_by_token,expires_at,pinned,root_id,version_no,lang,translation_of,collection');
+  const me = ownerOf(req, res, agentAuth || null);
+  const { row, dbError } = await readOwned('mdshare_pastes', me, targetId, 'id,created_by_token,expires_at,pinned,root_id,version_no,lang,translation_of,collection');
   if (dbError) return { ok: false, dbError: true };
   if (!row) return { ok: false };
-  if (checkAuthAndRefresh(req, res)) return { ok: true, row };
+  if (me.via === 'cookie') return { ok: true, row };
   const mine = (r) => !!(r && agentAuth && agentAuth.valid && r.created_by_token && r.created_by_token === agentAuth.id);
   if (!mine(row)) return { ok: false };
   const group = translationRoot(row);
   if (group === row.id) return { ok: true, row };
-  const g = await getRow('mdshare_pastes', group, 'id,created_by_token,expires_at,pinned');
+  const g = await readOwned('mdshare_pastes', me, group, 'id,created_by_token,expires_at,pinned');
   if (g.dbError) return { ok: false, dbError: true };
   return mine(g.row) ? { ok: true, row } : { ok: false };
 }
@@ -178,18 +170,18 @@ export function parseLang(v) {
 export const detectLang = (markdown) => ((String(markdown || '').match(/[\u3400-\u9fff]/g) || []).length > 30 ? 'zh' : 'en');
 const otherLang = (l) => (l === 'zh' ? 'en' : l === 'en' ? 'zh' : null);
 
-// ---------- Read receipts (owner only; called by api/doc.js after the auth check) ----------
-export async function recordRead(id, { scroll, seconds, open }) {
-  const rows = await sbSelect('mdshare_reads', `doc_id=eq.${encodeURIComponent(id)}&select=doc_id,open_count,max_scroll,active_seconds`);
+// ---------- Read receipts (the document's owner only; called by api/doc.js after the auth check) ----------
+export async function recordRead(me, id, { scroll, seconds, open }) {
+  const rows = await selectOwned('mdshare_reads', me, `doc_id=eq.${encodeURIComponent(id)}&select=doc_id,open_count,max_scroll,active_seconds`);
   const s = clampInt(scroll, 0, 100);
   const sec = clampInt(seconds, 0, 900);
   const t = nowIso();
   if (!rows[0]) {
-    await activityWrite('mdshare_reads', 'POST', '', { doc_id: id, first_opened_at: t, last_opened_at: t, open_count: 1, max_scroll: s, active_seconds: sec });
+    await activityWrite('mdshare_reads', me, 'POST', '', { doc_id: id, first_opened_at: t, last_opened_at: t, open_count: 1, max_scroll: s, active_seconds: sec });
     return;
   }
   const r = rows[0];
-  await activityWrite('mdshare_reads', 'PATCH', `doc_id=eq.${encodeURIComponent(id)}`, {
+  await activityWrite('mdshare_reads', me, 'PATCH', `doc_id=eq.${encodeURIComponent(id)}`, {
     last_opened_at: t,
     open_count: (r.open_count || 0) + (open ? 1 : 0),
     max_scroll: Math.max(r.max_scroll || 0, s),
@@ -198,28 +190,28 @@ export async function recordRead(id, { scroll, seconds, open }) {
 }
 
 // Read receipts for a set of document ids (the collection page's read status). One query.
-export async function readsFor(ids) {
+export async function readsFor(me, ids) {
   const list = [...new Set(ids || [])].filter(isValidId);
   if (!list.length) return [];
-  return sbSelect('mdshare_reads', `doc_id=in.(${list.map(encodeURIComponent).join(',')})&select=doc_id,max_scroll,open_count,last_opened_at`);
+  return selectOwned('mdshare_reads', me, `doc_id=in.(${list.map(encodeURIComponent).join(',')})&select=doc_id,max_scroll,open_count,last_opened_at`);
 }
 
 // Reads for a set of ids, or the unread documents created in the last `days` days.
-export async function listReads({ ids, unread, days }) {
+export async function listReads(me, { ids, unread, days }) {
   if (unread) {
     const since = new Date(Date.now() - clampInt(days || 7, 1, 30) * 86400000).toISOString();
-    const docs = await sbSelect('mdshare_pastes', `created_at=gte.${encodeURIComponent(since)}&select=id,title,created_at,origin,expires_at,pinned&order=created_at.desc&limit=200`);
+    const docs = await selectOwned('mdshare_pastes', me, `created_at=gte.${encodeURIComponent(since)}&select=id,title,created_at,origin,expires_at,pinned&order=created_at.desc&limit=200`);
     const live = docs.filter(alive);
     if (!live.length) return [];
-    const reads = await sbSelect('mdshare_reads', `doc_id=in.${inList(live.map((d) => d.id))}&select=doc_id`);
+    const reads = await selectOwned('mdshare_reads', me, `doc_id=in.${inList(live.map((d) => d.id))}&select=doc_id`);
     const seen = new Set(reads.map((r) => r.doc_id));
     return live.filter((d) => !seen.has(d.id)).map((d) => ({ id: d.id, title: d.title, created_at: d.created_at, origin: d.origin || null, opened: false }));
   }
   const list = (ids || []).filter(isValidId).slice(0, 100);
   if (!list.length) return [];
   const [docs, reads] = await Promise.all([
-    sbSelect('mdshare_pastes', `id=in.${inList(list)}&select=id,title,created_at`),
-    sbSelect('mdshare_reads', `doc_id=in.${inList(list)}&select=doc_id,first_opened_at,last_opened_at,open_count,max_scroll,active_seconds`),
+    selectOwned('mdshare_pastes', me, `id=in.${inList(list)}&select=id,title,created_at`),
+    selectOwned('mdshare_reads', me, `doc_id=in.${inList(list)}&select=doc_id,first_opened_at,last_opened_at,open_count,max_scroll,active_seconds`),
   ]);
   const byId = new Map(reads.map((r) => [r.doc_id, r]));
   return docs.map((d) => {
@@ -244,31 +236,31 @@ export function validateFeedback(body) {
   return { value: { doc_id: b.id, kind: b.kind, quote: quote || null, note: note || null, context } };
 }
 
-export async function createFeedback(value) {
+export async function createFeedback(me, value) {
   const id = `fb_${randomBytes(9).toString('base64url').slice(0, 12)}`;
-  const rows = await activityWrite('mdshare_feedback', 'POST', '', {
+  const rows = await activityWrite('mdshare_feedback', me, 'POST', '', {
     id, doc_id: value.doc_id, kind: value.kind, quote: value.quote, note: value.note, context: value.context, status: 'open', created_at: nowIso(),
   });
   return rows[0] || { id };
 }
 
-export async function listFeedback({ docId, status }) {
+export async function listFeedback(me, { docId, status }) {
   const parts = ['select=id,doc_id,kind,quote,note,context,status,resolved_in,created_at,resolved_at', 'order=created_at.desc', 'limit=100'];
   if (docId) parts.unshift(`doc_id=eq.${encodeURIComponent(docId)}`);
   if (status) parts.unshift(`status=eq.${encodeURIComponent(status)}`);
-  const items = await sbSelect('mdshare_feedback', parts.join('&'));
+  const items = await selectOwned('mdshare_feedback', me, parts.join('&'));
   const ids = [...new Set(items.map((f) => f.doc_id))].filter(isValidId);
-  const docs = ids.length ? await sbSelect('mdshare_pastes', `id=in.${inList(ids)}&select=id,title,origin`) : [];
+  const docs = ids.length ? await selectOwned('mdshare_pastes', me, `id=in.${inList(ids)}&select=id,title,origin`) : [];
   const byId = new Map(docs.map((d) => [d.id, d]));
   return items.map((f) => ({ ...f, doc_title: byId.get(f.doc_id)?.title || null, origin: byId.get(f.doc_id)?.origin || null }));
 }
 
-export async function resolveFeedback({ ids, status, resolvedIn }) {
+export async function resolveFeedback(me, { ids, status, resolvedIn }) {
   const list = (Array.isArray(ids) ? ids : [ids]).filter((x) => typeof x === 'string' && /^fb_[A-Za-z0-9_-]{6,20}$/.test(x)).slice(0, 50);
   if (!list.length) return { error: 'Missing feedback id(s)' };
   if (!['resolved', 'dismissed', 'open'].includes(status)) return { error: 'status must be resolved, dismissed or open' };
   if (resolvedIn != null && !isValidId(resolvedIn)) return { error: 'Invalid resolved_in id' };
-  const rows = await activityWrite('mdshare_feedback', 'PATCH', `id=in.${inList(list)}`, {
+  const rows = await activityWrite('mdshare_feedback', me, 'PATCH', `id=in.${inList(list)}`, {
     status, resolved_in: status === 'open' ? null : (resolvedIn || null), resolved_at: status === 'open' ? null : nowIso(),
   });
   return { updated: rows.map((r) => r.id) };

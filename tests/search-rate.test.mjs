@@ -3,7 +3,7 @@
 // minute; past that a 429 with Retry-After and no database call. Other credentials are unaffected.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { useFakeDb, responseRecorder } from './_fakedb.mjs';
+import { useFakeDb, responseRecorder, asUser } from './_fakedb.mjs';
 
 process.env.MDSHARE_PASSWORD = 'test-password';
 process.env.MDSHARE_HMAC_SECRET = 'test-hmac-secret';
@@ -27,7 +27,7 @@ async function search(headers, ip = `10.3.0.${++ipn % 250}`) {
   await docHandler({ method: 'GET', query: { action: 'search', q: 'body' }, headers: { host: 'localhost:3000', ...headers }, socket: { remoteAddress: ip } }, res);
   return res;
 }
-const mint = async () => (await createToken({ name: `t-${Math.random()}`, expiresInDays: 1, scopes: ['documents:read'] })).token;
+const mint = async () => (await createToken(await asUser(1), { name: `t-${Math.random()}`, expiresInDays: 1, scopes: ['documents:read'] })).token;
 const LIMIT = 60;
 
 test('a documents:read token: 60 searches a minute, then 429 + Retry-After, no database call', async () => {
@@ -37,7 +37,7 @@ test('a documents:read token: 60 searches a minute, then 429 + Retry-After, no d
     const r = await search({ authorization: 'Bearer ' + a });
     assert.equal(r.statusCode, 200, `search ${i + 1}`);
   }
-  const searchCalls = () => db.calls.filter((c) => c.path === '/rest/v1/rpc/mdshare_search').length;
+  const searchCalls = () => db.calls.filter((c) => c.path === '/rest/v1/rpc/mdshare_search_owned').length;
   const before = searchCalls();
   const over = await search({ authorization: 'Bearer ' + a });
   assert.equal(over.statusCode, 429);

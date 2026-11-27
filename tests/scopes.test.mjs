@@ -60,7 +60,7 @@ function fakeToken(raw, { id, name = 'test-agent', expiresAt = '2999-01-01T00:00
       test: new RegExp(`mdshare_agent_tokens\\?token_hash=eq\\.${hash}`),
       respond: async () => ({
         ok: true,
-        json: async () => [{ id, name, expires_at: expiresAt, revoked_at: revokedAt, scopes }],
+        json: async () => [{ id, name, expires_at: expiresAt, revoked_at: revokedAt, scopes, owner_id: 1 }],
       }),
     },
   };
@@ -206,8 +206,8 @@ test('scoped token with ONLY documents:publish: 403 on create, 403 on catalog, c
   let patchedBody;
   global.fetch = router([
     t.lookupRule,
-    { method: 'GET', test: /mdshare_pastes\?id=eq\./, respond: async () => ({ ok: true, json: async () => [{ created_by_token: 'tok_pub' }] }) },
-    { method: 'PATCH', test: /mdshare_pastes\?id=eq\./, respond: async (u, o) => { patchedBody = JSON.parse(o.body); return { ok: true, json: async () => [{ id: 'abc1234567', is_public: true }] }; } },
+    { method: 'GET', test: /mdshare_pastes\?(owner_id=eq\.1&)?id=eq\./, respond: async () => ({ ok: true, json: async () => [{ owner_id: 1, created_by_token: 'tok_pub' }] }) },
+    { method: 'PATCH', test: /mdshare_pastes\?owner_id=eq\.1&id=eq\./, respond: async (u, o) => { patchedBody = JSON.parse(o.body); return { ok: true, json: async () => [{ owner_id: 1, id: 'abc1234567', is_public: true }] }; } },
   ]);
   try {
     const req = fakeReq({ method: 'PATCH', body: { id: 'abc1234567', kind: 'paste', is_public: true }, headers: { authorization: `Bearer ${t.raw}` } });
@@ -221,8 +221,8 @@ test('scoped token with ONLY documents:publish: 403 on create, 403 on catalog, c
   let patchCalled = false;
   global.fetch = router([
     t.lookupRule,
-    { method: 'GET', test: /mdshare_pastes\?id=eq\./, respond: async () => ({ ok: true, json: async () => [{ created_by_token: 'tok_someone_else' }] }) },
-    { method: 'PATCH', test: /mdshare_pastes\?id=eq\./, respond: async () => { patchCalled = true; return { ok: true, json: async () => [{}] }; } },
+    { method: 'GET', test: /mdshare_pastes\?(owner_id=eq\.1&)?id=eq\./, respond: async () => ({ ok: true, json: async () => [{ owner_id: 1, created_by_token: 'tok_someone_else' }] }) },
+    { method: 'PATCH', test: /mdshare_pastes\?owner_id=eq\.1&id=eq\./, respond: async () => { patchCalled = true; return { ok: true, json: async () => [{}] }; } },
   ]);
   try {
     const req = fakeReq({ method: 'PATCH', body: { id: 'xyz1234567', kind: 'paste', is_public: true }, headers: { authorization: `Bearer ${t.raw}` } });
@@ -245,8 +245,8 @@ test('scoped token with documents:publish:any (and NOT documents:publish): can p
     t.lookupRule,
     // Deliberately a row owned by a DIFFERENT token — documents:publish:any must not even check
     // created_by_token, unlike plain documents:publish.
-    { method: 'GET', test: /mdshare_pastes\?id=eq\./, respond: async () => ({ ok: true, json: async () => [{ created_by_token: 'tok_someone_else_entirely' }] }) },
-    { method: 'PATCH', test: /mdshare_pastes\?id=eq\./, respond: async (u, o) => { patchedBody = JSON.parse(o.body); return { ok: true, json: async () => [{ id: 'xyz1234567', is_public: true }] }; } },
+    { method: 'GET', test: /mdshare_pastes\?(owner_id=eq\.1&)?id=eq\./, respond: async () => ({ ok: true, json: async () => [{ owner_id: 1, created_by_token: 'tok_someone_else_entirely' }] }) },
+    { method: 'PATCH', test: /mdshare_pastes\?owner_id=eq\.1&id=eq\./, respond: async (u, o) => { patchedBody = JSON.parse(o.body); return { ok: true, json: async () => [{ owner_id: 1, id: 'xyz1234567', is_public: true }] }; } },
   ]);
   try {
     const req = fakeReq({ method: 'PATCH', body: { id: 'xyz1234567', kind: 'paste', is_public: true }, headers: { authorization: `Bearer ${t.raw}` } });
@@ -265,8 +265,8 @@ test('documents:publish alone (without documents:publish:any) is NEVER broadened
   let patchCalled = false;
   global.fetch = router([
     t.lookupRule,
-    { method: 'GET', test: /mdshare_pastes\?id=eq\./, respond: async () => ({ ok: true, json: async () => [{ created_by_token: 'tok_someone_else_entirely' }] }) },
-    { method: 'PATCH', test: /mdshare_pastes\?id=eq\./, respond: async () => { patchCalled = true; return { ok: true, json: async () => [{}] }; } },
+    { method: 'GET', test: /mdshare_pastes\?(owner_id=eq\.1&)?id=eq\./, respond: async () => ({ ok: true, json: async () => [{ owner_id: 1, created_by_token: 'tok_someone_else_entirely' }] }) },
+    { method: 'PATCH', test: /mdshare_pastes\?owner_id=eq\.1&id=eq\./, respond: async () => { patchCalled = true; return { ok: true, json: async () => [{}] }; } },
   ]);
   try {
     const req = fakeReq({ method: 'PATCH', body: { id: 'xyz1234567', kind: 'paste', is_public: true }, headers: { authorization: `Bearer ${t.raw}` } });
@@ -284,9 +284,9 @@ test('cross-token read: a token with documents:read can read a DIFFERENT token\'
   const t = fakeToken('mds_cross_read_GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG', { id: 'tok_reader', scopes: ['documents:read'] });
   global.fetch = router([
     t.lookupRule,
-    { method: 'GET', test: /mdshare_pastes\?id=eq\./, respond: async () => ({
+    { method: 'GET', test: /mdshare_pastes\?(owner_id=eq\.1&)?id=eq\./, respond: async () => ({
       ok: true,
-      json: async () => [{ content: 'someone-elses-private-content', expires_at: '2999-01-01T00:00:00Z', is_public: false, created_by_token: 'tok_other_owner' }],
+      json: async () => [{ owner_id: 1, content: 'someone-elses-private-content', expires_at: '2999-01-01T00:00:00Z', is_public: false, created_by_token: 'tok_other_owner' }],
     }) },
   ]);
   try {

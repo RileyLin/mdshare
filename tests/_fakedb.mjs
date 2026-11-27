@@ -46,3 +46,17 @@ export function responseRecorder() {
     end() { return this; },
   };
 }
+
+// Users (multi-user beta, migration 013). Lazy imports: tests set process.env before loading api/*.
+// userCookie(uid): a valid v3 session cookie header value for user `uid` (user #1 is the owner,
+// whose password login issues the same). asUser(uid): that user's tenant.js principal, for calling
+// library functions (createToken, ...) directly.
+export async function userCookie(uid) {
+  const { signUserSession } = await import('../api/_lib/session.js');
+  return `mdshare_auth=${encodeURIComponent(signUserSession(uid, Math.floor(Date.now() / 1000) + 3600))}`;
+}
+
+export async function asUser(uid = 1) {
+  const { sessionOwner } = await import('../api/_lib/tenant.js');
+  return sessionOwner({ headers: { cookie: await userCookie(uid) } });
+}

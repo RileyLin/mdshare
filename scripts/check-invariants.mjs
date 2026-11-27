@@ -268,8 +268,8 @@ const checks = [
           errs.push(`api/_lib/activity.js (Versions section, line ${i + 1}): no loops in version lookups ("${l.trim()}"). Query by root_id/version_no instead of walking parent links.`);
         }
       });
-      const selects = (m[1].match(/\bawait sbSelect\(/g) || []).length;
-      if (selects > 3) errs.push(`api/_lib/activity.js: the Versions section makes ${selects} sbSelect calls (max 3: page view 1, API 2).`);
+      const selects = (m[1].match(/\bawait (sbSelect|selectOwned)\(/g) || []).length;
+      if (selects > 3) errs.push(`api/_lib/activity.js: the Versions section makes ${selects} queries (max 3: page view 1, API 2).`);
       if (!/root_id: links\.rootId/.test(read('api/share.js'))) errs.push('api/share.js: a new version must store root_id and version_no (versionFields(parentRow)).');
       return errs;
     },
@@ -281,7 +281,7 @@ const checks = [
       if (!exists('api/_lib/search.js')) return ['api/_lib/search.js is missing: full-text search must live there (rpc mdshare_search, migration 011).'];
       const errs = [];
       const src = read('api/_lib/search.js');
-      if (!/rest\/v1\/rpc\/mdshare_search`/.test(src)) errs.push('api/_lib/search.js: call `${SUPABASE_URL}/rest/v1/rpc/mdshare_search` (migration 011).');
+      if (!/rest\/v1\/rpc\/mdshare_search_owned`/.test(src)) errs.push('api/_lib/search.js: call `${SUPABASE_URL}/rest/v1/rpc/mdshare_search_owned` (migrations 011, 013).');
       if (!/body: JSON\.stringify\(\{ q,/.test(src)) errs.push('api/_lib/search.js: send the search text in the JSON body: body: JSON.stringify({ q, lim, skip }).');
       if ((src.match(/\bfetch\(/g) || []).length !== 1) errs.push('api/_lib/search.js: exactly one fetch() per search (one database call, however many rows match).');
       const filterish = /rest\/v1\/mdshare_|[?&]or=|\bor=\(|\.(i?like|fts|plfts|phfts|wfts|match|imatch)\.|=(i?like|fts|plfts|phfts|wfts|match|imatch)\./;
@@ -295,7 +295,7 @@ const checks = [
       if (!action) errs.push('api/doc.js: the search action must be a plain `search: { ... }` ACTIONS entry.');
       else {
         if (!/auth: 'owner\|documents:read'/.test(action)) errs.push("api/doc.js: search must be auth: 'owner|documents:read'.");
-        if (!/validateSearch\(query\)/.test(action) || !/searchDocs\(v\.value\)/.test(action)) errs.push('api/doc.js: search must pass the query only through validateSearch(query) -> searchDocs(v.value).');
+        if (!/validateSearch\(query\)/.test(action) || !/searchDocs\(me, v\.value\)/.test(action)) errs.push('api/doc.js: search must pass the query only through validateSearch(query) -> searchDocs(me, v.value).');
         if (/query\.q\b/.test(action)) errs.push('api/doc.js: the search action must not read query.q itself; validateSearch() trims and bounds it.');
       }
       return errs;
@@ -440,14 +440,18 @@ const checks = [
         const body = gateFn.split('\n').filter((l) => !isCommentLine(l)).join('\n');
         if (/is_public|hasScope|documents:read/.test(body)) errs.push('api/_lib/activity.js: canLinkTranslation() must not grant a link because the target is public or the token has a scope; a token links only documents it created.');
         if (!/const mine = \(r\) => !!\(r && agentAuth && agentAuth\.valid && r\.created_by_token && r\.created_by_token === agentAuth\.id\);/.test(body)) errs.push('api/_lib/activity.js: canLinkTranslation() defines `const mine = (r) => !!(r && agentAuth && agentAuth.valid && r.created_by_token && r.created_by_token === agentAuth.id);`.');
-        const owner = body.indexOf('if (checkAuthAndRefresh(req, res)) return { ok: true, row };');
+        // Multi-user (2026-11-27): the target is read from the requester's own rows, then the
+        // signed-in user may link any of theirs.
+        const scopedRead = body.indexOf("const { row, dbError } = await readOwned('mdshare_pastes', me, targetId, ");
+        if (scopedRead < 0) errs.push("api/_lib/activity.js: canLinkTranslation() reads the target with readOwned('mdshare_pastes', me, targetId, ...) so another user's document is never linkable.");
+        const owner = body.indexOf("if (me.via === 'cookie') return { ok: true, row };");
         const target = body.indexOf('if (!mine(row)) return { ok: false };');
         const group = body.indexOf('const group = translationRoot(row);');
         const groupOk = body.indexOf('return mine(g.row) ? { ok: true, row } : { ok: false };');
-        if (owner < 0 || target < 0 || owner > target) errs.push('api/_lib/activity.js: canLinkTranslation(): the owner first, then `if (!mine(row)) return { ok: false };` for a token.');
+        if (owner < 0 || target < 0 || owner > target) errs.push("api/_lib/activity.js: canLinkTranslation(): the signed-in user first (`if (me.via === 'cookie') return { ok: true, row };`), then `if (!mine(row)) return { ok: false };` for a token.");
         if (group < 0 || groupOk < 0 || group < target) errs.push('api/_lib/activity.js: canLinkTranslation() also requires the token to have created the group it joins (`const group = translationRoot(row);` ... `return mine(g.row) ? { ok: true, row } : { ok: false };`), since that is what gets stored.');
-        const lookup = body.indexOf("if (group === row.id) return { ok: true, row };\n  const g = await getRow('mdshare_pastes', group, ");
-        if (lookup < 0 || lookup < group || lookup > groupOk) errs.push("api/_lib/activity.js: canLinkTranslation() skips the group lookup only when the target is its own group root: `if (group === row.id) return { ok: true, row };` then `const g = await getRow('mdshare_pastes', group, ...)`.");
+        const lookup = body.indexOf("if (group === row.id) return { ok: true, row };\n  const g = await readOwned('mdshare_pastes', me, group, ");
+        if (lookup < 0 || lookup < group || lookup > groupOk) errs.push("api/_lib/activity.js: canLinkTranslation() skips the group lookup only when the target is its own group root: `if (group === row.id) return { ok: true, row };` then `const g = await readOwned('mdshare_pastes', me, group, ...)`.");
         if ((body.match(/return \{ ok: true, row \};/g) || []).length !== 2) errs.push('api/_lib/activity.js: canLinkTranslation() grants only for the owner and for a target that is its own group root.');
       }
       const share = read('api/share.js');
@@ -493,7 +497,7 @@ const checks = [
       const fn = (/export async function renderCollection\(req, res\) \{\n([\s\S]*?)\n\}/.exec(page) || [])[1] || '';
       const gate = fn.indexOf('if (!checkAuthAndRefresh(req, res)) {');
       const gated = fn.indexOf('return res.status(401).send(privateGateHtml(');
-      const firstQuery = Math.min(...['listCollections(', 'collectionToc(', 'sbSelect(', 'fetch('].map((k) => { const i = fn.indexOf(k); return i < 0 ? Infinity : i; }));
+      const firstQuery = Math.min(...['listCollections(', 'collectionToc(', 'sbSelect(', 'selectOwned(', 'readOwned(', 'fetch('].map((k) => { const i = fn.indexOf(k); return i < 0 ? Infinity : i; }));
       if (!/setPrivacyHeaders\(res\);/.test(fn) || fn.indexOf('setPrivacyHeaders(res);') > gate) errs.push('api/_lib/collection-page.js: renderCollection() starts with setPrivacyHeaders(res).');
       if (gate < 0 || gated < 0 || gated < gate || firstQuery < gated) errs.push('api/_lib/collection-page.js: renderCollection() answers `if (!checkAuthAndRefresh(req, res)) { ... return res.status(401).send(privateGateHtml(...)); }` before any query or slug check.');
       if (fn.indexOf('parseCollection(') > -1 && fn.indexOf('parseCollection(') < gated) errs.push('api/_lib/collection-page.js: validate the slug only after the owner gate, so a bad slug looks like any other.');
@@ -517,12 +521,14 @@ const checks = [
       }
       const lib = exists('api/_lib/collections.js') ? read('api/_lib/collections.js') : '';
       if (!/export const META_FIELDS = \['lang', 'translation_of', 'collection'\];/.test(lib)) errs.push("api/_lib/collections.js: META_FIELDS must be exactly ['lang', 'translation_of', 'collection'].");
-      if (!/export async function patchMeta\(filter, patch\) \{\n\s*const keys = Object\.keys\(patch \|\| \{\}\);\n\s*if \(!keys\.length \|\| keys\.some\(\(k\) => !META_FIELDS\.includes\(k\)\)\) throw/.test(lib)) errs.push('api/_lib/collections.js: patchMeta() must start by throwing for any field outside META_FIELDS.');
-      if ((lib.match(/method: '(PATCH|POST|DELETE|PUT)'/g) || []).length !== 1) errs.push('api/_lib/collections.js: patchMeta() is the only write in this file.');
+      if (!/export async function patchMeta\(me, filter, patch\) \{\n\s*const keys = Object\.keys\(patch \|\| \{\}\);\n\s*if \(!keys\.length \|\| keys\.some\(\(k\) => !META_FIELDS\.includes\(k\)\)\) throw/.test(lib)) errs.push('api/_lib/collections.js: patchMeta(me, filter, patch) must start by throwing for any field outside META_FIELDS.');
+      // Writes go through tenant.js (2026-11-27): one patchOwned() call, inside patchMeta().
+      const patchMetaFn = (/export async function patchMeta\([\s\S]*?\n\}/.exec(lib) || [''])[0];
+      if ((lib.match(/\b(patchOwned|insertOwned|deleteOwned)\(/g) || []).length !== 1 || !/\bpatchOwned\('mdshare_pastes', me, /.test(patchMetaFn) || /\bfetch\(|method: '(PATCH|POST|DELETE|PUT)'/.test(lib)) errs.push("api/_lib/collections.js: patchMeta() is the only write in this file: one patchOwned('mdshare_pastes', me, ...) call.");
       const can = (/export async function canEditMeta\([\s\S]*?\n\}/.exec(lib) || [''])[0];
       if (/is_public|hasScope/.test(can) || !/row\.created_by_token === agentAuth\.id/.test(can)) errs.push('api/_lib/collections.js: canEditMeta() allows the owner or the token that created the row, nothing else.');
       const toc = (/export async function collectionToc\([\s\S]*?\n\}/.exec(lib) || [''])[0];
-      const queries = (toc.match(/\bawait (sbSelect|readsFor)\(/g) || []).length;
+      const queries = (toc.match(/\bawait (sbSelect|selectOwned|readsFor)\(/g) || []).length;
       if (!toc || queries > 3) errs.push(`api/_lib/collections.js: collectionToc() makes ${queries} queries (max 3: rows, families, reads).`);
       lib.split('\n').forEach((l, i) => {
         if (!isCommentLine(l) && /\b(for|while)\s*\(.*\bawait\b|\.(forEach|map|reduce|flatMap)\([^)]*\basync\b/.test(l)) errs.push(`api/_lib/collections.js:${i + 1}: no queries in loops ("${l.trim()}").`);

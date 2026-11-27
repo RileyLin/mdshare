@@ -3,8 +3,9 @@
 //   PATCH /api/visibility endpoint, never from this request body.
 // GET  /api/share?id=xxx (/raw/:id) — returns raw markdown through api/_lib/raw.js, the same read
 //   path /v/:id uses for Bearer requests: owner, public, documents:read token, or the token's own row.
-// PATCH /api/share — updates content for an existing paste (auth-gated). Never touches is_public.
-import { checkAuthAndRefresh } from './auth.js';
+// PATCH /api/share — updates content of one of the signed-in user's pastes. Never touches is_public.
+// Multi-user (2026-11-27): a new row belongs to creatorOf(req) (the token's or cookie's user; an
+// anonymous create goes to the site owner as before); edits and deletes touch only the caller's rows.
 import { sendRawMarkdown, authHint, HINTS } from './_lib/raw.js';
 import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
@@ -14,6 +15,7 @@ import { withErrors } from './_lib/events.js';
 import { lintMarkdown } from './_lib/lint.js';
 import { canUseParent, canLinkTranslation, versionFields, translationFields, parseLang, detectLang } from './_lib/activity.js';
 import { parseCollection, SLUG_HINT } from './_lib/collections.js';
+import { creatorOf, ownerOf, sessionOwner, insertOwned, patchOwned, deleteOwned } from './_lib/tenant.js';
 
 // --- Rate Limiting (in-memory, per Vercel serverless instance) ---
 // Vercel functions can be cold-started, so this is "best effort" rate limiting.
@@ -59,20 +61,10 @@ function extractTitle(markdown) {
   return m ? m[1].trim().slice(0, 255) : null;
 }
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-
-async function supabaseSet(id, content, ttlSeconds, createdByToken, keep, links = {}) {
+async function supabaseSet(me, id, content, ttlSeconds, createdByToken, keep, links = {}) {
   const { expires_at: expiresAt, pinned } = expiryFields(ttlSeconds, keep);
   const title = extractTitle(content);
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/mdshare_pastes`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      apikey: SUPABASE_KEY,
-      'Content-Type': 'application/json',
-      Prefer: 'return=minimal',
-    },
+  await insertOwned('mdshare_pastes', me,
     // Explicit field list (never a body spread): is_public is always false on create, regardless
     // of anything a caller puts in the request body. Making it public requires the authenticated
     // PATCH /api/visibility endpoint. created_by_token is set only from a server-validated bearer
@@ -81,9 +73,8 @@ async function supabaseSet(id, content, ttlSeconds, createdByToken, keep, links 
     // (migrations 009, 010). root_id + version_no are stored so reads never walk the chain.
     // lang/translation_of/collection (migration 012): translation_of only from translationFields()
     // of a row canLinkTranslation() allowed, or inherited from the gated parent ("translation-gated").
-    body: JSON.stringify({ id, content, expires_at: expiresAt, pinned, title, is_public: false, created_by_token: createdByToken || null, parent_id: links.parentId || null, root_id: links.rootId || null, version_no: links.versionNo || null, origin: links.origin || null, lang: links.lang || null, translation_of: links.translationOf || null, collection: links.collection || null }),
-  });
-  if (!res.ok) throw new Error(`Supabase insert failed: ${res.status}`);
+    // owner_id: insertOwned() sets it from `me` (creatorOf(req)), never from this row or the body.
+    { id, content, expires_at: expiresAt, pinned, title, is_public: false, created_by_token: createdByToken || null, parent_id: links.parentId || null, root_id: links.rootId || null, version_no: links.versionNo || null, origin: links.origin || null, lang: links.lang || null, translation_of: links.translationOf || null, collection: links.collection || null });
 }
 
 // Note: DELETE/PATCH here are auth-gated (owner-only) and already used encodeURIComponent for
@@ -96,38 +87,17 @@ function cleanOrigin(v) {
   return /^[\w:.@/#+-]{1,200}$/.test(s) ? s : null;
 }
 
-async function supabaseDelete(id) {
-  const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/mdshare_pastes?id=eq.${encodeURIComponent(id)}`,
-    {
-      method: 'DELETE',
-      headers: {
-        Authorization: `Bearer ${SUPABASE_KEY}`,
-        apikey: SUPABASE_KEY,
-        Prefer: 'return=minimal',
-      },
-    }
-  );
-  if (!res.ok) throw new Error(`Supabase delete failed: ${res.status}`);
+// Only the signed-in user's own row; a missing id and someone else's look the same.
+async function supabaseDelete(me, id) {
+  await deleteOwned('mdshare_pastes', me, id);
 }
 
-async function supabaseUpdate(id, content) {
+async function supabaseUpdate(me, id, content) {
   const title = extractTitle(content);
-  const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/mdshare_pastes?id=eq.${encodeURIComponent(id)}`,
-    {
-      method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${SUPABASE_KEY}`,
-        apikey: SUPABASE_KEY,
-        'Content-Type': 'application/json',
-        Prefer: 'return=minimal',
-      },
-      // content/title only — is_public is never touched by this route.
-      body: JSON.stringify({ content, title }),
-    }
-  );
-  if (!res.ok) throw new Error(`Supabase update failed: ${res.status}`);
+  // content/title only — is_public is never touched by this route.
+  const r = await patchOwned('mdshare_pastes', me, `id=eq.${encodeURIComponent(id)}`, { content, title });
+  if (!r.ok) throw new Error(`Supabase update failed: ${r.status}`);
+  return r.rows.length > 0;
 }
 
 async function handler(req, res) {
@@ -194,7 +164,7 @@ async function handler(req, res) {
     const id = nanoid();
 
     const keep = wantsKeep(body, req, res, agentAuth);
-    const trusted = agentAuth.valid || checkAuthAndRefresh(req, res) === true;
+    const trusted = ownerOf(req, res, agentAuth) !== null;
 
     // Versions: `parent` makes this document the next version of an existing one. Only the owner
     // or a token that can read the parent may do it (canUseParent); otherwise 404, never a silent
@@ -242,7 +212,7 @@ async function handler(req, res) {
     // for the owner or a valid token; anonymous creates can't plant routing data.
     const origin = trusted ? cleanOrigin(body?.origin) : null;
 
-    await supabaseSet(id, markdown, ttl, agentAuth.valid ? agentAuth.id : null, keep, { parentId, rootId: version.root_id, versionNo: version.version_no, origin, lang: docLang, translationOf, collection });
+    await supabaseSet(creatorOf(req, res, agentAuth), id, markdown, ttl, agentAuth.valid ? agentAuth.id : null, keep, { parentId, rootId: version.root_id, versionNo: version.version_no, origin, lang: docLang, translationOf, collection });
 
     const base = baseUrl(req);
     const out = { url: `${base}/v/${id}`, id, expires_in: keep ? null : ttl, kept: keep, format_guide: `${base}${FORMAT_GUIDE_PATH}`, checks: lintMarkdown(markdown) };
@@ -257,7 +227,8 @@ async function handler(req, res) {
   }
 
   if (req.method === 'PATCH') {
-    if (!checkAuthAndRefresh(req, res)) {
+    const me = sessionOwner(req, res);
+    if (!me) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
@@ -267,17 +238,18 @@ async function handler(req, res) {
     if (!id || typeof id !== 'string') return res.status(400).json({ error: 'Missing id' });
     if (!content || typeof content !== 'string') return res.status(400).json({ error: 'Missing content' });
 
-    await supabaseUpdate(id, content);
+    if (!(await supabaseUpdate(me, id, content))) return res.status(404).json({ error: 'Not found' });
     return res.status(200).json({ ok: true });
   }
 
   if (req.method === 'DELETE') {
-    if (!checkAuthAndRefresh(req, res)) {
+    const me = sessionOwner(req, res);
+    if (!me) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
     const id = req.query?.id || (typeof req.body === 'object' ? req.body?.id : undefined);
     if (!id || typeof id !== 'string') return res.status(400).json({ error: 'Missing id' });
-    await supabaseDelete(id);
+    await supabaseDelete(me, id);
     return res.status(200).json({ ok: true, deleted: id });
   }
 

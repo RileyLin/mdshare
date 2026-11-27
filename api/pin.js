@@ -13,37 +13,33 @@
 // carry { id|items, type, pinned } (no `kind`/`is_public`), so dispatch-by-shape is unambiguous.
 // This is the ONLY code path that may set is_public; POST create routes never read it from the
 // request body (see api/share.js, api/diagram.js, api/archify.js).
-import { checkAuthAndRefresh } from './auth.js';
-import { tableFor, isValidId, patchRow, getRow } from './_lib/access.js';
+// Multi-user (2026-11-27): every write is scoped to the requester's own rows (api/_lib/tenant.js
+// patchOwned); another user's id changes nothing and answers like a missing one.
+import { tableFor, isValidId } from './_lib/access.js';
 import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope } from './_lib/agent-tokens.js';
 import { withErrors } from './_lib/events.js';
-
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
+import { ownerOf, sessionOwner, readOwned, patchOwned } from './_lib/tenant.js';
 
 export const UNKEEP_TTL_MS = 7 * 24 * 3600 * 1000;
 export const KEEP_UNTIL = '2099-12-31T00:00:00Z';
 
-async function setPinned(id, type, pinned) {
+async function setPinned(me, id, type, pinned) {
   const table = type === undefined || type === null ? 'mdshare_pastes' : tableFor(type);
   if (!table) return { id, ok: false, error: 'Invalid type. Must be one of: paste, diagram, archify.' };
   const expiresAt = pinned ? KEEP_UNTIL : new Date(Date.now() + UNKEEP_TTL_MS).toISOString();
   const patch = { expires_at: expiresAt, pinned: !!pinned };
-  const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/${table}?id=eq.${encodeURIComponent(id)}`,
-    {
-      method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${SUPABASE_KEY}`,
-        apikey: SUPABASE_KEY,
-        'Content-Type': 'application/json',
-        Prefer: 'return=minimal',
-      },
-      body: JSON.stringify(patch),
-    }
-  );
-  return r.ok ? { id, ok: true, expires_at: expiresAt } : { id, ok: false, error: await r.text() };
+  // Only `me`'s row; a missing id and another user's id both change nothing.
+  const r = await patchOwned(table, me, `id=eq.${encodeURIComponent(id)}`, patch);
+  return r.ok ? { id, ok: true, expires_at: expiresAt } : { id, ok: false, error: r.error };
+}
+
+// The visibility write: one of `me`'s rows by id. { ok: true, row } | { ok: false, status, error }.
+async function patchVisibility(table, me, id, patch) {
+  const r = await patchOwned(table, me, `id=eq.${encodeURIComponent(id)}`, patch);
+  if (!r.ok) return { ok: false, status: r.status, error: r.error };
+  if (!r.rows.length) return { ok: false, status: 404, error: 'Not found' };
+  return { ok: true, row: r.rows[0] };
 }
 
 async function handler(req, res) {
@@ -80,8 +76,14 @@ async function handler(req, res) {
       return res.status(400).json({ error: 'keep must be a boolean' });
     }
 
-    const ownerOk = checkAuthAndRefresh(req, res);
-    if (!ownerOk) {
+    // A present Bearer decides (tenant.js ownerOf); a browser session never sends one.
+    const agentAuth = await resolveAgentToken(req);
+    if (agentAuth.present && !agentAuth.valid) {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+    const me = ownerOf(req, res, agentAuth);
+    if (!me) return res.status(401).json({ error: 'Unauthorized' });
+    if (me.via === 'token') {
       // No owner cookie — try a bearer token with a publish scope (added 2026-10-08,
       // AGENT-SEARCH-PLAN.md; documents:publish:any added same evening per explicit security-UX
       // requirement). Present-but-invalid -> 401, same fail-closed rule as every other
@@ -91,24 +93,20 @@ async function handler(req, res) {
       //
       // Two distinct, independently-granted scopes:
       //   documents:publish      -> may ONLY toggle visibility on a row it itself created.
-      //   documents:publish:any  -> may toggle visibility on ANY row (library-wide), the same
+      //   documents:publish:any  -> may toggle visibility on ANY row of its own user, the same
       //                             reach documents:read already has. This is a deliberately
       //                             SEPARATE, strictly broader scope — never implied by
       //                             documents:publish alone, and the owner must explicitly
       //                             include this exact string when creating the token. Default
       //                             publish grants stay scoped to a token's own content; the
       //                             owner opts into the broader capability, never the reverse.
-      const agentAuth = await resolveAgentToken(req);
-      if (agentAuth.present && !agentAuth.valid) {
-        return res.status(401).json({ error: 'Invalid or expired token' });
-      }
       const canPublishAny = hasScope(agentAuth, 'documents:publish:any');
       const canPublishOwn = hasScope(agentAuth, 'documents:publish');
       if (!agentAuth.present || (!canPublishAny && !canPublishOwn)) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
       if (!canPublishAny) {
-        const { row, dbError } = await getRow(table, body.id, 'created_by_token');
+        const { row, dbError } = await readOwned(table, me, body.id, 'created_by_token');
         if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
         if (!row || row.created_by_token !== agentAuth.id) {
           // Fail closed exactly like every other "not visible to you" case in this repo (same shape
@@ -116,16 +114,16 @@ async function handler(req, res) {
           return res.status(404).json({ error: 'Not found' });
         }
       }
-      // canPublishAny: no ownership check at all — this scope's entire point is library-wide
-      // reach, same as documents:read's. The row only needs to actually exist in this table;
-      // patchRow below 404s on its own if it doesn't.
+      // canPublishAny: no created-by check — this scope's point is reach over its own user's whole
+      // library, same as documents:read's. The write below is scoped to that user and 404s on its
+      // own for a missing row or another user's.
     }
 
     // keep: true (sent by the share panel when publishing with auto-keep on) keeps the item in the
     // same write, so a published document can't silently expire.
     const keep = body.keep === true;
     const visPatch = keep ? { is_public: body.is_public, pinned: true, expires_at: KEEP_UNTIL } : { is_public: body.is_public };
-    const result = await patchRow(table, body.id, visPatch);
+    const result = await patchVisibility(table, me, body.id, visPatch);
     if (!result.ok) {
       return res.status(result.status || 500).json({ error: result.error || 'Update failed' });
     }
@@ -135,7 +133,8 @@ async function handler(req, res) {
   // Every remaining branch below (pin/unpin, single + batch) stays owner-cookie-only — pin/unpin
   // is a human-dashboard-only concern, out of scope for the agent-token model (AGENT-SEARCH-PLAN.md
   // "Not touched").
-  if (!checkAuthAndRefresh(req, res)) {
+  const me = sessionOwner(req, res);
+  if (!me) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -158,7 +157,7 @@ async function handler(req, res) {
     return res.status(400).json({ error: 'Too many items (max 100)' });
   }
 
-  const results = await Promise.all(items.map(it => setPinned(it.id, it.type, pinned)));
+  const results = await Promise.all(items.map(it => setPinned(me, it.id, it.type, pinned)));
   const failed = results.filter(r => !r.ok);
 
   if (failed.length) {

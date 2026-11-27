@@ -67,7 +67,7 @@ test('authenticated DELETE removes the requested paste', async () => {
   let request;
   global.fetch = async (url, options) => {
     request = { url, options };
-    return { ok: true };
+    return { ok: true, json: async () => [] };
   };
   try {
     const req = { method: 'DELETE', query: { id: 'paste/with spaces' }, headers: { cookie } };
@@ -77,7 +77,8 @@ test('authenticated DELETE removes the requested paste', async () => {
     assert.equal(res.statusCode, 200);
     assert.deepEqual(res.body, { ok: true, deleted: 'paste/with spaces' });
     assert.equal(request.options.method, 'DELETE');
-    assert.match(request.url, /mdshare_pastes\?id=eq\.paste%2Fwith%20spaces$/);
+    // Only the signed-in user's row (multi-user, 2026-11-27): the owner filter comes first.
+    assert.match(request.url, /mdshare_pastes\?owner_id=eq\.1&id=eq\.paste%2Fwith%20spaces$/);
     assert.equal(request.options.headers.Authorization, 'Bearer test-service-key');
   } finally {
     global.fetch = originalFetch;

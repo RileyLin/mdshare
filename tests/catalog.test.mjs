@@ -12,6 +12,9 @@ process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
 const { sanitizeSearchTerm, clampPagination, searchCatalog } = await import('../api/_lib/catalog.js');
 const { default: pastesHandler } = await import('../api/pastes.js');
 const { sha256Hex } = await import('../api/_lib/agent-tokens.js');
+const { asUser } = await import('./_fakedb.mjs');
+// The catalog is one user's library (multi-user, 2026-11-27): every call names the principal.
+const OWNER = await asUser(1);
 
 function responseRecorder() {
   return {
@@ -99,13 +102,14 @@ test('searchCatalog: malicious q never reaches Supabase with raw comma/paren/ast
     return { ok: true, json: async () => [] };
   };
   try {
-    await searchCatalog({ q: 'foo),or=(is_public.eq.true)*', kind: 'paste', limit: 999999, offset: -5 });
+    await searchCatalog(OWNER, { q: 'foo),or=(is_public.eq.true)*', kind: 'paste', limit: 999999, offset: -5 });
     assert.ok(seenUrls.length >= 1);
     for (const u of seenUrls) {
       const decoded = decodeURIComponent(u);
       assert.ok(!decoded.includes('is_public.eq.true)'), `URL still contains an injected filter clause: ${decoded}`);
       assert.ok(/limit=50(&|$)/.test(u), `limit should be clamped to 50 in: ${u}`);
       assert.ok(/offset=0(&|$)/.test(u), `offset should be clamped to 0 in: ${u}`);
+      assert.ok(/\?owner_id=eq\.1&/.test(u), `the owner filter comes first in: ${u}`);
     }
   } finally { restoreFetch(); }
 });
@@ -118,7 +122,7 @@ test('searchCatalog: kind=paste only queries mdshare_pastes (real per-table scop
     return { ok: true, json: async () => [] };
   };
   try {
-    await searchCatalog({ kind: 'paste', limit: 10, offset: 0 });
+    await searchCatalog(OWNER, { kind: 'paste', limit: 10, offset: 0 });
     assert.deepEqual([...tablesHit], ['mdshare_pastes']);
   } finally { restoreFetch(); }
 });
@@ -131,7 +135,7 @@ test('searchCatalog: kind=all queries all three tables', async () => {
     return { ok: true, json: async () => [] };
   };
   try {
-    await searchCatalog({ limit: 10, offset: 0 });
+    await searchCatalog(OWNER, { limit: 10, offset: 0 });
     assert.deepEqual([...tablesHit].sort(), ['mdshare_archify', 'mdshare_diagrams', 'mdshare_pastes']);
   } finally { restoreFetch(); }
 });
@@ -140,7 +144,7 @@ test('searchCatalog: every per-table request includes the real server-side not-e
   const urls = [];
   global.fetch = async (url) => { urls.push(String(url)); return { ok: true, json: async () => [] }; };
   try {
-    await searchCatalog({ kind: 'paste', limit: 10, offset: 0 });
+    await searchCatalog(OWNER, { kind: 'paste', limit: 10, offset: 0 });
     assert.ok(urls[0].includes('or=(expires_at.gt.'), 'expiry filter must be in the Supabase request URL itself, not applied client-side after fetch');
     assert.ok(urls[0].includes('pinned.eq.true'));
   } finally { restoreFetch(); }
@@ -165,7 +169,7 @@ test('searchCatalog: merges and sorts results from multiple tables by created_at
     return { ok: true, json: async () => [] };
   };
   try {
-    const result = await searchCatalog({ limit: 10, offset: 0 });
+    const result = await searchCatalog(OWNER, { limit: 10, offset: 0 });
     assert.equal(result.items.length, 2);
     assert.equal(result.items[0].id, 'd-new', 'newest item sorts first across merged tables');
     assert.equal(result.items[1].id, 'p-old');
@@ -185,7 +189,7 @@ function fakeToken(raw, { id, name = 'test-agent', scopes = null } = {}) {
     lookupRule: {
       method: 'GET',
       test: new RegExp(`mdshare_agent_tokens\\?token_hash=eq\\.${hash}`),
-      respond: async () => ({ ok: true, json: async () => [{ id, name, expires_at: '2999-01-01T00:00:00Z', revoked_at: null, scopes }] }),
+      respond: async () => ({ ok: true, json: async () => [{ id, name, expires_at: '2999-01-01T00:00:00Z', revoked_at: null, scopes, owner_id: 1 }] }),
     },
   };
 }

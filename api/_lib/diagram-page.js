@@ -1,11 +1,11 @@
 // GET /d/:id (rewritten to /api/render?kind=diagram) — renders SVG diagram, with optional markdown writeup below. Private unless the
-// owner is authenticated or the row has is_public: true. Unauthenticated requests to a private id
+// signed-in user owns it or the row has is_public: true; owner controls only for its owner. Unauthenticated requests to a private id
 // get a same-URL login prompt instead of the diagram's title/content.
 // Rebuilt 2026-11-19 on the shared chrome (api/_lib/ui.js + /assets/app.js). The SVG travels as
 // JSON and is sanitised with DOMPurify before it touches the DOM (the old page inlined raw SVG into
 // the HTML first, so an embedded <script> could run before sanitising).
-import { checkAuthAndRefresh } from '../auth.js';
-import { getRow, isVisible, isKept, setPrivacyHeaders, privateGateHtml } from './access.js';
+import { isVisible, viewerOwns, isKept, setPrivacyHeaders, privateGateHtml } from './access.js';
+import { readForView } from './tenant.js';
 import { head, header, ownerControls, readerControls, toast, dataBlock, scripts, CSP_PAGE, notFoundPage, unavailablePage, esc } from './ui.js';
 
 function diagramPage({ id, row, owner }) {
@@ -38,13 +38,13 @@ export async function renderDiagram(req, res) {
   if (!id) return res.status(400).send('Missing id');
 
   setPrivacyHeaders(res);
-  const { row, dbError } = await getRow('mdshare_diagrams', id, 'svg,markdown,title,expires_at,is_public,pinned');
+  const { row, dbError } = await readForView('mdshare_diagrams', id, 'svg,markdown,title,expires_at,is_public,pinned');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
 
   if (dbError) return res.status(503).send(unavailablePage());
   if (!row) return res.status(404).send(notFoundPage('diagram'));
 
-  const authed = checkAuthAndRefresh(req, res);
+  const authed = viewerOwns(row, req, res);
   if (!isVisible(row, req, res)) return res.status(401).send(privateGateHtml());
 
   res.setHeader('Content-Security-Policy', CSP_PAGE);

@@ -1,13 +1,13 @@
 // POST /api/diagram — accepts SVG (+ optional markdown), returns a shareable URL. Always creates
 //   a PRIVATE row (is_public: false) — visibility can only be changed via the auth-gated
 //   PATCH /api/visibility endpoint, never from this request body.
-// GET  /api/diagram?id=xxx — returns raw SVG. Private unless the owner is authenticated or the row
-//   has is_public: true.
+// GET  /api/diagram?id=xxx — returns raw SVG. Private unless the signed-in user owns it, a token of
+//   that user may read it (tokenCanRead), or the row has is_public: true. DELETE: own rows only.
 
 import { randomBytes } from 'crypto';
-import { checkAuthAndRefresh } from './auth.js';
-import { wantsKeep, expiryFields, baseUrl, deleteRow, FORMAT_GUIDE_PATH } from './_lib/content.js';
-import { getRow, isVisible, setPrivacyHeaders } from './_lib/access.js';
+import { wantsKeep, expiryFields, baseUrl, FORMAT_GUIDE_PATH } from './_lib/content.js';
+import { isVisible, setPrivacyHeaders, tokenCanRead } from './_lib/access.js';
+import { creatorOf, sessionOwner, readForView, insertOwned, deleteOwned } from './_lib/tenant.js';
 import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
 import { withErrors } from './_lib/events.js';
@@ -15,27 +15,12 @@ function nanoid(size = 10) {
   return randomBytes(size).toString('base64url').slice(0, size);
 }
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-
-async function supabaseSet(id, svg, title, markdown, ttlSeconds, createdByToken, keep) {
+async function supabaseSet(me, id, svg, title, markdown, ttlSeconds, createdByToken, keep) {
   const { expires_at: expiresAt, pinned } = expiryFields(ttlSeconds, keep);
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/mdshare_diagrams`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      apikey: SUPABASE_KEY,
-      'Content-Type': 'application/json',
-      Prefer: 'return=minimal',
-    },
-    // Explicit field list: is_public is always false on create regardless of the request body.
-    // created_by_token comes only from a server-validated bearer token, never the request body.
-    body: JSON.stringify({ id, svg, title: title || 'Diagram', markdown: markdown || null, expires_at: expiresAt, pinned, is_public: false, created_by_token: createdByToken || null }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Supabase insert failed: ${res.status} — ${text}`);
-  }
+  // Explicit field list: is_public is always false on create regardless of the request body.
+  // created_by_token comes only from a server-validated bearer token, never the request body;
+  // owner_id from `me` (creatorOf(req)) inside insertOwned().
+  await insertOwned('mdshare_diagrams', me, { id, svg, title: title || 'Diagram', markdown: markdown || null, expires_at: expiresAt, pinned, is_public: false, created_by_token: createdByToken || null });
 }
 
 async function handler(req, res) {
@@ -79,17 +64,18 @@ async function handler(req, res) {
     const id = nanoid();
 
     const keep = wantsKeep(body, req, res, agentAuth);
-    await supabaseSet(id, svg, title, markdown, ttl, agentAuth.valid ? agentAuth.id : null, keep);
+    await supabaseSet(creatorOf(req, res, agentAuth), id, svg, title, markdown, ttl, agentAuth.valid ? agentAuth.id : null, keep);
 
     const base = baseUrl(req);
     return res.status(200).json({ url: `${base}/d/${id}`, id, expires_in: keep ? null : ttl, kept: keep, format_guide: `${base}${FORMAT_GUIDE_PATH}` });
   }
 
   if (req.method === 'DELETE') {
-    if (!checkAuthAndRefresh(req, res)) return res.status(401).json({ error: 'Unauthorized' });
+    const me = sessionOwner(req, res);
+    if (!me) return res.status(401).json({ error: 'Unauthorized' });
     const id = req.query?.id;
     if (!id || typeof id !== 'string') return res.status(400).json({ error: 'Missing id' });
-    await deleteRow('mdshare_diagrams', id);
+    await deleteOwned('mdshare_diagrams', me, id);
     return res.status(200).json({ ok: true, deleted: id });
   }
 
@@ -103,9 +89,9 @@ async function handler(req, res) {
     }
 
     setPrivacyHeaders(res);
-    const { row, dbError } = await getRow('mdshare_diagrams', id, 'svg,expires_at,is_public,created_by_token');
+    const { row, dbError } = await readForView('mdshare_diagrams', id, 'svg,expires_at,is_public,created_by_token');
     if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
-    const agentOwns = !!(agentAuth.valid && row && (hasScope(agentAuth, 'documents:read') || row.created_by_token === agentAuth.id));
+    const agentOwns = tokenCanRead(agentAuth, row);
     if (!row || !isVisible(row, req, res, { agentOwns })) return res.status(404).json({ error: 'Not found or expired' });
 
     res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');

@@ -9,7 +9,7 @@
 //  - every create response carries publish checks
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { useFakeDb, responseRecorder } from './_fakedb.mjs';
+import { useFakeDb, responseRecorder, asUser } from './_fakedb.mjs';
 
 process.env.MDSHARE_PASSWORD = 'test-password';
 process.env.MDSHARE_HMAC_SECRET = 'test-hmac-secret';
@@ -34,7 +34,7 @@ async function ownerCookie() {
   return res.headers['set-cookie'].split(';')[0];
 }
 const COOKIE = await ownerCookie();
-const tok = async (scopes) => (await createToken({ name: `t-${Math.random()}`, expiresInDays: 1, scopes })).token;
+const tok = async (scopes) => (await createToken(await asUser(1), { name: `t-${Math.random()}`, expiresInDays: 1, scopes })).token;
 const bearer = (t) => ({ authorization: `Bearer ${t}` });
 
 async function call(handler, { method = 'GET', query = {}, body, headers = {} }) {

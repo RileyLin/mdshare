@@ -55,7 +55,7 @@ function restoreFetch() { global.fetch = originalFetch; }
 // --- HTML render routes (/v, /d, /a): anonymous + private -> same-URL login gate, no content leak ---
 
 test('render.js: anonymous request to a private paste gets a login gate, never the title/content', async () => {
-  mockRowFetch({ content: '# Super Secret Title\n\nsecret body', expires_at: '2999-01-01T00:00:00Z', is_public: false });
+  mockRowFetch({ owner_id: 1, content: '# Super Secret Title\n\nsecret body', expires_at: '2999-01-01T00:00:00Z', is_public: false });
   try {
     const req = { query: { id: 'abc1234567' }, headers: {} };
     const res = responseRecorder();
@@ -69,7 +69,7 @@ test('render.js: anonymous request to a private paste gets a login gate, never t
 
 test('render.js: owner (authenticated) sees a private paste', async () => {
   const cookie = await ownerCookie();
-  mockRowFetch({ content: '# Owner Title\n\nbody', expires_at: '2999-01-01T00:00:00Z', is_public: false });
+  mockRowFetch({ owner_id: 1, content: '# Owner Title\n\nbody', expires_at: '2999-01-01T00:00:00Z', is_public: false });
   try {
     const req = { query: { id: 'abc1234567' }, headers: { cookie } };
     const res = responseRecorder();
@@ -80,7 +80,7 @@ test('render.js: owner (authenticated) sees a private paste', async () => {
 });
 
 test('render.js: anonymous sees a public paste', async () => {
-  mockRowFetch({ content: '# Public Title\n\nbody', expires_at: '2999-01-01T00:00:00Z', is_public: true });
+  mockRowFetch({ owner_id: 1, content: '# Public Title\n\nbody', expires_at: '2999-01-01T00:00:00Z', is_public: true });
   try {
     const req = { query: { id: 'abc1234567' }, headers: {} };
     const res = responseRecorder();
@@ -91,7 +91,7 @@ test('render.js: anonymous sees a public paste', async () => {
 });
 
 test('render.js: stop-sharing (is_public: false again) re-denies anonymous access to the same id', async () => {
-  mockRowFetch({ content: '# Was Public\n\nbody', expires_at: '2999-01-01T00:00:00Z', is_public: false });
+  mockRowFetch({ owner_id: 1, content: '# Was Public\n\nbody', expires_at: '2999-01-01T00:00:00Z', is_public: false });
   try {
     const req = { query: { id: 'abc1234567' }, headers: {} };
     const res = responseRecorder();
@@ -102,7 +102,7 @@ test('render.js: stop-sharing (is_public: false again) re-denies anonymous acces
 });
 
 test('render.js: login gate reloads the same URL (no external redirect target embedded)', async () => {
-  mockRowFetch({ content: '# X\n\nbody', expires_at: '2999-01-01T00:00:00Z', is_public: false });
+  mockRowFetch({ owner_id: 1, content: '# X\n\nbody', expires_at: '2999-01-01T00:00:00Z', is_public: false });
   try {
     const req = { query: { id: 'abc1234567' }, headers: {} };
     const res = responseRecorder();
@@ -133,7 +133,7 @@ test('render.js: Supabase error fails closed (never 200, never leaks content)', 
 
 test('render.js: expired row is denied even to a cookie-carrying request (fail closed, not "expired == public")', async () => {
   const cookie = await ownerCookie();
-  mockRowFetch({ content: '# Expired\n\nbody', expires_at: '2000-01-01T00:00:00Z', is_public: true });
+  mockRowFetch({ owner_id: 1, content: '# Expired\n\nbody', expires_at: '2000-01-01T00:00:00Z', is_public: true });
   try {
     const req = { query: { id: 'abc1234567' }, headers: { cookie } };
     const res = responseRecorder();
@@ -145,7 +145,7 @@ test('render.js: expired row is denied even to a cookie-carrying request (fail c
 test('diagram-render.js (/d/:id): anonymous private deny, owner allow, public allow', async () => {
   const cookie = await ownerCookie();
 
-  mockRowFetch({ svg: '<svg>secret-svg-marker</svg>', title: 'Secret Diagram', markdown: null, expires_at: '2999-01-01T00:00:00Z', is_public: false });
+  mockRowFetch({ owner_id: 1, svg: '<svg>secret-svg-marker</svg>', title: 'Secret Diagram', markdown: null, expires_at: '2999-01-01T00:00:00Z', is_public: false });
   try {
     const res = responseRecorder();
     await diagramRenderHandler({ query: { id: 'diag123456' }, headers: {} }, res);
@@ -153,7 +153,7 @@ test('diagram-render.js (/d/:id): anonymous private deny, owner allow, public al
     assert.doesNotMatch(res.body, /secret-svg-marker/);
   } finally { restoreFetch(); }
 
-  mockRowFetch({ svg: '<svg>secret-svg-marker</svg>', title: 'Secret Diagram', markdown: null, expires_at: '2999-01-01T00:00:00Z', is_public: false });
+  mockRowFetch({ owner_id: 1, svg: '<svg>secret-svg-marker</svg>', title: 'Secret Diagram', markdown: null, expires_at: '2999-01-01T00:00:00Z', is_public: false });
   try {
     const res = responseRecorder();
     await diagramRenderHandler({ query: { id: 'diag123456' }, headers: { cookie } }, res);
@@ -161,7 +161,7 @@ test('diagram-render.js (/d/:id): anonymous private deny, owner allow, public al
     assert.match(res.body, /secret-svg-marker/);
   } finally { restoreFetch(); }
 
-  mockRowFetch({ svg: '<svg>public-svg-marker</svg>', title: 'Public Diagram', markdown: null, expires_at: '2999-01-01T00:00:00Z', is_public: true });
+  mockRowFetch({ owner_id: 1, svg: '<svg>public-svg-marker</svg>', title: 'Public Diagram', markdown: null, expires_at: '2999-01-01T00:00:00Z', is_public: true });
   try {
     const res = responseRecorder();
     await diagramRenderHandler({ query: { id: 'diag123456' }, headers: {} }, res);
@@ -174,7 +174,7 @@ test('archify-render.js (/a/:id): anonymous private deny, owner allow, public al
   const cookie = await ownerCookie();
   const html = '<!DOCTYPE html><html><body><svg></svg>secret-archify-marker</body></html>';
 
-  mockRowFetch({ html, ir: {}, kind: 'architecture', title: 'Secret Arch', expires_at: '2999-01-01T00:00:00Z', is_public: false });
+  mockRowFetch({ owner_id: 1, html, ir: {}, kind: 'architecture', title: 'Secret Arch', expires_at: '2999-01-01T00:00:00Z', is_public: false });
   try {
     const res = responseRecorder();
     await archifyRenderHandler({ query: { id: 'arch123456' }, headers: {} }, res);
@@ -183,7 +183,7 @@ test('archify-render.js (/a/:id): anonymous private deny, owner allow, public al
     assert.doesNotMatch(res.body, /Secret Arch/);
   } finally { restoreFetch(); }
 
-  mockRowFetch({ html, ir: {}, kind: 'architecture', title: 'Secret Arch', expires_at: '2999-01-01T00:00:00Z', is_public: false });
+  mockRowFetch({ owner_id: 1, html, ir: {}, kind: 'architecture', title: 'Secret Arch', expires_at: '2999-01-01T00:00:00Z', is_public: false });
   try {
     const res = responseRecorder();
     await archifyRenderHandler({ query: { id: 'arch123456' }, headers: { cookie } }, res);
@@ -194,7 +194,7 @@ test('archify-render.js (/a/:id): anonymous private deny, owner allow, public al
     assert.match(res.body, /\/api\/archify-html\?id=arch123456/);
   } finally { restoreFetch(); }
 
-  mockRowFetch({ html, ir: {}, kind: 'architecture', title: 'Public Arch', expires_at: '2999-01-01T00:00:00Z', is_public: true });
+  mockRowFetch({ owner_id: 1, html, ir: {}, kind: 'architecture', title: 'Public Arch', expires_at: '2999-01-01T00:00:00Z', is_public: true });
   try {
     const res = responseRecorder();
     await archifyRenderHandler({ query: { id: 'arch123456' }, headers: {} }, res);
@@ -208,7 +208,7 @@ test('archify-render.js (/a/:id): anonymous private deny, owner allow, public al
 test('share.js GET (raw markdown): anonymous private deny, owner allow, public allow', async () => {
   const cookie = await ownerCookie();
 
-  mockRowFetch({ content: 'secret-raw-markdown', expires_at: '2999-01-01T00:00:00Z', is_public: false });
+  mockRowFetch({ owner_id: 1, content: 'secret-raw-markdown', expires_at: '2999-01-01T00:00:00Z', is_public: false });
   try {
     const res = responseRecorder();
     await shareHandler({ method: 'GET', query: { id: 'raw1234567' }, headers: {} }, res);
@@ -216,7 +216,7 @@ test('share.js GET (raw markdown): anonymous private deny, owner allow, public a
     assert.notEqual(res.body, 'secret-raw-markdown');
   } finally { restoreFetch(); }
 
-  mockRowFetch({ content: 'secret-raw-markdown', expires_at: '2999-01-01T00:00:00Z', is_public: false });
+  mockRowFetch({ owner_id: 1, content: 'secret-raw-markdown', expires_at: '2999-01-01T00:00:00Z', is_public: false });
   try {
     const res = responseRecorder();
     await shareHandler({ method: 'GET', query: { id: 'raw1234567' }, headers: { cookie } }, res);
@@ -224,7 +224,7 @@ test('share.js GET (raw markdown): anonymous private deny, owner allow, public a
     assert.equal(res.body, 'secret-raw-markdown');
   } finally { restoreFetch(); }
 
-  mockRowFetch({ content: 'public-raw-markdown', expires_at: '2999-01-01T00:00:00Z', is_public: true });
+  mockRowFetch({ owner_id: 1, content: 'public-raw-markdown', expires_at: '2999-01-01T00:00:00Z', is_public: true });
   try {
     const res = responseRecorder();
     await shareHandler({ method: 'GET', query: { id: 'raw1234567' }, headers: {} }, res);
@@ -234,14 +234,14 @@ test('share.js GET (raw markdown): anonymous private deny, owner allow, public a
 });
 
 test('diagram.js GET (raw SVG): anonymous private deny, public allow', async () => {
-  mockRowFetch({ svg: '<svg>secret</svg>', expires_at: '2999-01-01T00:00:00Z', is_public: false });
+  mockRowFetch({ owner_id: 1, svg: '<svg>secret</svg>', expires_at: '2999-01-01T00:00:00Z', is_public: false });
   try {
     const res = responseRecorder();
     await diagramHandler({ method: 'GET', query: { id: 'sv12345678' }, headers: {} }, res);
     assert.equal(res.statusCode, 404);
   } finally { restoreFetch(); }
 
-  mockRowFetch({ svg: '<svg>public</svg>', expires_at: '2999-01-01T00:00:00Z', is_public: true });
+  mockRowFetch({ owner_id: 1, svg: '<svg>public</svg>', expires_at: '2999-01-01T00:00:00Z', is_public: true });
   try {
     const res = responseRecorder();
     await diagramHandler({ method: 'GET', query: { id: 'sv12345678' }, headers: {} }, res);

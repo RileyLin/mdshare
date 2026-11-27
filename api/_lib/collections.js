@@ -8,9 +8,10 @@
 //    Markdown, visibility, keep or expiry.
 //  - A collection page costs a fixed number of queries however many documents, versions and
 //    translations it has: TOC 3 (rows, their families, read receipts), index 1. No query in a loop.
-import { isValidId, getRow } from './access.js';
-import { sbSelect, readsFor, translationRoot } from './activity.js';
-import { checkAuthAndRefresh } from '../auth.js';
+//  - Multi-user (2026-11-27): every read and write is `me`'s rows only (api/_lib/tenant.js), so a
+//    collection, its counts and its table of contents never include another user's documents.
+import { readsFor, translationRoot } from './activity.js';
+import { isValidId, ownerOf, readOwned, selectOwned, patchOwned } from './tenant.js';
 
 export const SLUG_PATTERN = /^[a-z0-9]([a-z0-9-]{0,46}[a-z0-9])?$/;
 export const SLUG_HINT = 'collection must be a slug: 1-48 lowercase letters, digits and hyphens, starting and ending with a letter or digit (e.g. "glm-study")';
@@ -37,14 +38,16 @@ const LANG_ORDER = { zh: 0, en: 1 };
 const COLS = 'id,title,created_at,expires_at,pinned,is_public,root_id,version_no,lang,translation_of,collection';
 
 // ---------- Metadata writes ----------
-// May this request change the metadata of document `id`? The owner: any document. A token (the
-// action's auth already required documents:write or documents:publish): only documents it created.
-// Anything else is the same 404 as a missing id.
+// May this request change the metadata of document `id`? Only a document of the requester's own
+// user (readOwned). The signed-in user: any of theirs. A token (the action's auth already required
+// documents:write or documents:publish): only documents it created. Anything else is the same 404
+// as a missing id.
 export async function canEditMeta(id, req, res, agentAuth) {
   if (!isValidId(id)) return { ok: false, status: 400, error: 'Missing or invalid id' };
-  const { row, dbError } = await getRow('mdshare_pastes', id, 'id,created_by_token,expires_at,pinned,root_id,version_no,lang,translation_of,collection');
+  const me = ownerOf(req, res, agentAuth || null);
+  const { row, dbError } = await readOwned('mdshare_pastes', me, id, 'id,created_by_token,expires_at,pinned,root_id,version_no,lang,translation_of,collection');
   if (dbError) return { ok: false, status: 503, error: 'Temporarily unavailable' };
-  if (row && checkAuthAndRefresh(req, res)) return { ok: true, row, owner: true };
+  if (row && me.via === 'cookie') return { ok: true, row, owner: true };
   if (row && agentAuth && agentAuth.valid && row.created_by_token === agentAuth.id) return { ok: true, row, owner: false };
   return { ok: false, status: 404, error: 'Not found, expired, or not editable with this credential' };
 }
@@ -56,24 +59,19 @@ export function familyFilter(row, tokenId) {
   return `or=(id.eq.${root},root_id.eq.${root})${tokenId ? `&created_by_token=eq.${encodeURIComponent(tokenId)}` : ''}`;
 }
 
-export async function patchMeta(filter, patch) {
+export async function patchMeta(me, filter, patch) {
   const keys = Object.keys(patch || {});
   if (!keys.length || keys.some((k) => !META_FIELDS.includes(k))) throw new Error(`patchMeta: only ${META_FIELDS.join(', ')} may be changed here`);
-  const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/mdshare_pastes?${filter}&select=id`, {
-    method: 'PATCH',
-    headers: { Authorization: 'Bearer ' + process.env.SUPABASE_SERVICE_KEY, apikey: process.env.SUPABASE_SERVICE_KEY, 'Content-Type': 'application/json', Prefer: 'return=representation' },
-    body: JSON.stringify(Object.fromEntries(keys.map((k) => [k, patch[k]]))),
-  });
-  if (!res.ok) return { dbError: true };
-  const rows = await res.json().catch(() => []);
-  return { ids: Array.isArray(rows) ? rows.map((r) => r.id) : [] };
+  const r = await patchOwned('mdshare_pastes', me, `${filter}&select=id`, Object.fromEntries(keys.map((k) => [k, patch[k]])));
+  if (!r.ok) return { dbError: true };
+  return { ids: r.rows.map((x) => x.id) };
 }
 
 // ---------- Reads ----------
-// Every collection with its number of entries (translation groups) and newest date. One query.
-export async function listCollections() {
+// Every collection of `me` with its number of entries (translation groups) and newest date. One query.
+export async function listCollections(me) {
   try {
-    const rows = (await sbSelect('mdshare_pastes', 'collection=not.is.null&select=collection,id,root_id,translation_of,created_at,expires_at,pinned&order=created_at.desc&limit=5000')).filter(alive);
+    const rows = (await selectOwned('mdshare_pastes', me, 'collection=not.is.null&select=collection,id,root_id,translation_of,created_at,expires_at,pinned&order=created_at.desc&limit=5000')).filter(alive);
     const by = new Map();
     for (const r of rows) {
       if (!SLUG_PATTERN.test(String(r.collection))) continue;
@@ -91,9 +89,9 @@ export async function listCollections() {
 // The table of contents of one collection: one entry per translation group (a zh/en pair is one
 // entry with both links), each language linking its newest live version (superseded versions are
 // hidden), in series order (the entry's first document first). Three queries however large.
-export async function collectionToc(slug) {
+export async function collectionToc(me, slug) {
   try {
-    const listed = (await sbSelect('mdshare_pastes', `collection=eq.${encodeURIComponent(slug)}&select=${COLS}&order=created_at.asc&limit=${TOC_LIMIT + 1}`)).filter(alive);
+    const listed = (await selectOwned('mdshare_pastes', me, `collection=eq.${encodeURIComponent(slug)}&select=${COLS}&order=created_at.asc&limit=${TOC_LIMIT + 1}`)).filter(alive);
     const truncated = listed.length > TOC_LIMIT;
     const rows = listed.slice(0, TOC_LIMIT);
     if (!rows.length) return { items: [], truncated: false };
@@ -102,7 +100,7 @@ export async function collectionToc(slug) {
     const roots = uniq(rows.map(rootOf).concat(groups)).filter(isValidId);
     const missingRoots = groups.filter((g) => !inCollection.has(g));
     const conds = [missingRoots.length ? `id.in.(${idList(missingRoots)})` : null, `root_id.in.(${idList(roots)})`, `translation_of.in.(${idList(groups)})`].filter(Boolean);
-    const family = await sbSelect('mdshare_pastes', `or=(${conds.join(',')})&select=${COLS}&limit=2000`);
+    const family = await selectOwned('mdshare_pastes', me, `or=(${conds.join(',')})&select=${COLS}&limit=2000`);
     const all = new Map();
     for (const r of rows.concat(family)) if (alive(r) && !all.has(r.id)) all.set(r.id, r);
 
@@ -135,7 +133,7 @@ export async function collectionToc(slug) {
       entries.push({ key, title: primary.link.title, id: primary.link.id, start, updated_at: links.reduce((m, l) => (String(l.created_at) > String(m) ? l.created_at : m), ''), kept: links.some((l) => l.kept), superseded, links });
     }
     const ids = entries.flatMap((e) => e.links.map((l) => l.id));
-    const reads = new Map((await readsFor(ids)).map((r) => [r.doc_id, r]));
+    const reads = new Map((await readsFor(me, ids)).map((r) => [r.doc_id, r]));
     for (const e of entries) {
       for (const l of e.links) { const r = reads.get(l.id); if (r) { l.opened = true; l.max_scroll = r.max_scroll || 0; } }
       e.opened = e.links.some((l) => l.opened);

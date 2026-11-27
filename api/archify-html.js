@@ -5,8 +5,10 @@
 // never gets access to the mdshare origin's cookies or APIs. Private unless the owner is
 // authenticated or the row has is_public: true — this route is fetched directly by the browser
 // (as the iframe's src), so it enforces visibility itself rather than relying only on the parent
-// page. No login UI here: the parent page (/a/:id) owns the sign-in flow.
-import { getRow, isVisible } from './_lib/access.js';
+// page. Private means: only the signed-in user who owns the row (access.js isVisible). No login UI
+// here: the parent page (/a/:id) owns the sign-in flow.
+import { isVisible } from './_lib/access.js';
+import { readForView } from './_lib/tenant.js';
 import { withErrors } from './_lib/events.js';
 
 // Force archify's editorial (warm-paper) preset + light theme as the default view, matching
@@ -32,7 +34,7 @@ async function handler(req, res) {
   const { id } = req.query;
   if (!id) return res.status(400).send('Missing id');
 
-  const { row, dbError } = await getRow('mdshare_archify', id, 'html,expires_at,is_public');
+  const { row, dbError } = await readForView('mdshare_archify', id, 'html,expires_at,is_public');
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   // Response depends on the auth cookie and is_public — never cache it.

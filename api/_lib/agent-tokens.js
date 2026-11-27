@@ -1,8 +1,9 @@
-// Owner-issued, per-agent bearer API credentials — additive and parallel to the owner
-// password/cookie flow in api/auth.js. Deliberately does NOT import from access.js or auth.js:
-// auth.js imports this file to expose the owner-only management endpoints, so importing either
-// of those back here would create a circular module graph. Keep this file dependency-free
-// (only 'crypto') on purpose.
+// User-issued, per-agent bearer API credentials — additive and parallel to the password/cookie
+// flow in api/auth.js. Deliberately does NOT import from access.js or auth.js: auth.js imports this
+// file to expose the token management endpoints, so importing either of those back here would
+// create a circular module graph. Database access goes through api/_lib/tenant.js (multi-user,
+// 2026-11-27): a token belongs to the user who created it (owner_id), resolves to that user, and
+// is listed and revoked only by them.
 //
 // Security model:
 //   - Raw token is generated with 256 bits of crypto-random entropy and a "mds_" prefix. It is
@@ -35,9 +36,8 @@
 // directly grants the broader capability) — see api/pin.js for the gate that checks this scope
 // before, not instead of, the own-row check.
 import { randomBytes, createHash } from 'crypto';
+import { findTokenByHash, touchToken, insertOwned, selectOwned, patchOwned } from './tenant.js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const TABLE = 'mdshare_agent_tokens';
 
 const TOKEN_PREFIX = 'mds_';
@@ -102,30 +102,15 @@ export function parseBearer(req) {
   return raw && raw.length ? raw : null;
 }
 
-// Best-effort attribution touch. Never awaited by callers, never throws, never blocks the
-// response — same "best effort" spirit as the in-memory rate limiters elsewhere in this repo.
-function touchLastUsed(id) {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return;
-  fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?id=eq.${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    headers: {
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      apikey: SUPABASE_KEY,
-      'Content-Type': 'application/json',
-      Prefer: 'return=minimal',
-    },
-    body: JSON.stringify({ last_used_at: new Date().toISOString() }),
-  }).catch(() => {});
-}
-
 /**
  * Resolves the Authorization header (if any) against the agent-token table.
  * Returns exactly one of:
  *   { present: false }                              — no Authorization header. Callers keep
  *                                                      their existing anonymous behavior, unchanged.
- *   { present: true, valid: true, id, name }         — a currently-usable token.
+ *   { present: true, valid: true, id, name, scopes, ownerId } — a currently-usable token; ownerId
+ *                                                      is the user it acts for (tenant.js tokenOwner).
  *   { present: true, valid: false, reason }          — header was present but unusable
- *     (malformed | not_found | revoked | expired | lookup_failed | lookup_error). Callers MUST
+ *     (malformed | not_found | revoked | expired | no_owner | lookup_failed | lookup_error). Callers MUST
  *     respond 401 and must NOT fall back to treating the request as anonymous.
  */
 export async function resolveAgentToken(req) {
@@ -136,28 +121,29 @@ export async function resolveAgentToken(req) {
   }
   const hash = sha256Hex(raw);
   try {
-    const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/${TABLE}?token_hash=eq.${encodeURIComponent(hash)}&select=id,name,expires_at,revoked_at,scopes`,
-      { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
-    );
-    if (!res.ok) return { present: true, valid: false, reason: 'lookup_failed' };
-    const rows = await res.json();
-    if (!Array.isArray(rows) || rows.length === 0) return { present: true, valid: false, reason: 'not_found' };
-    const row = rows[0];
+    const found = await findTokenByHash(hash);
+    if (found.error) return { present: true, valid: false, reason: 'lookup_failed' };
+    const row = found.row;
+    if (!row) return { present: true, valid: false, reason: 'not_found' };
     if (row.revoked_at) return { present: true, valid: false, reason: 'revoked' };
     if (row.expires_at && new Date(row.expires_at) < new Date()) return { present: true, valid: false, reason: 'expired' };
-    touchLastUsed(row.id);
+    // A token acts for exactly one user; an ownerless row (impossible after migration 013) fails closed.
+    if (!row.ownerId) return { present: true, valid: false, reason: 'no_owner' };
+    touchToken(row.id);
     // row.scopes is `null` for a legacy (pre-migration-006 or scopes-omitted-at-creation) token,
     // or an array for a scoped one — passed through verbatim; see isLegacyToken()/hasScope() above.
-    return { present: true, valid: true, id: row.id, name: row.name, scopes: row.scopes ?? null };
+    return { present: true, valid: true, id: row.id, name: row.name, scopes: row.scopes ?? null, ownerId: row.ownerId };
   } catch {
     return { present: true, valid: false, reason: 'lookup_error' };
   }
 }
 
-// --- Owner-only management operations (called only from api/auth.js, itself owner-cookie-gated) ---
+// --- Management operations (called only from api/auth.js, cookie-gated). `me` is the signed-in
+// user (tenant.js sessionOwner): a token is created for them and only they list or revoke it. ---
 
-export async function createToken({ name, expiresInDays, scopes, neverExpires = false }) {
+export async function createToken(me, { name, expiresInDays, scopes, neverExpires = false }) {
+  // Only a signed-in user mints tokens; a token can't mint another one.
+  if (!me || me.via !== 'cookie') throw new Error('createToken: needs the signed-in user (sessionOwner)');
   const id = 'tok_' + nanoid(16);
   const raw = generateRawToken();
   const hash = sha256Hex(raw);
@@ -170,33 +156,18 @@ export async function createToken({ name, expiresInDays, scopes, neverExpires = 
   // working for it), breaking the "omit scopes = old simple token" contract from the plan.
   const insertBody = { id, name, token_hash: hash, expires_at: expiresAt };
   if (Array.isArray(scopes)) insertBody.scopes = scopes;
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      apikey: SUPABASE_KEY,
-      'Content-Type': 'application/json',
-      Prefer: 'return=representation',
-    },
-    // Explicit field list — never a body spread. token_hash only, the raw value never touches
-    // storage at all (it exists only in this function's local variables and the response below).
-    body: JSON.stringify(insertBody),
-  });
-  if (!res.ok) throw new Error(`Supabase insert failed: ${res.status} — ${await res.text()}`);
-  const rows = await res.json().catch(() => []);
+  // Explicit field list — never a body spread. token_hash only, the raw value never touches
+  // storage at all (it exists only in this function's local variables and the response below).
+  // owner_id comes from `me` (insertOwned), never from the request.
+  const rows = await insertOwned(TABLE, me, insertBody, { returning: true });
   const created_at = rows?.[0]?.created_at || new Date().toISOString();
   // token: raw is returned to the caller exactly once, here. Callers must send it straight to the
   // HTTP response and never log it.
   return { id, name, token: raw, expires_at: expiresAt, created_at, scopes: Array.isArray(scopes) ? scopes : null };
 }
 
-export async function listTokens() {
-  const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/${TABLE}?select=id,name,created_at,expires_at,revoked_at,last_used_at,scopes&order=created_at.desc`,
-    { headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY } }
-  );
-  if (!res.ok) throw new Error(`Supabase list failed: ${res.status} — ${await res.text()}`);
-  const rows = await res.json();
+export async function listTokens(me) {
+  const rows = await selectOwned(TABLE, me, 'select=id,name,created_at,expires_at,revoked_at,last_used_at,scopes&order=created_at.desc');
   const now = new Date();
   // token_hash is never selected above, so there is nothing sensitive to strip — this map only
   // adds a derived, human-readable status (and normalizes scopes to null for a legacy row, same
@@ -208,31 +179,15 @@ export async function listTokens() {
   }));
 }
 
-export async function revokeToken(id) {
+export async function revokeToken(me, id) {
   if (!isValidTokenId(id)) return { ok: false, status: 400, error: 'Invalid id' };
-  const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/${TABLE}?id=eq.${encodeURIComponent(id)}&revoked_at=is.null`,
-    {
-      method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${SUPABASE_KEY}`,
-        apikey: SUPABASE_KEY,
-        'Content-Type': 'application/json',
-        Prefer: 'return=representation',
-      },
-      body: JSON.stringify({ revoked_at: new Date().toISOString() }),
-    }
-  );
-  if (!res.ok) return { ok: false, status: 502, error: await res.text() };
-  const rows = await res.json().catch(() => []);
-  if (Array.isArray(rows) && rows.length > 0) return { ok: true, id, already: false };
+  const result = await patchOwned(TABLE, me, `id=eq.${encodeURIComponent(id)}&revoked_at=is.null`, { revoked_at: new Date().toISOString() });
+  if (!result.ok) return { ok: false, status: 502, error: result.error };
+  if (result.rows.length > 0) return { ok: true, id, already: false };
 
-  // No row matched "id + not already revoked" — distinguish "already revoked" (idempotent ok)
-  // from "never existed" (404) with one more read.
-  const check = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?id=eq.${encodeURIComponent(id)}&select=id`, {
-    headers: { Authorization: `Bearer ${SUPABASE_KEY}`, apikey: SUPABASE_KEY },
-  });
-  const checkRows = check.ok ? await check.json().catch(() => []) : [];
-  if (Array.isArray(checkRows) && checkRows.length > 0) return { ok: true, id, already: true };
+  // No row of `me` matched "id + not already revoked" — distinguish "already revoked" (idempotent
+  // ok) from "never existed or someone else's" (the same 404) with one more scoped read.
+  const checkRows = await selectOwned(TABLE, me, `id=eq.${encodeURIComponent(id)}&select=id`).catch(() => []);
+  if (checkRows.length > 0) return { ok: true, id, already: true };
   return { ok: false, status: 404, error: 'Not found' };
 }

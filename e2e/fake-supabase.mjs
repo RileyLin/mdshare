@@ -14,7 +14,8 @@
 //   PATCH  /rest/v1/<table>?id=eq.<id>[&revoked_at=is.null]  (partial update; also doc_id=eq., id=in.())
 //   GET    ...&<col>=in.(a,b,c)  &<col>=gte.<iso>                (activity tables, migration 009)
 //   DELETE /rest/v1/<table>?id=eq.<id>
-//   POST   /rest/v1/rpc/mdshare_search {q, lim, skip}   (migration 011; same semantics as the SQL)
+//   POST   /rest/v1/rpc/mdshare_search_owned {p_owner, q, lim, skip}   (migrations 011 + 013; same
+//            semantics as the SQL; a call without an integer p_owner is a 404 like PostgREST's PGRST202)
 //   GET    ...&or=(id.in.(a,b),root_id.in.(a,b),translation_of.eq.x)  &collection=not.is.null  (migration 012)
 //
 // Anything that doesn't match one of the above shapes gets a 501 naming the unmatched
@@ -23,18 +24,22 @@
 import http from 'node:http';
 
 const KNOWN_TABLES = ['mdshare_pastes', 'mdshare_diagrams', 'mdshare_archify', 'mdshare_agent_tokens', 'mdshare_events', 'mdshare_reads', 'mdshare_feedback'];
+// Migration 013: every user table has owner_id. A seeded row defaults to user #1 (what the
+// migration's DEFAULT 1 backfilled); an insert from the app must name its owner explicitly
+// (api/_lib/tenant.js insertOwned always does), so a code path that forgets is a loud 400 here.
+const OWNER_TABLES = KNOWN_TABLES;
 
 // Column defaults mirroring migrations/001-009 *.sql. Only applied to a field the insert body did
 // not already set (the app always sets most of these explicitly on create; this only covers what
 // a real Postgres DEFAULT would silently fill in).
 const TABLE_DEFAULTS = {
-  mdshare_pastes: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, title: null, parent_id: null, root_id: null, version_no: null, origin: null, lang: null, translation_of: null, collection: null }),
-  mdshare_diagrams: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, markdown: null }),
-  mdshare_archify: () => ({ is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, ir: null, markdown: null }),
-  mdshare_agent_tokens: () => ({ created_at: new Date().toISOString(), revoked_at: null, last_used_at: null, scopes: null, expires_at: null }),
-  mdshare_events: () => ({ created_at: new Date().toISOString(), detail: null, commit: null }),
-  mdshare_reads: () => ({ first_opened_at: new Date().toISOString(), last_opened_at: new Date().toISOString(), open_count: 0, max_scroll: 0, active_seconds: 0 }),
-  mdshare_feedback: () => ({ created_at: new Date().toISOString(), status: 'open', resolved_in: null, resolved_at: null, quote: null, note: null, context: null }),
+  mdshare_pastes: () => ({ owner_id: 1, is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, title: null, parent_id: null, root_id: null, version_no: null, origin: null, lang: null, translation_of: null, collection: null }),
+  mdshare_diagrams: () => ({ owner_id: 1, is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, markdown: null }),
+  mdshare_archify: () => ({ owner_id: 1, is_public: false, pinned: false, created_at: new Date().toISOString(), created_by_token: null, ir: null, markdown: null }),
+  mdshare_agent_tokens: () => ({ owner_id: 1, created_at: new Date().toISOString(), revoked_at: null, last_used_at: null, scopes: null, expires_at: null }),
+  mdshare_events: () => ({ owner_id: 1, created_at: new Date().toISOString(), detail: null, commit: null }),
+  mdshare_reads: () => ({ owner_id: 1, first_opened_at: new Date().toISOString(), last_opened_at: new Date().toISOString(), open_count: 0, max_scroll: 0, active_seconds: 0 }),
+  mdshare_feedback: () => ({ owner_id: 1, created_at: new Date().toISOString(), status: 'open', resolved_in: null, resolved_at: null, quote: null, note: null, context: null }),
 };
 
 class UnsupportedQueryError extends Error {}
@@ -237,6 +242,11 @@ export async function startFakeSupabase({ port = 0 } = {}) {
     } catch {
       throw new UnsupportedQueryError(`POST body was not valid JSON: ${bodyText.slice(0, 200)}`);
     }
+    if (OWNER_TABLES.includes(table) && !Object.prototype.hasOwnProperty.call(body, 'owner_id')) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `fake-supabase: insert into ${table} without owner_id (the app must always set it, migration 013)` }));
+      return;
+    }
     const defaults = TABLE_DEFAULTS[table] ? TABLE_DEFAULTS[table]() : {};
     const row = { ...defaults, ...body };
     tables[table].push(row);
@@ -287,14 +297,20 @@ export async function startFakeSupabase({ port = 0 } = {}) {
     res.end(JSON.stringify(removed));
   }
 
-  // Mirrors migrations/011_search.sql: literal, case-insensitive substring of the trimmed q in
+  // Mirrors migrations/013 mdshare_search_owned (011's body + `owner_id = p_owner`): only p_owner's
+  // rows; literal, case-insensitive substring of the trimmed q in
   // title or content (LIKE wildcards escaped there, so a plain includes() here); expired unkept
   // rows excluded; title matches first, then newest, then id; lim 1-50, skip 0-1000; an excerpt
   // window around the first match; total = all matching rows.
   async function handleRpc(name, req, res) {
-    if (name !== 'mdshare_search') throw new UnsupportedQueryError(`unknown rpc: ${name}`);
+    if (name !== 'mdshare_search_owned') throw new UnsupportedQueryError(`unknown rpc: ${name} (the app searches only through mdshare_search_owned with p_owner)`);
     let args;
     try { args = JSON.parse((await readBody(req)) || '{}'); } catch { throw new UnsupportedQueryError('rpc body was not valid JSON'); }
+    if (!Number.isSafeInteger(args.p_owner)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ code: 'PGRST202', message: 'Could not find the function public.mdshare_search_owned without p_owner' }));
+      return;
+    }
     const q = String(args.q ?? '').trim();
     const lq = q.toLowerCase();
     const clamp = (v, d, lo, hi) => { const n = Number.isInteger(v) ? v : d; return Math.min(hi, Math.max(lo, n)); };
@@ -302,6 +318,7 @@ export async function startFakeSupabase({ port = 0 } = {}) {
     const skip = clamp(args.skip, 0, 0, 1000);
     const now = Date.now();
     const hits = !q || [...q].length > 200 ? [] : tables.mdshare_pastes
+      .filter((r) => r.owner_id === args.p_owner)
       .filter((r) => r.pinned === true || !r.expires_at || new Date(r.expires_at).getTime() > now)
       .map((r) => ({ r, tm: r.title != null && String(r.title).toLowerCase().includes(lq), pos: String(r.content || '').toLowerCase().indexOf(lq) }))
       .filter((h) => h.tm || h.pos >= 0)

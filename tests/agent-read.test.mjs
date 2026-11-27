@@ -11,7 +11,7 @@
 //  - the HTML page advertises the Markdown (rel=alternate) only once the viewer may read it
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { useFakeDb, responseRecorder } from './_fakedb.mjs';
+import { useFakeDb, responseRecorder, asUser } from './_fakedb.mjs';
 
 process.env.MDSHARE_PASSWORD = 'test-password';
 process.env.MDSHARE_HMAC_SECRET = 'test-hmac-secret';
@@ -33,7 +33,7 @@ async function ownerCookie() {
   return res.headers['set-cookie'].split(';')[0];
 }
 const COOKIE = await ownerCookie();
-const mint = async (scopes) => createToken({ name: `t-${Math.random()}`, expiresInDays: 1, scopes });
+const mint = async (scopes) => createToken(await asUser(1), { name: `t-${Math.random()}`, expiresInDays: 1, scopes });
 const bearer = (t) => ({ authorization: 'Bearer ' + t });
 
 async function get(handler, query, headers = {}) {

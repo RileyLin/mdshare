@@ -66,7 +66,7 @@ test('POST /api/share keep:true is honoured for the owner and for a valid token'
   const raw = 'mds_keep_test_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
   const inserted = [];
   global.fetch = router([
-    { method: 'GET', test: new RegExp(`mdshare_agent_tokens\\?token_hash=eq\\.${sha256Hex(raw)}`), respond: async () => ({ ok: true, json: async () => [{ id: 'tok_k', name: 'k', expires_at: '2999-01-01T00:00:00Z', revoked_at: null }] }) },
+    { method: 'GET', test: new RegExp(`mdshare_agent_tokens\\?token_hash=eq\\.${sha256Hex(raw)}`), respond: async () => ({ ok: true, json: async () => [{ id: 'tok_k', name: 'k', expires_at: '2999-01-01T00:00:00Z', revoked_at: null, owner_id: 1 }] }) },
     { method: 'POST', test: /mdshare_pastes$/, respond: async (u, o) => { inserted.push(JSON.parse(o.body)); return { ok: true }; } },
   ]);
   try {
@@ -125,13 +125,13 @@ test('PATCH /api/pin publish with keep:true keeps in the same write; invalid kee
 test('PATCH /api/pin unkeep gives a finite 7-day expiry; archify type hits its own table', async () => {
   const cookie = await ownerCookie();
   const calls = [];
-  global.fetch = router([{ method: 'PATCH', test: /rest\/v1\/mdshare_/, respond: async (u, o) => { calls.push({ url: String(u), body: JSON.parse(o.body) }); return { ok: true, text: async () => '' }; } }]);
+  global.fetch = router([{ method: 'PATCH', test: /rest\/v1\/mdshare_/, respond: async (u, o) => { calls.push({ url: String(u), body: JSON.parse(o.body) }); return { ok: true, json: async () => [], text: async () => '' }; } }]);
   try {
     const r = rec();
     const before = Date.now();
     await pinHandler({ method: 'PATCH', body: { id: 'abc1234567', type: 'archify', pinned: false }, headers: { cookie } }, r);
     assert.equal(r.statusCode, 200);
-    assert.match(calls[0].url, /mdshare_archify\?id=eq\.abc1234567/);
+    assert.match(calls[0].url, /mdshare_archify\?owner_id=eq\.1&id=eq\.abc1234567/);
     assert.equal(calls[0].body.pinned, false);
     const exp = new Date(calls[0].body.expires_at).getTime();
     assert.ok(exp > before + 6.9 * 864e5 && exp < before + 7.1 * 864e5);
@@ -150,7 +150,7 @@ test('PATCH /api/pin unkeep gives a finite 7-day expiry; archify type hits its o
 test('DELETE /api/diagram and /api/archify are owner-only', async () => {
   const cookie = await ownerCookie();
   const deleted = [];
-  global.fetch = router([{ method: 'DELETE', test: /rest\/v1\/mdshare_/, respond: async (u) => { deleted.push(String(u)); return { ok: true }; } }]);
+  global.fetch = router([{ method: 'DELETE', test: /rest\/v1\/mdshare_/, respond: async (u) => { deleted.push(String(u)); return { ok: true, json: async () => [] }; } }]);
   try {
     for (const [h, table] of [[diagramHandler, 'mdshare_diagrams'], [archifyHandler, 'mdshare_archify']]) {
       const anon = rec();
@@ -159,7 +159,7 @@ test('DELETE /api/diagram and /api/archify are owner-only', async () => {
       const own = rec();
       await h({ method: 'DELETE', query: { id: 'abc1234567' }, headers: { cookie } }, own);
       assert.equal(own.statusCode, 200);
-      assert.match(deleted.at(-1), new RegExp(`${table}\\?id=eq\\.abc1234567$`));
+      assert.match(deleted.at(-1), new RegExp(`${table}\\?owner_id=eq\\.1&id=eq\\.abc1234567$`));
     }
     assert.equal(deleted.length, 2);
   } finally { restore(); }
@@ -181,7 +181,7 @@ test('jsonForScript output can never close a <script> element', () => {
 });
 
 function rowFetch(row) { global.fetch = async () => ({ ok: true, json: async () => [row] }); }
-const ROW = { content: '# Title\n\n</script><img src=x onerror=alert(1)>\n', expires_at: '2999-01-01T00:00:00Z', is_public: true, pinned: false, created_at: '2026-11-01T00:00:00Z' };
+const ROW = { owner_id: 1, content: '# Title\n\n</script><img src=x onerror=alert(1)>\n', expires_at: '2999-01-01T00:00:00Z', is_public: true, pinned: false, created_at: '2026-11-01T00:00:00Z' };
 
 test('render.js embeds content as escaped JSON, never as raw markup', async () => {
   rowFetch(ROW);

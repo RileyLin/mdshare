@@ -9,7 +9,7 @@
 //  - a page costs a fixed number of queries: TOC 3, index 1, for 5 or 60 documents
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { useFakeDb, responseRecorder } from './_fakedb.mjs';
+import { useFakeDb, responseRecorder, asUser } from './_fakedb.mjs';
 
 process.env.MDSHARE_PASSWORD = 'test-password';
 process.env.MDSHARE_HMAC_SECRET = 'test-hmac-secret';
@@ -36,7 +36,7 @@ async function ownerCookie() {
 }
 const COOKIE = await ownerCookie();
 const OWNER = { cookie: COOKIE };
-const tok = async (scopes) => createToken({ name: `t-${Math.random()}`, expiresInDays: 1, scopes });
+const tok = async (scopes) => createToken(await asUser(1), { name: `t-${Math.random()}`, expiresInDays: 1, scopes });
 const bearer = (t) => ({ authorization: ['Bea', 'rer'].join('') + ' ' + (t.token || t) });
 
 async function call(handler, { method = 'GET', query = {}, body, headers = {} }) {

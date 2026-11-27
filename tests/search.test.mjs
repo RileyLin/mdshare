@@ -11,7 +11,7 @@
 //    appears in a URL (it travels in the rpc JSON body)
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { useFakeDb, responseRecorder } from './_fakedb.mjs';
+import { useFakeDb, responseRecorder, asUser } from './_fakedb.mjs';
 
 process.env.MDSHARE_PASSWORD = 'test-password';
 process.env.MDSHARE_HMAC_SECRET = 'test-hmac-secret';
@@ -34,7 +34,7 @@ async function ownerCookie() {
 }
 const COOKIE = await ownerCookie();
 const OWNER = { cookie: COOKIE };
-const tok = async (scopes) => (await createToken({ name: `t-${Math.random()}`, expiresInDays: 1, scopes })).token;
+const tok = async (scopes) => (await createToken(await asUser(1), { name: `t-${Math.random()}`, expiresInDays: 1, scopes })).token;
 const bearer = (t) => ({ authorization: 'Bearer ' + t });
 
 async function search(query, headers = {}) {
@@ -140,12 +140,13 @@ test('special characters are literal: no errors, no widened results', async () =
     assert.deepEqual(ids(r).sort(), want.sort(), `q=${JSON.stringify(q)} matches only the literal text`);
   }
   // The text never travels in a URL: only in the rpc JSON body.
-  const rpc = db.calls.filter((c) => c.path === '/rest/v1/rpc/mdshare_search');
+  const rpc = db.calls.filter((c) => c.path === '/rest/v1/rpc/mdshare_search_owned');
   assert.ok(rpc.length >= Object.keys(expect).length);
   for (const c of rpc) {
     assert.equal(c.method, 'POST');
     assert.equal(c.query, '', 'no query string on the rpc call');
-    assert.deepEqual(Object.keys(c.body).sort(), ['lim', 'q', 'skip']);
+    assert.deepEqual(Object.keys(c.body).sort(), ['lim', 'p_owner', 'q', 'skip']);
+    assert.equal(c.body.p_owner, 1, 'the owner session searches user #1 only');
   }
   assert.ok(!db.calls.some((c) => /ilike|or=/.test(decodeURIComponent(c.query || ''))), 'no filter string built from the text');
 });
