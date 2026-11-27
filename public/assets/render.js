@@ -916,6 +916,20 @@
     var cs = getComputedStyle(n);
     return (n.clientWidth || 0) - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
   }
+  // Do any two sankey node labels touch? (Three columns on a phone put a middle label against the
+  // last column's.)
+  function labelsOverlap(svg) {
+    var rs = Array.prototype.filter.call(svg.querySelectorAll('.node-labels text'), function (t) { return (t.textContent || '').trim(); })
+      .map(function (t) { return t.getBoundingClientRect(); });
+    for (var i = 0; i < rs.length; i++) {
+      for (var j = i + 1; j < rs.length; j++) {
+        var a = rs[i], b = rs[j];
+        // Same line and closer than ~half a word space reads as one label ("Generated 65 OK 60").
+        if (a.left < b.right + 8 && b.left < a.right + 8 && a.top < b.bottom - 2 && b.top < a.bottom - 2) return true;
+      }
+    }
+    return false;
+  }
   // The size mermaid drew a diagram at. Charts with useMaxWidth have width="100%" and their real
   // width in max-width / the viewBox; reading parseFloat("100%") as 100px hid every wide chart.
   function naturalWidth(svg) {
@@ -931,7 +945,8 @@
     if (!nodes.length) return;
     var go = function () {
       var m = window.mermaid;
-      try { var avail = 0; nodes.forEach(function (n) { avail = Math.max(avail, frameWidth(n)); }); m.initialize(mermaidConfig(avail)); } catch (e) { nodes.forEach(mermaidFail); return; }
+      var avail = 0;
+      try { nodes.forEach(function (n) { avail = Math.max(avail, frameWidth(n)); }); m.initialize(mermaidConfig(avail)); } catch (e) { nodes.forEach(mermaidFail); return; }
       nodes.forEach(function (n) { n.setAttribute('data-done', '1'); });
       // On a phone a left-to-right flowchart is drawn top-to-bottom instead, so it fits the
       // screen. View time only: data-src (what's stored, and what a failure shows) is unchanged.
@@ -953,14 +968,26 @@
           // A left-to-right flowchart that doesn't fit the column (it would shrink below 80%) is
           // redrawn top-to-bottom, at any screen width. View time only; data-src is unchanged.
           var retry = good.filter(function (n) {
-            if (n.getAttribute('data-turned') || !n.querySelector('svg') || isErrorSvg(n)) return false;
+            if (n.getAttribute('data-turned') || n.getAttribute('data-widened') || !n.querySelector('svg') || isErrorSvg(n)) return false;
+            // A sankey on a phone whose node labels collide is redrawn at mermaid's own 600px; it then
+            // keeps that size and scrolls inside its frame (see diagram-wide below).
+            if (n.querySelector('svg').getAttribute('aria-roledescription') === 'sankey' && avail < 520 && labelsOverlap(n.querySelector('svg'))) {
+              n.removeAttribute('data-processed'); n.setAttribute('data-widened', '1');
+              n.textContent = n.getAttribute('data-src') || '';
+              return true;
+            }
             var w = natural(n); if (!w || !n.clientWidth || w <= n.clientWidth / 0.8) return false;
             var src = n.getAttribute('data-src') || '', turned = turnFlow(src);
             if (turned === src) return false;
             n.removeAttribute('data-processed'); n.textContent = turned; n.setAttribute('data-turned', '1');
             return true;
           });
-          return retry.length ? draw(retry) : null;
+          if (!retry.length) return null;
+          if (retry.some(function (n) { return n.getAttribute('data-widened'); })) {
+            var cfg = mermaidConfig(avail); cfg.sankey.width = 600; cfg.sankey.height = 400;
+            try { m.initialize(cfg); } catch (e) { /* drawn with the first config; checked below */ }
+          }
+          return draw(retry);
         }).then(function () {
           good.forEach(function (n) {
             if (!n.querySelector('svg') || isErrorSvg(n)) { mermaidFail(n); return; }
