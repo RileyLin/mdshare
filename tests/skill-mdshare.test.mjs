@@ -35,6 +35,7 @@ function startFakeMdshare() {
   const tokens = new Map(); // token -> { userId }
   const entrySecretByToken = new Map(); // token -> current secret (for the entry_url)
   const docs = new Map(); // id -> { markdown, title, owner, is_public, kept }
+  const requests = []; // every request this fake server received, for 'no call was made' assertions
   let userSeq = 0;
   let docSeq = 0;
 
@@ -80,6 +81,7 @@ function startFakeMdshare() {
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://placeholder');
+    requests.push({ method: req.method, pathname: url.pathname, action: url.searchParams.get('action') });
     try {
       if (req.method === 'POST' && url.pathname === '/api/auth' && url.searchParams.get('action') === 'signup') {
         const body = await readBody(req);
@@ -174,6 +176,7 @@ function startFakeMdshare() {
       resolve({
         baseUrl: `http://127.0.0.1:${port}`,
         tokens,
+        requests,
         close: () => new Promise((r) => server.close(r)),
       });
     });
@@ -342,4 +345,55 @@ test('read/link/publish/search without a saved token fail with a clear "run sign
   ]) {
     await assert.rejects(call, /no saved mdshare token/);
   }
+});
+
+// G6 (compatibility acceptance criterion, multiuser-2026-11-27/COMPAT-CHECK.md): the beta skill
+// must never split the owner's mdshare account into a second one. If a token already exists
+// (MDSHARE_AGENT_TOKEN, MDSHARE_AGENT_TOKEN_FILE — the same env vars mcp/bin/mdshare-cli.mjs
+// reads — or this skill's own saved file), `signup` reuses it and never calls the signup API.
+test('signup: an existing MDSHARE_AGENT_TOKEN is reused; no sign-up request is made', async () => {
+  const tokenFile = join(tmpDir, 'token.json'); // deliberately empty/unused
+  const before = server.requests.length;
+  process.env.MDSHARE_AGENT_TOKEN = 'tok_owner_existing_12345';
+  try {
+    const result = await cmdSignup({}, tokenFile);
+    assert.equal(result.ok, true);
+    assert.equal(result.skipped, true);
+    assert.equal(result.source, 'MDSHARE_AGENT_TOKEN');
+    assert.equal(readSavedToken(tokenFile), 'tok_owner_existing_12345');
+  } finally {
+    delete process.env.MDSHARE_AGENT_TOKEN;
+  }
+  const signupCalls = server.requests.slice(before).filter((r) => r.pathname === '/api/auth' && r.action === 'signup');
+  assert.equal(signupCalls.length, 0, 'signup must not call POST /api/auth?action=signup when a token already exists');
+});
+
+test('signup: an existing MDSHARE_AGENT_TOKEN_FILE is reused; no sign-up request is made', async () => {
+  const tokenFile = join(tmpDir, 'token.json'); // this skill's own file, deliberately unused here
+  const ownerTokenFile = join(tmpDir, 'owner-token.txt');
+  writeFileSync(ownerTokenFile, 'tok_owner_from_file_67890\n');
+  const before = server.requests.length;
+  process.env.MDSHARE_AGENT_TOKEN_FILE = ownerTokenFile;
+  try {
+    const result = await cmdSignup({}, tokenFile);
+    assert.equal(result.skipped, true);
+    assert.equal(result.source, 'MDSHARE_AGENT_TOKEN_FILE');
+    assert.equal(readSavedToken(tokenFile), 'tok_owner_from_file_67890');
+  } finally {
+    delete process.env.MDSHARE_AGENT_TOKEN_FILE;
+  }
+  const signupCalls = server.requests.slice(before).filter((r) => r.pathname === '/api/auth' && r.action === 'signup');
+  assert.equal(signupCalls.length, 0);
+});
+
+test('signup: a token already saved by this skill is reused on a second call; no second sign-up request', async () => {
+  const tokenFile = join(tmpDir, 'token.json');
+  const first = await cmdSignup({}, tokenFile);
+  assert.equal(first.skipped, false);
+  const before = server.requests.length;
+  const second = await cmdSignup({}, tokenFile);
+  assert.equal(second.skipped, true);
+  assert.equal(second.source, 'token_file');
+  const signupCalls = server.requests.slice(before).filter((r) => r.pathname === '/api/auth' && r.action === 'signup');
+  assert.equal(signupCalls.length, 0, 'a second signup() with an already-saved token must not call the signup API again');
 });

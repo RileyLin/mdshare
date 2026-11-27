@@ -3,11 +3,21 @@
 Lets your OpenClaw agent turn a long reply (or one with a table or diagram) into a private web
 page instead of a wall of text in chat, and send you the link.
 
+## ⚠️ Not for the owner's own OpenClaw
+
+This skill is for the mdshare **multi-user beta**: separate people/agents getting their own
+mdshare accounts. Don't install it into an agent that already has the mdshare **owner's** own
+token (for example, one set up with `MDSHARE_AGENT_TOKEN` / `MDSHARE_AGENT_TOKEN_FILE` for
+`mcp/bin/mdshare-cli.mjs`). As a safety net the skill checks for an existing token first and
+reuses it instead of signing up again, so even an accidental install can't split that account in
+two — but the point of the beta is a separate account, so don't install it there on purpose.
+
 ## What it does
 
-- The first time it's used, your agent signs itself up for a free mdshare account (no invite
-  code needed) and sends you a **private entry link** once. That link is your personal sign-in
-  — keep it like a password.
+- The first time it's used, your agent checks whether it already has an mdshare token
+  (`MDSHARE_AGENT_TOKEN`, `MDSHARE_AGENT_TOKEN_FILE`, or its own saved file). If not, it signs
+  itself up for a free mdshare account (no invite code needed) and sends you a **private entry
+  link** once. That link is your personal sign-in — keep it like a password.
 - After that, whenever a reply would be long, or has a table or a diagram, the agent publishes
   it as a page and replies with just the link and a short summary.
 - Pages are **private by default** — only you (via the entry link, or the agent via its saved

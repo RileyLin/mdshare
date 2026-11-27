@@ -18,6 +18,12 @@
 //   MDSHARE_SKILL_TOKEN_FILE   token file path, default <state dir>/mdshare-skill/token.json
 //   MDSHARE_SKILL_TOKEN        use this token directly instead of reading the file (optional)
 //   OPENCLAW_STATE_DIR         base for the default state dir (default ~/.openclaw)
+//
+// Account-splitting guard: if this agent already has an mdshare token through
+// MDSHARE_AGENT_TOKEN or MDSHARE_AGENT_TOKEN_FILE — the same env vars the owner's
+// mcp/bin/mdshare-cli.mjs reads — `signup` detects it and reuses it instead of creating a
+// second account. This skill must never run in an OpenClaw that already holds the owner's
+// own mdshare token; see SKILL.md/README.md.
 import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -37,10 +43,7 @@ function fail(message) {
   throw new CliError(String(message));
 }
 
-// Reads the saved token. Returns '' (anonymous) when nothing is saved yet — callers that need
-// a token call requireToken() instead, which fails with a clear "run signup" message.
-export function readSavedToken(tokenFile = TOKEN_FILE) {
-  if (process.env.MDSHARE_SKILL_TOKEN) return process.env.MDSHARE_SKILL_TOKEN;
+function readTokenFileOnly(tokenFile) {
   try {
     const raw = readFileSync(tokenFile, 'utf8');
     const data = JSON.parse(raw);
@@ -48,6 +51,34 @@ export function readSavedToken(tokenFile = TOKEN_FILE) {
   } catch {
     return '';
   }
+}
+
+// Resolves a usable token in priority order, with its source, so the whole 'already have a
+// token -> reuse it, never sign up again' rule lives in one place:
+//   1. MDSHARE_SKILL_TOKEN        — explicit override for this skill
+//   2. MDSHARE_AGENT_TOKEN        — the owner's own token (mcp/bin/mdshare-cli.mjs convention)
+//   3. MDSHARE_AGENT_TOKEN_FILE   — a file holding the owner's own token (same convention)
+//   4. this skill's own saved token file
+// This is what keeps the skill from ever splitting the owner's mdshare account into a second
+// one: if any of 1-3 already resolves to a token, `signup` reuses it and never calls the API.
+function resolveToken(tokenFile) {
+  if (process.env.MDSHARE_SKILL_TOKEN) return { token: process.env.MDSHARE_SKILL_TOKEN, source: 'MDSHARE_SKILL_TOKEN' };
+  if (process.env.MDSHARE_AGENT_TOKEN) return { token: process.env.MDSHARE_AGENT_TOKEN, source: 'MDSHARE_AGENT_TOKEN' };
+  if (process.env.MDSHARE_AGENT_TOKEN_FILE) {
+    try {
+      const raw = readFileSync(process.env.MDSHARE_AGENT_TOKEN_FILE, 'utf8').trim();
+      if (raw) return { token: raw, source: 'MDSHARE_AGENT_TOKEN_FILE' };
+    } catch { /* missing/unreadable: fall through to the skill's own file */ }
+  }
+  const fileToken = readTokenFileOnly(tokenFile);
+  if (fileToken) return { token: fileToken, source: 'token_file' };
+  return { token: '', source: null };
+}
+
+// Reads the saved token. Returns '' (anonymous) when nothing is saved yet — callers that need
+// a token call requireToken() instead, which fails with a clear "run signup" message.
+export function readSavedToken(tokenFile = TOKEN_FILE) {
+  return resolveToken(tokenFile).token;
 }
 
 export function saveToken({ token, user_id, created_at }, tokenFile = TOKEN_FILE) {
@@ -127,13 +158,24 @@ function readStdin() {
 // --- commands ---
 
 export async function cmdSignup(flags = {}, tokenFile = TOKEN_FILE) {
+  // Account-splitting guard: an existing token (owner's MDSHARE_AGENT_TOKEN[_FILE], or this
+  // skill's own prior signup) means skip sign-up entirely — no network call — and reuse it.
+  const existing = resolveToken(tokenFile);
+  if (existing.token) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: 'an mdshare token already exists for this agent; sign-up was skipped so this never creates a second account',
+      source: existing.source,
+    };
+  }
   const body = {};
   if (flags.label) body.label = String(flags.label);
   const data = await requestJson('/api/auth?action=signup', { method: 'POST', body });
   if (!data.token || !data.entry_url) fail('signup response is missing token or entry_url');
   saveToken({ token: data.token, user_id: data.user_id }, tokenFile);
   // Deliberately omit `token` from the returned object: this is what the caller may print.
-  return { ok: true, user_id: data.user_id, entry_url: data.entry_url, guide: data.guide, token_file: tokenFile };
+  return { ok: true, skipped: false, user_id: data.user_id, entry_url: data.entry_url, guide: data.guide, token_file: tokenFile };
 }
 
 export async function cmdLink(flags = {}, tokenFile = TOKEN_FILE) {

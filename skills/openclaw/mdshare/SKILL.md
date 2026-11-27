@@ -28,6 +28,19 @@ All commands below run `{baseDir}/scripts/mdshare.mjs`, a dependency-free Node s
 uses global `fetch`). It talks to `MDSHARE_URL` (default
 `https://mdshare-rileylins-projects.vercel.app`).
 
+## ⚠️ Do not install this in the owner's own OpenClaw
+
+This skill is for the **mdshare multi-user beta** — separate agents/users signing up for their
+own mdshare accounts. It must never run in an agent that already holds the mdshare **owner's**
+own token (e.g. an OpenClaw set up with `MDSHARE_AGENT_TOKEN` or `MDSHARE_AGENT_TOKEN_FILE` from
+`mcp/bin/mdshare-cli.mjs`, or any agent publishing as the account the mdshare site itself belongs
+to). Installing it there would risk splitting that one account into two.
+
+As a safety net, `signup` always checks for an existing token first (`MDSHARE_AGENT_TOKEN`,
+`MDSHARE_AGENT_TOKEN_FILE`, or this skill's own saved file) and reuses it instead of creating a
+new account — so even a mistaken install never results in two accounts. But don't rely on that:
+if you're not sure whether this is a beta agent or the owner's own setup, ask before installing.
+
 ## Privacy — read this before using the skill
 
 - **What is sent, and to whom:** only the Markdown text you publish and an optional title go to
@@ -50,16 +63,23 @@ If no token is saved yet (check with `node {baseDir}/scripts/mdshare.mjs search 
 node {baseDir}/scripts/mdshare.mjs signup
 ```
 
-This calls `POST /api/auth?action=signup` (no invite code needed), and saves the returned agent
-token to a local config file — by default `<OpenClaw state dir>/mdshare-skill/token.json`
+This calls `POST /api/auth?action=signup` (no invite code needed) **only if no token already
+exists**. `signup` first checks, in order, `MDSHARE_AGENT_TOKEN`, `MDSHARE_AGENT_TOKEN_FILE`, and
+this skill's own saved file — if any already has a token, it reuses it and makes no network call
+(the JSON output has `"skipped": true` and a `source` field; there is no new `entry_url` to send,
+since no new account was created).
+
+Otherwise it saves the returned agent token to a local config file — by default
+`<OpenClaw state dir>/mdshare-skill/token.json`
 (`$OPENCLAW_STATE_DIR/mdshare-skill/token.json`, falling back to `~/.openclaw/mdshare-skill/token.json`),
 created with directory mode `700` and file mode `600`. The command's JSON output has an
 `entry_url` field — that is the user's **private** sign-in link (`/enter#<secret>`), good for
 opening their mdshare account from a browser (e.g. to delete documents or see what you've
 published). It does **not** contain the agent token.
 
-Send the user the `entry_url` **once**, right after signup, with one short line explaining what
-it is — for example:
+Only when a *new* account was actually created (`"skipped": false`), send the user the
+`entry_url` **once**, right after signup, with one short line explaining what it is — for
+example:
 
 > Here's your private mdshare link (keep it to yourself, like a password): `<entry_url>`
 
@@ -117,8 +137,8 @@ or to answer "what did you send me about X" without re-reading the whole convers
 
 ## Errors
 
-- **401** — the saved token is missing or invalid. Run `signup` again (this issues a new token;
-  it does not reuse an old one).
+- **401** — the saved token is missing or invalid. Delete the local token file and run `signup`
+  again — it will detect no existing token and issue a new one.
 - **403 "beta full"** — no signup seats are left. Tell the user and stop; don't retry in a loop.
 - **429** — rate limited; the error message includes how many seconds to wait. Wait that long
   before retrying the same command.
