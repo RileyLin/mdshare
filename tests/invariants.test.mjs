@@ -409,6 +409,15 @@ const fix1Mutations = [
   ['user-content-sandboxed', 'the sanitiser keeps foreignObject', 'api/_lib/svg-sanitize.js', (s) => s.replace("'script', 'foreignobject', ", "'script', ")],
   ['user-content-sandboxed', 'the sanitiser keeps on* handlers', 'api/_lib/svg-sanitize.js', (s) => s.replace("    if (local.startsWith('on')) continue;\n", '')],
   ['user-content-sandboxed', '/d/:id inlines the raw SVG', 'api/_lib/diagram-page.js', (s) => s.replace('<div class="svg-frame" id="svg-frame" role="img" aria-label="${esc(title)}"></div>', '<div class="svg-frame" id="svg-frame" role="img" aria-label="${esc(title)}">${row.svg}</div>')],
+  ['creates-limited', 'diagram creates lose the rate limit', 'api/diagram.js', (s) => s.replace('    if (!rate.allowed) {\n', '    if (false) {\n')],
+  ['creates-limited', 'archify checks the rate limit after the insert', 'api/archify.js', (s) => s.replace('    const rate = CREATE_LIMIT.check(clientIp(req));\n', '').replace('    const base = baseUrl(req);\n    return res.status(200).json({ url: `${base}/a/', '    const rate = CREATE_LIMIT.check(clientIp(req)); void rate;\n    const base = baseUrl(req);\n    return res.status(200).json({ url: `${base}/a/')],
+  ['creates-limited', 'the diagram limit grows', 'api/diagram.js', (s) => s.replace('rateLimiter({ limit: CREATES_PER_HOUR,', 'rateLimiter({ limit: 5000,')],
+  ['creates-limited', 'diagram creates lose the size cap', 'api/diagram.js', (s) => s.replace('if (svg.length > MAX_PASTE_SIZE || ', 'if (')],
+  ['creates-limited', 'anonymous archify gets the signed-in ceiling', 'api/archify.js', (s) => s.replace('const maxSize = ownerOf(req, res, agentAuth) ? MAX_ARCHIFY_SIZE : MAX_PASTE_SIZE;', 'const maxSize = MAX_ARCHIFY_SIZE;')],
+  ['creates-limited', 'the paste size cap grows', 'api/_lib/content.js', (s) => s.replace('export const MAX_PASTE_SIZE = 100000;', 'export const MAX_PASTE_SIZE = 10000000;')],
+  ['creates-limited', 'creatorOf ignores MDSHARE_ANON_CREATE', 'api/_lib/tenant.js', (s) => s.replace("  if (!anonCreateAllowed()) throw new Refused(401, 'Sign up or sign in to create documents.', { extra: ANON_CREATE_OFF });\n", '')],
+  ['creates-limited', 'the anonymous-create switch defaults to off', 'api/_lib/tenant.js', (s) => s.replace("process.env.MDSHARE_ANON_CREATE ?? 'on'", "process.env.MDSHARE_ANON_CREATE ?? 'off'")],
+  ['creates-limited', 'a Refused answer drops the hint', 'api/_lib/events.js', (s) => s.replace('json({ ...(err.extra || {}), error: err.message,', 'json({ error: err.message,')],
   ['user-content-sandboxed', '/d/:id inserts the SVG without DOMPurify', 'public/assets/app.js', (s) => s.replace('frame.innerHTML = DOMPurify.sanitize(svg, {', 'frame.innerHTML = (svg, {'), true],
 ];
 for (const [id, label, file, fn, withPublic] of fix1Mutations) {

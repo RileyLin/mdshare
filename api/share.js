@@ -10,7 +10,7 @@ import { sendRawMarkdown, authHint, HINTS } from './_lib/raw.js';
 import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
 import { randomBytes } from 'crypto';
-import { wantsKeep, expiryFields, baseUrl, guideUrl, FORMAT_GUIDE_PATH } from './_lib/content.js';
+import { wantsKeep, expiryFields, baseUrl, guideUrl, FORMAT_GUIDE_PATH, CREATES_PER_HOUR, MAX_PASTE_SIZE } from './_lib/content.js';
 import { withErrors } from './_lib/events.js';
 import { lintMarkdown } from './_lib/lint.js';
 import { canUseParent, canLinkTranslation, versionFields, translationFields, parseLang, detectLang } from './_lib/activity.js';
@@ -21,9 +21,8 @@ import { creatorOf, ownerOf, sessionOwner, insertOwned, patchOwned, deleteOwned 
 // Vercel functions can be cold-started, so this is "best effort" rate limiting.
 // For a personal tool this is more than sufficient. Each function instance tracks its own map.
 const rateLimitMap = new Map(); // ip -> { count, resetAt }
-const RATE_LIMIT = 50;         // max 50 pastes per IP per hour
+const RATE_LIMIT = CREATES_PER_HOUR; // max 50 pastes per IP per hour (api/_lib/content.js)
 const RATE_WINDOW = 60 * 60 * 1000; // 1 hour in ms
-const MAX_PASTE_SIZE = 100000; // 100KB max per paste
 
 function checkRateLimit(ip) {
   const now = Date.now();

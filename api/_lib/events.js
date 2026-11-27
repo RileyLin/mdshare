@@ -40,7 +40,7 @@ export function withErrors(route, handler) {
       if (err instanceof Refused) {
         if (res && !res.headersSent) {
           if (err.retryAfter) res.setHeader('Retry-After', String(err.retryAfter));
-          res.status(err.status).json({ error: err.message, ...(err.retryAfter ? { retry_after: err.retryAfter } : {}) });
+          res.status(err.status).json({ ...(err.extra || {}), error: err.message, ...(err.retryAfter ? { retry_after: err.retryAfter } : {}) });
         }
         return undefined;
       }

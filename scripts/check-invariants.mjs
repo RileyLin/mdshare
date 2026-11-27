@@ -847,7 +847,7 @@ const checks = [
       if (!/jsonInit\('PATCH', \{ entry_hash: hash, sessions_valid_after: now \}\)/.test(t)) errs.push('api/_lib/tenant.js: rotateEntry() also sets sessions_valid_after, so sessions from the old link end.');
       if (!/if \(found\.row && found\.row\.owner_id !== SITE_OWNER_UID && !\(await userActive\(found\.row\.owner_id\)\)\) return \{ row: null \};/.test(body('readForView'))) errs.push("api/_lib/tenant.js: readForView() answers { row: null } for a row whose owner isn't userActive() (public rows too).");
       if (!/const ownerDisabled = isUid\(ownerId\) && ownerId !== SITE_OWNER_UID && !\(await userActive\(ownerId\)\);/.test(body('findTokenByHash'))) errs.push('api/_lib/tenant.js: findTokenByHash() reports ownerDisabled from userActive().');
-      if (!/if \(sessionRejected\(req\)\) throw new Refused\(403, 'This account is disabled\.'\);\n\s*return ANON_CREATE;/.test(body('creatorOf'))) errs.push("api/_lib/tenant.js: creatorOf() refuses a rejected session before falling back to the anonymous create.");
+      if (!/if \(sessionRejected\(req\)\) throw new Refused\(403, 'This account is disabled\.'\);\n[^\n]*\n?\s*return ANON_CREATE;/.test(body('creatorOf'))) errs.push("api/_lib/tenant.js: creatorOf() refuses a rejected session before falling back to the anonymous create.");
       const at = read('api/_lib/agent-tokens.js');
       const gate = at.indexOf("if (row.ownerDisabled) return { present: true, valid: false, reason: 'disabled' };");
       if (gate < 0 || gate > at.indexOf('touchToken(row.id);')) errs.push("api/_lib/agent-tokens.js: resolveAgentToken() fails a token of a disabled user (`if (row.ownerDisabled) return { present: true, valid: false, reason: 'disabled' };`) before touchToken().");
@@ -892,6 +892,35 @@ const checks = [
         const app = read('public/assets/app.js');
         if (!/frame\.innerHTML = DOMPurify\.sanitize\(svg, \{ USE_PROFILES: \{ svg: true, svgFilters: true \}, FORBID_TAGS: \['script', 'foreignObject'\]/.test(app)) errs.push("public/assets/app.js: the diagram SVG goes into the page only via `frame.innerHTML = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true }, FORBID_TAGS: ['script', 'foreignObject'], ...})`.");
       }
+      return errs;
+    },
+  },
+  {
+    id: 'creates-limited',
+    why: 'ADV-MU-B 4 (2026-11-27): anonymous POST /api/diagram and /api/archify had no rate limit and no size cap and every row went to user #1, so anyone could fill the owner\'s library. All three create routes: 50 per IP an hour and the paste size cap (archify: the cap without an account); MDSHARE_ANON_CREATE=off refuses every anonymous create in creatorOf().',
+    run() {
+      const errs = [];
+      const c = read('api/_lib/content.js');
+      if (!/export const CREATES_PER_HOUR = 50;/.test(c) || !/export const MAX_PASTE_SIZE = 100000;/.test(c)) errs.push('api/_lib/content.js: keep `export const CREATES_PER_HOUR = 50;` and `export const MAX_PASTE_SIZE = 100000;`.');
+      const share = read('api/share.js');
+      if (!/const RATE_LIMIT = CREATES_PER_HOUR;/.test(share) || !/const rateCheck = checkRateLimit\(ip\);\n[\s\S]*?if \(!rateCheck\.allowed\) \{/.test(share)) errs.push('api/share.js: the POST checks checkRateLimit(ip) with RATE_LIMIT = CREATES_PER_HOUR.');
+      if (!/if \(markdown\.length > MAX_PASTE_SIZE\) \{/.test(share)) errs.push('api/share.js: refuse markdown longer than MAX_PASTE_SIZE (413).');
+      for (const f of ['api/diagram.js', 'api/archify.js']) {
+        const code = read(f);
+        if (!/const CREATE_LIMIT = rateLimiter\(\{ limit: CREATES_PER_HOUR, windowMs: 60 \* 60 \* 1000 \}\);/.test(code)) errs.push(`${f}: keep \`const CREATE_LIMIT = rateLimiter({ limit: CREATES_PER_HOUR, windowMs: 60 * 60 * 1000 });\`.`);
+        const post = code.slice(code.indexOf("if (req.method === 'POST') {"), code.indexOf("if (req.method === 'DELETE') {"));
+        const rate = post.search(/const rate = CREATE_LIMIT\.check\(clientIp\(req\)\);\n[\s\S]*?if \(!rate\.allowed\) \{\n\s*res\.setHeader\('Retry-After'/);
+        const insert = post.indexOf('await supabaseSet(');
+        if (rate < 0 || insert < 0 || rate > insert) errs.push(`${f}: the POST checks \`const rate = CREATE_LIMIT.check(clientIp(req)); if (!rate.allowed) { res.setHeader('Retry-After', ...); return 429 }\` before it creates anything.`);
+      }
+      if (!/if \(svg\.length > MAX_PASTE_SIZE \|\| \(typeof markdown === 'string' && markdown\.length > MAX_PASTE_SIZE\)\) \{\n\s*return res\.status\(413\)/.test(read('api/diagram.js'))) errs.push('api/diagram.js: refuse an SVG or Markdown longer than MAX_PASTE_SIZE with 413.');
+      const arch = read('api/archify.js');
+      if (!/const maxSize = ownerOf\(req, res, agentAuth\) \? MAX_ARCHIFY_SIZE : MAX_PASTE_SIZE;\n\s*if \(size > maxSize\) \{\n\s*return res\.status\(413\)/.test(arch)) errs.push('api/archify.js: an anonymous create is capped at MAX_PASTE_SIZE, a signed-in one at MAX_ARCHIFY_SIZE (413).');
+      const t = read('api/_lib/tenant.js');
+      const cr = (/export function creatorOf\(req, res, agentAuth\) \{\n([\s\S]*?)\n\}/.exec(t) || [])[1] || '';
+      if (!/if \(!anonCreateAllowed\(\)\) throw new Refused\(401, [^\n]*\{ extra: ANON_CREATE_OFF \}\);\n\s*return ANON_CREATE;/.test(cr)) errs.push("api/_lib/tenant.js: creatorOf() throws `new Refused(401, ..., { extra: ANON_CREATE_OFF })` when !anonCreateAllowed(), right before `return ANON_CREATE;`.");
+      if (!/return String\(process\.env\.MDSHARE_ANON_CREATE \?\? 'on'\)\.trim\(\)\.toLowerCase\(\) !== 'off';/.test(t)) errs.push("api/_lib/tenant.js: anonCreateAllowed() is false only for MDSHARE_ANON_CREATE=off (default on).");
+      if (!/res\.status\(err\.status\)\.json\(\{ \.\.\.\(err\.extra \|\| \{\}\), error: err\.message/.test(read('api/_lib/events.js'))) errs.push('api/_lib/events.js: a Refused answer includes err.extra (the sign-up hint).');
       return errs;
     },
   },

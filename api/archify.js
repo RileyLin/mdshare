@@ -14,12 +14,16 @@
 // markdown (the explainer rendered below), ir (source of truth, re-renderable), kind, title.
 
 import { randomBytes } from 'crypto';
-import { wantsKeep, expiryFields, baseUrl, FORMAT_GUIDE_PATH } from './_lib/content.js';
+import { wantsKeep, expiryFields, baseUrl, FORMAT_GUIDE_PATH, CREATES_PER_HOUR, MAX_PASTE_SIZE, MAX_ARCHIFY_SIZE } from './_lib/content.js';
+import { rateLimiter, clientIp } from './_lib/rate-limit.js';
 import { isVisible, setPrivacyHeaders, setUserContentHeaders, tokenCanRead } from './_lib/access.js';
-import { creatorOf, sessionOwner, readForView, insertOwned, deleteOwned } from './_lib/tenant.js';
+import { creatorOf, ownerOf, sessionOwner, readForView, insertOwned, deleteOwned } from './_lib/tenant.js';
 import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
 import { withErrors } from './_lib/events.js';
+// Creates per IP and hour, like POST /api/share (ADV-MU-B 4: diagram and archify had no limit).
+const CREATE_LIMIT = rateLimiter({ limit: CREATES_PER_HOUR, windowMs: 60 * 60 * 1000 });
+
 function nanoid(size = 10) {
   return randomBytes(size).toString('base64url').slice(0, size);
 }
@@ -60,6 +64,14 @@ async function handler(req, res) {
       return res.status(403).json({ error: 'Token missing documents:write scope' });
     }
 
+    const rate = CREATE_LIMIT.check(clientIp(req));
+    res.setHeader('X-RateLimit-Limit', String(CREATE_LIMIT.limit));
+    res.setHeader('X-RateLimit-Remaining', String(rate.remaining));
+    if (!rate.allowed) {
+      res.setHeader('Retry-After', String(rate.retryAfter));
+      return res.status(429).json({ error: `Rate limit exceeded. Max ${CREATE_LIMIT.limit} archifys per hour.`, retry_after: rate.retryAfter });
+    }
+
     let body = parseJsonBody(req.body);
 
     const kind = body?.kind;
@@ -76,6 +88,13 @@ async function handler(req, res) {
     if (typeof ir === 'string') { try { ir = JSON.parse(ir); } catch { ir = null; } }
 
     const markdown = typeof body?.markdown === 'string' ? body.markdown : null;
+    // Size: an anonymous create gets the paste cap; a signed-in one (token or session) the archify
+    // ceiling (stored archify pages are ~600 KB). Counted over html + markdown + the IR's JSON.
+    const size = html.length + (markdown ? markdown.length : 0) + (ir == null ? 0 : JSON.stringify(ir).length);
+    const maxSize = ownerOf(req, res, agentAuth) ? MAX_ARCHIFY_SIZE : MAX_PASTE_SIZE;
+    if (size > maxSize) {
+      return res.status(413).json({ error: `Archify diagram too large. Max ${maxSize / 1000}KB${maxSize === MAX_PASTE_SIZE ? ' without an account (sign up or send a Bearer token for more)' : ''}.` });
+    }
     const title = body?.title || ir?.meta?.title || 'Diagram';
     const ttl = Math.min(parseInt(body?.ttl) || 604800, 2592000); // default 7d, max 30d
     const id = nanoid();

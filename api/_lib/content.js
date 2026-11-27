@@ -3,6 +3,14 @@
 import { checkAuthAndRefresh } from './session.js';
 
 export const KEEP_UNTIL = '2099-12-31T00:00:00Z';
+
+// Create limits shared by the three create routes (ADV-MU-B 4, 2026-11-27): per IP and per hour,
+// and the size of one paste or diagram (characters of its text fields). Archify HTML is a whole
+// self-contained page (~600 KB each in production), so only an anonymous archify create is held to
+// MAX_PASTE_SIZE; a signed-in one may be up to MAX_ARCHIFY_SIZE.
+export const CREATES_PER_HOUR = 50;
+export const MAX_PASTE_SIZE = 100000;
+export const MAX_ARCHIFY_SIZE = 2000000;
 export const FORMAT_GUIDE_PATH = '/llms.txt';
 
 // `keep: true` on create makes the item never expire. Honoured only for a signed-in user (cookie;

@@ -45,10 +45,11 @@ export const ACCOUNTS = ['userActive', 'gateSession', 'countSeats', 'createUser'
 // A request refused for a reason the caller should see (a quota, a disabled account, owner-only):
 // withErrors() (api/_lib/events.js) answers it with `status` and `message`, never a 500.
 export class Refused extends Error {
-  constructor(status, message, { retryAfter } = {}) {
+  constructor(status, message, { retryAfter, extra } = {}) {
     super(message);
     this.status = status;
     this.retryAfter = retryAfter;
+    this.extra = extra; // more fields for the JSON answer (a hint), never secrets
   }
 }
 
@@ -88,11 +89,23 @@ export function ownerOf(req, res, agentAuth) {
   return sessionOwner(req, res);
 }
 
+// MDSHARE_ANON_CREATE=off (read per request; default on, as before): every create without a token
+// or session (paste, diagram, archify) is a 401 with a hint to sign up, instead of a row filed under
+// user #1 (ADV-MU-B 4). Any other value, or unset, keeps anonymous creates.
+export function anonCreateAllowed() {
+  return String(process.env.MDSHARE_ANON_CREATE ?? 'on').trim().toLowerCase() !== 'off';
+}
+const ANON_CREATE_OFF = {
+  hint: 'Creating without an account is turned off on this site. Sign up for a free account (POST /api/auth?action=signup returns an agent token), then send Authorization: Bearer <token>; or sign in in a browser.',
+  signup: '/api/auth?action=signup',
+};
+
 // A disabled user's rejected session must not turn into an anonymous create filed under user #1.
 export function creatorOf(req, res, agentAuth) {
   const me = ownerOf(req, res, agentAuth);
   if (me) return me;
   if (sessionRejected(req)) throw new Refused(403, 'This account is disabled.');
+  if (!anonCreateAllowed()) throw new Refused(401, 'Sign up or sign in to create documents.', { extra: ANON_CREATE_OFF });
   return ANON_CREATE;
 }
 
