@@ -153,13 +153,26 @@ test('checkAuthAndRefresh silently upgrades a valid legacy cookie to a fresh v2 
   assert.equal(verifySessionToken(decodeURIComponent(freshValue), Math.floor(beforeCutoff.getTime() / 1000)), true);
 });
 
-test('checkAuthAndRefresh does not re-issue a cookie for an already-v2 session', () => {
+// Multi-user (2026-11-27, G3 "no logout"): a v2 session is user #1 and is silently re-issued as a
+// v3 cookie for uid 1 with the same expiry; a v3 session is never re-issued.
+test('checkAuthAndRefresh upgrades a v2 session to v3 uid 1 with the same expiry, and leaves v3 alone', async () => {
+  const { verifyUserSession, signUserSession } = await import('../api/_lib/session.js');
   const now = Math.floor(Date.now() / 1000);
   const token = signSessionToken(now + 1000);
-  const req = reqWithCookie(token);
   const res = responseRecorder();
-  assert.equal(checkAuthAndRefresh(req, res), true);
-  assert.equal(res.headers['set-cookie'], undefined);
+  assert.equal(checkAuthAndRefresh(reqWithCookie(token), res), true);
+  const setCookie = res.headers['set-cookie'];
+  assert.ok(setCookie, 'a v2 cookie is upgraded on the same response');
+  const value = decodeURIComponent(setCookie.split(';')[0].split('=')[1]);
+  assert.match(value, new RegExp(`^v3\\.1\\.${now + 1000}\\.`), 'uid 1, the same expiry');
+  assert.equal(verifyUserSession(value, now), 1);
+  const maxAge = Number(/Max-Age=(\d+)/.exec(setCookie)[1]);
+  assert.ok(maxAge <= 1000 && maxAge >= 998, `the remaining lifetime, not a fresh 180 days (Max-Age=${maxAge})`);
+  assert.match(setCookie, /HttpOnly/);
+  const v3 = responseRecorder();
+  assert.equal(checkAuthAndRefresh(reqWithCookie(signUserSession(1, now + 1000)), v3), true);
+  assert.equal(v3.headers['set-cookie'], undefined, 'a v3 session is not re-issued');
+  assert.equal(checkAuthAndRefresh(reqWithCookie(token)), true, 'without res: same answer, no side effect');
 });
 
 test('checkAuthAndRefresh with no res behaves exactly like isAuthenticated (no throw, same boolean)', () => {

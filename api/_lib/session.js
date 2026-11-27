@@ -6,7 +6,8 @@
 // rotating MDSHARE_PASSWORD still invalidates every session):
 //   v3  "v3.<uid>.<expEpochSeconds>.<hmacHex>"   (current; multi-user)
 //       hmacHex = HMAC(HMAC_KEY, "mdshare-session:v3:" + uid + ":" + exp + ":" + computeToken(PASSWORD))
-//   v2  "<expEpochSeconds>.<hmacHex>"            (single-owner era; still valid, means user #1)
+//   v2  "<expEpochSeconds>.<hmacHex>"            (single-owner era; still valid, means user #1, and is
+//                                                 silently re-issued as v3 uid 1, same expiry)
 //       hmacHex = HMAC(HMAC_KEY, "mdshare-session:v2:" + exp + ":" + computeToken(PASSWORD))
 //   legacy  bare computeToken(PASSWORD) hex, accepted only before LEGACY_COOKIE_CUTOFF (user #1).
 // The expiry lives in the token itself and is checked on every request.
@@ -107,10 +108,10 @@ export function verifyLegacyCookie(cookieValue, password = PASSWORD, hmacKey = H
   return safeHexEqual(cookieValue, expected);
 }
 
-export function buildSessionCookieHeader(token) {
+export function buildSessionCookieHeader(token, maxAge = COOKIE_MAX_AGE) {
   return [
     `${COOKIE_NAME}=${encodeURIComponent(token)}`,
-    `Max-Age=${COOKIE_MAX_AGE}`,
+    `Max-Age=${maxAge}`,
     'Path=/',
     'HttpOnly',
     'SameSite=Lax',
@@ -132,7 +133,15 @@ export function sessionUid(req, res, now = new Date()) {
   const nowSeconds = Math.floor(now.getTime() / 1000);
   const uid = verifyUserSession(token, nowSeconds);
   if (uid) return uid;
-  if (verifySessionToken(token, nowSeconds)) return OWNER_UID;
+  if (verifySessionToken(token, nowSeconds)) {
+    // A single-owner (v2) session is user #1. When `res` is given it is silently re-issued as v3 for
+    // uid 1 with the SAME expiry, so nobody is logged out and no session is lengthened (G3).
+    if (res && typeof res.setHeader === 'function') {
+      const exp = Number(token.slice(0, token.indexOf('.')));
+      res.setHeader('Set-Cookie', buildSessionCookieHeader(signUserSession(OWNER_UID, exp), exp - nowSeconds));
+    }
+    return OWNER_UID;
+  }
   if (now < LEGACY_COOKIE_CUTOFF && verifyLegacyCookie(token)) {
     if (res && typeof res.setHeader === 'function') res.setHeader('Set-Cookie', buildSessionCookieHeader(signSessionToken(nowSeconds + COOKIE_MAX_AGE)));
     return OWNER_UID;
