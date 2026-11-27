@@ -2,11 +2,11 @@
    login, error pages, diagram and archify shells). Warm paper + ink, one accent, restrained motion. */
 :root {
   --paper: #f8f5ef; --paper-2: #f1ece2; --card: #fffdf9; --card-2: #fbf8f2;
-  --ink: #1f1b16; --ink-2: #4a4339; --ink-3: #857b6c; --ink-4: #b3a999;
+  --ink: #1f1b16; --ink-2: #4a4339; --ink-3: #726a5d; --ink-4: #b3a999;
   --line: #e6dfd2; --line-2: #d9d0c0;
   --accent: #b4532a; --accent-ink: #8f3d1b; --accent-soft: #f6e6dc; --accent-line: #ebc9b5;
-  --ok: #3f7d4e; --ok-soft: #e4f0e4; --ok-line: #c3dcc4;
-  --warn: #a86a12; --warn-soft: #fbefd9; --warn-line: #efd5a6;
+  --ok: #3c774a; --ok-soft: #e4f0e4; --ok-line: #c3dcc4;
+  --warn: #996110; --warn-soft: #fbefd9; --warn-line: #efd5a6;
   --bad: #a8382f; --bad-soft: #f8e3e0; --bad-line: #ecc2bc;
   --info: #3d6b9a; --info-soft: #e5edf6; --info-line: #c4d6ea;
   --code-bg: #211c16; --code-ink: #ece3d4; --code-line: #352e25;
@@ -17,6 +17,7 @@
   --head: 'DM Sans', 'Noto Serif SC', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', system-ui, sans-serif;
   --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
   --radius: 12px; --zoom: 1; --measure: 720px;
+  --leading: 1; --leading-cjk: 1;
   --ease: cubic-bezier(.2, .7, .2, 1);
   color-scheme: light;
 }
@@ -34,12 +35,33 @@
   --shadow-2: 0 22px 50px -20px rgba(0, 0, 0, .7), 0 2px 6px rgba(0, 0, 0, .3);
   color-scheme: dark;
 }
+/* Paper: a warm sepia reading surface (light family: Mermaid and everything else treat it as light).
+   Every text colour below passes WCAG AA (4.5:1) on the surfaces it is used on. */
+:root[data-theme="paper"] {
+  --paper: #f4ecdb; --paper-2: #ebe1cb; --card: #faf4e7; --card-2: #f6efdf;
+  --ink: #2a2116; --ink-2: #4a3d2c; --ink-3: #6b5c47; --ink-4: #a08e73;
+  --line: #e0d4bb; --line-2: #d2c3a5;
+  --accent: #a54a22; --accent-ink: #853818; --accent-soft: #f1dfc8; --accent-line: #e3c3a3;
+  --ok: #3a6f43; --ok-soft: #e3e7cd; --ok-line: #c5cfa8;
+  --warn: #8a5a0f; --warn-soft: #f3e3bf; --warn-line: #e2c88f;
+  --bad: #9c3529; --bad-soft: #f3dacf; --bad-line: #e4bba9;
+  --info: #3a6288; --info-soft: #e2e4dc; --info-line: #c6ccc6;
+  --shadow-1: 0 1px 0 rgba(80, 55, 20, .04), 0 1px 2px rgba(80, 55, 20, .07);
+  --shadow-2: 0 18px 44px -22px rgba(80, 55, 20, .38), 0 2px 6px rgba(80, 55, 20, .06);
+  color-scheme: light;
+}
 :root[data-accent="amber"] { --accent: #b7791f; --accent-ink: #8d5b12; --accent-soft: #f8ecd4; --accent-line: #ecd3a3; }
 :root[data-accent="teal"] { --accent: #2f7d79; --accent-ink: #225f5c; --accent-soft: #dff0ee; --accent-line: #b8dcd8; }
 :root[data-accent="indigo"] { --accent: #4f5bb5; --accent-ink: #3c4692; --accent-soft: #e6e8f7; --accent-line: #c7cbee; }
 :root[data-theme="dark"][data-accent="amber"] { --accent: #e3ae55; --accent-ink: #f0c47a; --accent-soft: #33270f; --accent-line: #57431c; }
 :root[data-theme="dark"][data-accent="teal"] { --accent: #6cc0ba; --accent-ink: #8fd4cf; --accent-soft: #142a29; --accent-line: #24504c; }
 :root[data-theme="dark"][data-accent="indigo"] { --accent: #9aa4ec; --accent-ink: #b7befa; --accent-soft: #1d2140; --accent-line: #343b6d; }
+/* Paper with an author accent: the light accent inks, with soft tints mixed into the paper. */
+:root[data-theme="paper"][data-accent] { --accent-soft: color-mix(in oklab, var(--accent) 14%, var(--card)); --accent-line: color-mix(in oklab, var(--accent) 34%, var(--card)); }
+/* Line spacing (Aa → Line spacing). Comfortable is the original 1.85; Chinese gets a little more air
+   than Latin text at the other two settings. */
+:root[data-leading="compact"] { --leading: .865; --leading-cjk: .92; }
+:root[data-leading="loose"] { --leading: 1.08; --leading-cjk: 1.135; }
 
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-size-adjust: 100%; scroll-padding-top: 76px; }
@@ -172,6 +194,11 @@ code.inline, .mono { font-family: var(--mono); font-size: .88em; }
 .aa-size button { width: 34px; height: 30px; border: 1px solid var(--line); background: var(--card); border-radius: 8px; cursor: pointer; color: var(--ink-2); }
 .aa-size button:hover { border-color: var(--line-2); color: var(--ink); }
 .aa-size output { min-width: 46px; text-align: center; font: 500 12.5px var(--sans); color: var(--ink-3); }
+.aa-group .lbl { font-size: 13.5px; color: var(--ink); cursor: pointer; }
+.aa-group .lbl small { display: block; margin-top: 2px; font-size: 12px; line-height: 1.4; color: var(--ink-3); }
+#aa-pop { max-height: calc(100vh - 76px); overflow: auto; overscroll-behavior: contain; }
+.aa-more { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 2px 0 0; padding: 12px 6px 4px; border-top: 1px solid var(--line); font-size: 13.5px; font-weight: 500; color: var(--accent-ink); text-decoration: none; }
+.aa-more:hover { text-decoration: underline; text-underline-offset: 3px; }
 .swatches { display: flex; gap: 8px; }
 .swatches button { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--card); box-shadow: 0 0 0 1px var(--line-2); cursor: pointer; }
 .swatches button[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--ink); }
@@ -277,7 +304,7 @@ code.inline, .mono { font-family: var(--mono); font-size: .88em; }
 .hljs-string, .hljs-attr, .hljs-template-tag, .hljs-addition { color: #a9c98a; }
 .hljs-number, .hljs-literal, .hljs-symbol { color: #e3ae55; }
 .hljs-title, .hljs-section, .hljs-name, .hljs-selector-id, .hljs-selector-class { color: #8fc0e8; }
-.hljs-comment, .hljs-quote, .hljs-meta { color: #7f7464; font-style: italic; }
+.hljs-comment, .hljs-quote, .hljs-meta { color: #8e8577; font-style: italic; }
 .hljs-variable, .hljs-params, .hljs-property { color: #e9d7b8; }
 .hljs-deletion { color: #e6877c; }
 
@@ -378,7 +405,7 @@ body.overlay-open { overflow: hidden; }
 .md-callout.important::before { content: '★'; background: var(--accent); font-size: 11px; }
 .md-callout.important > .md-label { color: var(--accent-ink); }
 ol.md-steps { list-style: none; padding: 0; margin: 1.1em 0 1.4em; counter-reset: step var(--start, 0); display: grid; gap: 10px; }
-ol.md-steps > li { counter-increment: step; position: relative; margin: 0; padding: 13px 18px 13px 60px; border-radius: 13px; background: var(--card); border: 1px solid var(--line); line-height: 1.7; transition: border-color .2s, transform .2s var(--ease), box-shadow .2s; }
+ol.md-steps > li { counter-increment: step; position: relative; margin: 0; padding: 13px 18px 13px 60px; border-radius: 13px; background: var(--card); border: 1px solid var(--line); line-height: calc(1.7 * var(--leading)); transition: border-color .2s, transform .2s var(--ease), box-shadow .2s; }
 ol.md-steps > li:hover { border-color: var(--accent-line); transform: translateY(-1px); box-shadow: var(--shadow-1); }
 ol.md-steps > li::before { content: counter(step); position: absolute; left: 16px; top: 13px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-ink); font: 600 13px/1 var(--sans); }
 ol.md-steps > li > :last-child { margin-bottom: 0; }
@@ -712,12 +739,14 @@ body.editing .doc-layout, body.editing .doc-footer-wrap { display: none; }
 
 /* ---------- Print / PDF ---------- */
 @media print {
-  :root { --paper: #fff; --card: #fff; --card-2: #fff; --ink: #111; --ink-2: #222; --ink-3: #555; --line: #ddd; --zoom: 1; }
+  /* Every theme prints as ink on white (the theme blocks above are more specific than :root alone). */
+  :root, :root[data-theme] { --paper: #fff; --paper-2: #f4f4f4; --card: #fff; --card-2: #fff; --ink: #111; --ink-2: #222; --ink-3: #555; --ink-4: #888; --line: #ddd; --line-2: #ccc;
+    --ok: #3c774a; --ok-soft: #e4f0e4; --warn: #996110; --warn-soft: #fbefd9; --bad: #a8382f; --bad-soft: #f8e3e0; --info: #3d6b9a; --info-soft: #e5edf6; --zoom: 1; color-scheme: light; }
   body { background: #fff; }
-  .app-header, .toc, .toc-mobile, .progress, .to-top, .doc-footer, .toast, .popover, .batch-bar, .code-copy, .anchor, .editor, .table-tools, .fb-bar, .fb-pill, .fb-panel, .version-line, .lang-switch, .diagram-expand { display: none !important; }
+  .app-header, .toc, .toc-mobile, .progress, .to-top, .doc-footer, .toast, .popover, .batch-bar, .code-copy, .anchor, .editor, .table-tools, .fb-bar, .fb-pill, .fb-panel, .version-line, .lang-switch, .diagram-expand, .resume { display: none !important; }
   .doc-layout { display: block; padding: 0; }
   .prose { padding: 0; font-size: 12pt; line-height: 1.65; }
-  .motion .rv { opacity: 1 !important; transform: none !important; }
+  .motion-ok .rv, .motion-ok .rv-k { opacity: 1 !important; transform: none !important; transition: none !important; }
   .code-block { background: #f6f4f0; border-color: #ddd; break-inside: avoid; }
   .code-block pre { color: #222; }
   .code-head { color: #777; border-color: #ddd; }

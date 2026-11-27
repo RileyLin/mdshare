@@ -691,6 +691,8 @@ async function runReadingSettings(ctx, ok) {
     await page.click('#zoom-in'); await page.click('#zoom-in');
     ok((await page.textContent('#zoom-val')) === '120%', 'A+ twice -> 120%');
     await page.click('#theme-seg [data-v="dark"]');
+    // The theme switches inside a view transition when motion is on: it applies on the next frame.
+    await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'dark', null, { timeout: 3000 });
     ok((await page.getAttribute('html', 'data-theme')) === 'dark', 'Dark theme applies immediately');
     await page.click('#width-seg [data-v="wide"]');
     ok((await page.getAttribute('html', 'data-width')) === 'wide', 'Wide layout applies');
@@ -888,6 +890,7 @@ async function runSettingsSignout(ctx, ok) {
     const seg = await page.getAttribute('#settings #theme-seg [data-v="system"]', 'aria-pressed');
     ok(seg === 'true', 'the Settings theme control shows the current choice (System)');
     await page.click('#settings #theme-seg [data-v="dark"]');
+    await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'dark', null, { timeout: 3000 });
     ok((await page.getAttribute('html', 'data-theme')) === 'dark', 'Settings theme applies');
     await page.screenshot({ path: ctx.proofPath, fullPage: true });
     await page.click('#btn-signout');

@@ -18,17 +18,65 @@
   window.MDShareToast = toast;
 
   // ---------- Preferences ----------
-  var store = { get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } } };
+  // Reading preferences live in localStorage on this device. PREFS_BOOT (api/_lib/ui.js) puts them
+  // on <html> before first paint: data-theme, --zoom, data-width, data-font, data-leading,
+  // data-motion="off" and the class motion-ok. This keeps them in step when they change. The Aa menu
+  // and Settings → Reading (library.js) use the same control ids, so every page follows either.
+  var store = {
+    get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } },
+    del: function (k) { try { localStorage.removeItem(k); } catch (e) { /* private mode */ } },
+  };
+  // name: [key, default, allowed values]. The defaults are the reading experience before any choice.
+  var PREFS = {
+    theme: ['mdshare-theme', 'system', ['system', 'light', 'paper', 'dark']],
+    width: ['mdshare-width', 'standard', ['standard', 'wide']],
+    font: ['mdshare-font', 'sans', ['sans', 'serif']],
+    tables: ['mdshare-tables', 'auto', ['auto', 'table', 'cards']],
+    leading: ['mdshare-leading', 'comfortable', ['compact', 'comfortable', 'loose']],
+    motion: ['mdshare-motion', 'on', ['on', 'off']],
+    gloss: ['mdshare-gloss', 'off', ['on', 'off']],
+  };
+  function pref(name) { var p = PREFS[name], v = store.get(p[0]); return p[2].indexOf(v) >= 0 ? v : p[1]; }
   var mq = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
-  function themePref() { return store.get('mdshare-theme') || 'system'; }
+  var reducedMq = window.matchMedia ? matchMedia('(prefers-reduced-motion: reduce)') : null;
+  function themePref() { return pref('theme'); }
+  var themeColors = Array.prototype.map.call(document.querySelectorAll('meta[name="theme-color"]'), function (m) { return [m, m.getAttribute('content')]; });
   function applyTheme() {
     var p = themePref(), t = p === 'system' ? (mq && mq.matches ? 'dark' : 'light') : p;
     var changed = root.getAttribute('data-theme') !== t;
     root.setAttribute('data-theme', t);
     setSeg('theme-seg', p);
+    // The browser (and Telegram) toolbar follows an explicit choice; System keeps the <head> pair.
+    var bg = p === 'system' ? '' : getComputedStyle(root).getPropertyValue('--paper').trim();
+    themeColors.forEach(function (x) { x[0].setAttribute('content', bg || x[1]); });
     if (changed && window.MDShareRender && $('content')) rerender();
   }
   if (mq && mq.addEventListener) mq.addEventListener('change', function () { if (themePref() === 'system') applyTheme(); });
+  // Motion is on unless the reader switched it off or the OS asks for reduced motion (that always
+  // wins). motion-ok is what render.js checks before hiding anything for a reveal.
+  function motionAllowed() { return pref('motion') === 'on' && !(reducedMq && reducedMq.matches) && 'IntersectionObserver' in window; }
+  function applyMotion() {
+    root.classList.toggle('motion-ok', motionAllowed());
+    if (pref('motion') === 'off') root.setAttribute('data-motion', 'off'); else root.removeAttribute('data-motion');
+    var reduced = !!(reducedMq && reducedMq.matches), sw = $('motion-toggle'), note = $('motion-note');
+    if (sw) { sw.checked = pref('motion') === 'on' && !reduced; sw.disabled = reduced; }
+    if (note) {
+      if (!note.hasAttribute('data-text')) note.setAttribute('data-text', note.textContent);
+      note.textContent = reduced ? 'Off: this device asks for reduced motion' : note.getAttribute('data-text');
+    }
+  }
+  if (reducedMq && reducedMq.addEventListener) reducedMq.addEventListener('change', applyMotion);
+  // A visible switch (theme, Table/Cards, tabs) cross-fades with the View Transitions API when motion
+  // is on and the browser has it, otherwise it happens at once. The browser still runs `change`
+  // when it skips a transition (another one started, the tab is hidden); it then rejects `ready`,
+  // which is expected and needs no handling beyond that.
+  function withTransition(change) {
+    if (!document.startViewTransition || !root.classList.contains('motion-ok')) { change(); return; }
+    var t = document.startViewTransition(change);
+    if (t && t.ready) t.ready.catch(function () { /* skipped: the change itself still ran */ });
+  }
+  window.MDShareMotion = { transition: withTransition, on: function () { return root.classList.contains('motion-ok'); } };
   function zoom() { var z = parseFloat(store.get('mdshare-zoom')); return z >= 0.85 && z <= 1.6 ? z : 1; }
   function setZoom(z) {
     z = Math.min(1.6, Math.max(0.85, Math.round(z * 100) / 100));
@@ -39,39 +87,64 @@
     var seg = $(id); if (!seg) return;
     Array.prototype.forEach.call(seg.querySelectorAll('button'), function (b) { b.setAttribute('aria-pressed', b.getAttribute('data-v') === v ? 'true' : 'false'); });
   }
-  function bindSeg(id, key, fallback, apply) {
+  // Binding is idempotent (data-bound), so Settings can build its panel and call bind() before or
+  // after boot; every call also re-syncs what the controls show.
+  function once(el) { if (!el || el.getAttribute('data-bound')) return false; el.setAttribute('data-bound', '1'); return true; }
+  function bindSeg(id, name, apply) {
     var seg = $(id); if (!seg) return;
-    setSeg(id, store.get(key) || fallback);
+    setSeg(id, pref(name));
+    if (!once(seg)) return;
     seg.addEventListener('click', function (e) {
       var b = e.target.closest('button[data-v]'); if (!b) return;
-      store.set(key, b.getAttribute('data-v')); setSeg(id, b.getAttribute('data-v')); apply(b.getAttribute('data-v'));
+      store.set(PREFS[name][0], b.getAttribute('data-v')); setSeg(id, b.getAttribute('data-v')); apply(b.getAttribute('data-v'));
     });
   }
+  function applyWidth(v) { if (v === 'wide') root.setAttribute('data-width', 'wide'); else root.removeAttribute('data-width'); }
+  function applyFont(v) { if (v === 'serif') root.setAttribute('data-font', 'serif'); else root.removeAttribute('data-font'); }
+  function applyLeading(v) { if (v === 'compact' || v === 'loose') root.setAttribute('data-leading', v); else root.removeAttribute('data-leading'); }
+  function applyTables() {
+    Array.prototype.forEach.call(document.querySelectorAll('.table-block[data-view-user]'), function (b) { b.removeAttribute('data-view-user'); });
+    if (layoutTables.run) layoutTables.run();
+  }
+  function bindPrefs() {
+    bindSeg('theme-seg', 'theme', function () { withTransition(applyTheme); });
+    bindSeg('width-seg', 'width', applyWidth);
+    bindSeg('font-seg', 'font', applyFont);
+    bindSeg('leading-seg', 'leading', applyLeading);
+    bindSeg('tables-seg', 'tables', applyTables);
+    var o = $('zoom-val'); if (o) o.textContent = Math.round(zoom() * 100) + '%';
+    var zi = $('zoom-in'), zo = $('zoom-out'), zr = $('zoom-reset');
+    if (once(zi)) zi.addEventListener('click', function () { setZoom(zoom() + 0.1); });
+    if (once(zo)) zo.addEventListener('click', function () { setZoom(zoom() - 0.1); });
+    if (once(zr)) zr.addEventListener('click', function () { setZoom(1); });
+    var g = $('gloss-toggle');
+    if (g) g.checked = pref('gloss') === 'on';
+    if (once(g)) g.addEventListener('change', function () { store.set('mdshare-gloss', g.checked ? 'on' : 'off'); rerender(); });
+    var m = $('motion-toggle');
+    if (once(m)) m.addEventListener('change', function () { store.set('mdshare-motion', m.checked ? 'on' : 'off'); applyMotion(); });
+    applyMotion();
+  }
+  // Settings → Reading → Reset: every reading preference back to its default on this device.
+  function resetPrefs() {
+    var hadGloss = pref('gloss') === 'on';
+    Object.keys(PREFS).forEach(function (n) { store.del(PREFS[n][0]); });
+    setZoom(1);
+    applyWidth('standard'); applyFont('sans'); applyLeading('comfortable'); applyTables();
+    withTransition(applyTheme);
+    if (hadGloss) rerender();
+    bindPrefs();
+  }
+  window.MDSharePrefs = { get: pref, bind: bindPrefs, reset: resetPrefs };
   function initPrefs() {
     applyTheme();
     setZoom(zoom());
-    bindSeg('theme-seg', 'mdshare-theme', 'system', applyTheme);
-    bindSeg('width-seg', 'mdshare-width', 'standard', function (v) { if (v === 'wide') root.setAttribute('data-width', 'wide'); else root.removeAttribute('data-width'); });
-    bindSeg('font-seg', 'mdshare-font', 'sans', function (v) { if (v === 'serif') root.setAttribute('data-font', 'serif'); else root.removeAttribute('data-font'); });
-    bindSeg('tables-seg', 'mdshare-tables', 'auto', function () {
-      Array.prototype.forEach.call(document.querySelectorAll('.table-block[data-view-user]'), function (b) { b.removeAttribute('data-view-user'); });
-      if (layoutTables.run) layoutTables.run();
-    });
-    var zi = $('zoom-in'), zo = $('zoom-out'), zr = $('zoom-reset');
-    if (zi) zi.addEventListener('click', function () { setZoom(zoom() + 0.1); });
-    if (zo) zo.addEventListener('click', function () { setZoom(zoom() - 0.1); });
-    if (zr) zr.addEventListener('click', function () { setZoom(1); });
+    bindPrefs();
     document.addEventListener('keydown', function (e) {
       if (!(e.ctrlKey || e.metaKey) || document.body.classList.contains('editing')) return;
       if (e.key === '=' || e.key === '+') { e.preventDefault(); setZoom(zoom() + 0.1); }
       else if (e.key === '-') { e.preventDefault(); setZoom(zoom() - 0.1); }
       else if (e.key === '0') { e.preventDefault(); setZoom(1); }
     });
-    var g = $('gloss-toggle');
-    if (g) {
-      g.checked = store.get('mdshare-gloss') === 'on';
-      g.addEventListener('change', function () { store.set('mdshare-gloss', g.checked ? 'on' : 'off'); rerender(); });
-    }
   }
 
   // ---------- Popovers ----------
@@ -198,7 +271,7 @@
   // ---------- Document rendering, TOC, progress ----------
   var docMeta = {};
   function renderOpts(extra) {
-    return Object.assign({ gloss: store.get('mdshare-gloss') === 'on', motion: true }, extra || {});
+    return Object.assign({ gloss: pref('gloss') === 'on', motion: true }, extra || {});
   }
   // The date line and the phone contents sit right under the title, inside #content. Lift them
   // out before re-rendering so innerHTML doesn't destroy them.
@@ -247,7 +320,7 @@
   // Cards, and add a small toolbar. Reader choices win over the author's; nothing is persisted per
   // table, the Aa setting is.
   var tableSeq = 0;
-  function tablePref() { return store.get('mdshare-tables') || 'auto'; }
+  function tablePref() { return pref('tables'); }
   function cellPx(wrap) {
     var t = wrap.querySelector('table'); if (!t) return 15;
     return parseFloat(getComputedStyle(t).fontSize) || 15;

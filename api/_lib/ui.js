@@ -23,8 +23,12 @@ export function dataBlock(value) {
 
 const FONTS = 'https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&family=Noto+Serif+SC:wght@600&display=swap';
 
-// Applies saved reader preferences before first paint (no light/dark flash).
-const PREFS_BOOT = `(function(){try{var d=document.documentElement,s=localStorage;var t=s.getItem('mdshare-theme')||'system';if(t==='system')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';d.setAttribute('data-theme',t);var z=parseFloat(s.getItem('mdshare-zoom'));if(z>=0.85&&z<=1.6)d.style.setProperty('--zoom',z);var w=s.getItem('mdshare-width');if(w==='wide')d.setAttribute('data-width','wide');var f=s.getItem('mdshare-font');if(f==='serif')d.setAttribute('data-font','serif');}catch(e){}})();`;
+// Applies saved reader preferences before first paint (no light/dark flash). Keys and values are
+// the ones app.js reads and writes (Aa menu, Settings → Reading); public/guide.html and
+// public/index.html carry a copy. `motion-ok` on <html> means "animate": the reader's Motion switch
+// is on, the OS doesn't ask for reduced motion and IntersectionObserver exists. Without it nothing
+// is ever hidden for a reveal.
+const PREFS_BOOT = `(function(){try{var d=document.documentElement,s=localStorage,m=function(q){return matchMedia(q).matches;};var t=s.getItem('mdshare-theme');if(t!=='light'&&t!=='dark'&&t!=='paper')t=m('(prefers-color-scheme: dark)')?'dark':'light';d.setAttribute('data-theme',t);var z=parseFloat(s.getItem('mdshare-zoom'));if(z>=0.85&&z<=1.6)d.style.setProperty('--zoom',z);var w=s.getItem('mdshare-width');if(w==='wide')d.setAttribute('data-width','wide');var f=s.getItem('mdshare-font');if(f==='serif')d.setAttribute('data-font','serif');var l=s.getItem('mdshare-leading');if(l==='compact'||l==='loose')d.setAttribute('data-leading',l);if(s.getItem('mdshare-motion')==='off')d.setAttribute('data-motion','off');else if(!m('(prefers-reduced-motion: reduce)')&&'IntersectionObserver' in window)d.classList.add('motion-ok');}catch(e){}})();`;
 
 // `alternate`: the raw Markdown URL, only for a page the viewer is allowed to read (api/render.js).
 export function head({ title, description = '', alternate = '' }) {
@@ -76,15 +80,20 @@ export function libraryNav(current) {
   return `<nav class="hdr-nav hide-sm" aria-label="Main">${item('/dashboard', 'Library', 'library')}${item('/c', 'Collections', 'collections')}${item('/settings', 'Settings', 'settings')}</nav>`;
 }
 
-// "Aa" reading settings — used by every reading surface (owner and reader).
-export function aaControl() {
+// "Aa" reading settings — used by every reading surface (owner and reader). Settings → Reading
+// (public/assets/library.js) builds the same controls with the same ids; app.js binds whichever
+// set is on the page. `settingsLink`: owner pages only (Settings is owner-only).
+export function aaControl({ settingsLink = false } = {}) {
   return `<div class="pop-anchor"><button class="btn icon" id="btn-aa" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="aa-pop" title="Reading settings">Aa</button>
 <div class="popover wide" id="aa-pop" role="dialog" aria-label="Reading settings">
   <div class="aa-group"><div class="aa-label">Text size</div><div class="aa-row"><div class="aa-size"><button type="button" id="zoom-out" aria-label="Smaller text">A−</button><output id="zoom-val">100%</output><button type="button" id="zoom-in" aria-label="Larger text">A+</button></div><button class="btn sm ghost" type="button" id="zoom-reset">Reset</button></div></div>
-  <div class="aa-group"><div class="aa-label">Theme</div><div class="seg" id="theme-seg"><button type="button" data-v="light">Light</button><button type="button" data-v="dark">Dark</button><button type="button" data-v="system">System</button></div></div>
+  <div class="aa-group"><div class="aa-label">Theme</div><div class="seg" id="theme-seg"><button type="button" data-v="light">Light</button><button type="button" data-v="paper">Paper</button><button type="button" data-v="dark">Dark</button><button type="button" data-v="system">System</button></div></div>
+  <div class="aa-group"><div class="aa-label">Line spacing</div><div class="seg" id="leading-seg"><button type="button" data-v="compact">Compact</button><button type="button" data-v="comfortable">Comfortable</button><button type="button" data-v="loose">Loose</button></div></div>
   <div class="aa-group"><div class="aa-label">Layout</div><div class="aa-row"><div class="seg" id="width-seg"><button type="button" data-v="standard">Standard</button><button type="button" data-v="wide">Wide</button></div><div class="seg" id="font-seg"><button type="button" data-v="sans">Sans</button><button type="button" data-v="serif">Serif</button></div></div></div>
   <div class="aa-group"><div class="aa-label">Tables</div><div class="seg" id="tables-seg"><button type="button" data-v="auto">Auto</button><button type="button" data-v="table">Table</button><button type="button" data-v="cards">Cards</button></div></div>
-  <div class="aa-group"><div class="aa-row"><span class="lbl" style="font-size:13.5px">Term hints<small style="display:block;font-size:12px;color:var(--ink-3)">Show 术语（解释） as hover hints</small></span><label class="switch"><input type="checkbox" id="gloss-toggle"><span></span></label></div></div>
+  <div class="aa-group"><div class="aa-row"><label class="lbl" for="motion-toggle">Motion<small id="motion-note">Gentle fade-ins and count-ups</small></label><label class="switch"><input type="checkbox" id="motion-toggle" checked><span></span></label></div></div>
+  <div class="aa-group"><div class="aa-row"><label class="lbl" for="gloss-toggle">Term hints<small>Show 术语（解释） as hover hints</small></label><label class="switch"><input type="checkbox" id="gloss-toggle"><span></span></label></div></div>
+  ${settingsLink ? '<a class="aa-more" id="aa-more" href="/settings#reading">More reading settings<span aria-hidden="true">→</span></a>' : ''}
 </div></div>`;
 }
 
@@ -102,7 +111,7 @@ export function ownerControls({ kind, id, editable = false, downloadable = true 
 </div></div>
 <button class="btn primary hide-sm" id="btn-share" type="button">Share</button>
 ${editable ? '<button class="btn" id="btn-edit" type="button">Edit</button>' : ''}
-${aaControl()}
+${aaControl({ settingsLink: true })}
 <div class="pop-anchor"><button class="btn icon" id="btn-more" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="more-pop" title="More">⋯</button>
 <div class="popover" id="more-pop" role="menu">
   ${downloadable ? '<button class="menu-item" role="menuitem" type="button" id="btn-download"><span class="ic">↓</span>Download .md</button>' : ''}
