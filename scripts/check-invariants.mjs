@@ -71,7 +71,9 @@ const checks = [
       const errs = [];
       // CREATE OR REPLACE: a rerun of an old migration would silently overwrite a newer function or
       // view body (2026-11-26); create only if absent (DO block + pg_proc check), like 011.
-      const bad = /\b(UPDATE\s+\w+|DELETE\s+FROM|TRUNCATE|DROP\s+(TABLE|COLUMN|SCHEMA|INDEX|TYPE|FUNCTION)|CREATE\s+OR\s+REPLACE)\b/i;
+      // `ON CONFLICT ... DO UPDATE SET` is the upsert clause of an INSERT (e.g. an atomic counter inside a
+      // function body), not a table UPDATE: it is not matched. A real `UPDATE <table> SET` still is.
+      const bad = /\b((?<!\bDO\s+)UPDATE\s+(?!SET\b)\w+|DELETE\s+FROM|TRUNCATE|DROP\s+(TABLE|COLUMN|SCHEMA|INDEX|TYPE|FUNCTION)|CREATE\s+OR\s+REPLACE)\b/i;
       for (const f of walk('migrations', (p) => p.endsWith('.sql'))) {
         lines(f).forEach((l, i) => {
           const code = l.replace(/--.*$/, '');

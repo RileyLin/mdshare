@@ -73,6 +73,8 @@ const mutations = {
 
 // More ways to break the 2026-11-26 rules; each must be caught by the named check.
 const extraMutations = [
+  ['migrations-additive', 'a table UPDATE hidden after an upsert clause on the same line', (d) => writeFileSync(join(d, 'migrations', '997_upsert_then_update.sql'), 'INSERT INTO t VALUES (1) ON CONFLICT DO NOTHING; UPDATE mdshare_pastes SET pinned = true;\n')],
+  ['migrations-additive', 'a lower-case table update', (d) => writeFileSync(join(d, 'migrations', '996_lower.sql'), 'update mdshare_users set disabled = true;\n')],
   ['migrations-additive', 'a migration replaces a function body', (d) => writeFileSync(join(d, 'migrations', '998_replace.sql'), 'CREATE OR REPLACE FUNCTION public.mdshare_search(q text) RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;\n')],
   ['search-no-filter-injection', 'the search action passes raw query.q', (d) => edit(d, 'api/doc.js', (s) => s.replace('const r = await searchDocs(me, v.value);', 'const r = await searchDocs(me, { ...v.value, q: query.q });'))],
   ['search-no-filter-injection', 'api/doc.js builds an ilike filter', (d) => edit(d, 'api/doc.js', (s) => s.replace('const r = await searchDocs(me, v.value);', 'const r = await searchDocs(me, v.value); const f = `title=ilike.*${encodeURIComponent(v.value.q)}*`; void f;'))],

@@ -59,7 +59,7 @@ BEGIN
         INSERT INTO mdshare_quota_usage AS q (owner_id, day, n)
         SELECT p_owner, (now() AT TIME ZONE 'utc')::date, 1
         WHERE p_owner IS NOT NULL AND p_max > 0
-        ON CONFLICT (owner_id, day) DO UPDATE SET n = q.n + 1 WHERE q.n < p_max -- invariant-allow: function body, runs per create (the atomic reservation), never at migration time
+        ON CONFLICT (owner_id, day) DO UPDATE SET n = q.n + 1 WHERE q.n < p_max
         RETURNING q.n
       $body$
     $fn$;
