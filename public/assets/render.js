@@ -132,13 +132,21 @@
       // Every block keeps its argument: summary uses it as the card label, the others show it as
       // a small title above the block (the fuzzer caught ":::compare Pricing" dropping "Pricing").
       if (name === 'table') { tableDirective(box, arg); return; }
+      // :::steps reveal [caption]: "reveal" is an option word, the rest is the caption.
+      var reveal = name === 'steps' && /^reveal(\s|$)/.test(arg);
+      if (reveal) arg = arg.replace(/^reveal\s*/, '');
       if (arg && name !== 'summary') { var title = el('div', 'md-block-title', arg); box.parentNode.insertBefore(title, box); }
       if (name === 'summary') {
         box.className = 'md-summary';
         box.insertBefore(el('div', 'md-label', arg || 'Summary'), box.firstChild);
       } else if (name === 'steps') {
         var list = box.querySelector('ol, ul');
-        if (list) {
+        if (list && reveal && list.tagName === 'OL' && isStepCards(list)) {
+          // A bold-led numbered list walks through as numbered step cards.
+          list.classList.add('md-steps');
+          var st = parseInt(list.getAttribute('start'), 10);
+          if (st > 1) list.style.setProperty('--start', String(st - 1));
+        } else if (list) {
           var ol = el('ol', 'md-timeline');
           kids(list).forEach(function (li) {
             var item = el('li');
@@ -150,6 +158,7 @@
           list.replaceWith(ol);
         }
         box.className = 'md-steps-block';
+        if (reveal) box.setAttribute('data-reveal', '1');
       } else if (name === 'compare' || name === 'cards' || name === 'tabs') {
         var secs = splitBySubheads(box);
         var wrap = el('div', 'md-' + name);
@@ -983,6 +992,44 @@
     return n > 60 && n / Math.max(1, s.replace(/\s/g, '').length) > 0.2;
   }
 
+  // :::steps reveal — show step 1, then one more per "Next step (2/N)"; "Show all" opens the rest.
+  // Hidden steps use a screen-only class: printing (and the no-JS page) shows every step. The step
+  // that appears animates only when the page allows motion (html.motion-ok; never with reduced
+  // motion). Focus stays on Next, and moves to the last step when the controls go away.
+  var revealSeq = 0;
+  function stepReveal(root, zh, prefix) {
+    root.querySelectorAll('.md-steps-block[data-reveal]').forEach(function (block) {
+      var list = block.querySelector('ol.md-timeline, ol.md-steps'), items = list ? kids(list) : [];
+      if (items.length < 2 || block.querySelector('.md-reveal-bar')) return;
+      var shown = 1, n = items.length;
+      list.id = list.id || (prefix || '') + 'md-steps-' + (++revealSeq);
+      list.setAttribute('aria-live', 'polite');
+      block.classList.add('md-reveal');
+      items.forEach(function (li, i) { if (i > 0) li.classList.add('md-step-hidden'); });
+      var bar = el('div', 'md-reveal-bar');
+      var next = el('button', 'btn sm md-reveal-next'); next.type = 'button'; next.setAttribute('aria-controls', list.id);
+      var all = el('button', 'linkish md-reveal-all', zh ? '全部展开' : 'Show all'); all.type = 'button'; all.setAttribute('aria-controls', list.id);
+      var label = function () { next.textContent = (zh ? '下一步 (' : 'Next step (') + (shown + 1) + '/' + n + ')'; };
+      var show = function (li) { li.classList.remove('md-step-hidden'); li.classList.add('md-step-in'); };
+      var finish = function (focusTo) {
+        bar.remove(); block.classList.add('md-revealed');
+        if (focusTo) { focusTo.tabIndex = -1; focusTo.focus({ preventScroll: true }); }
+      };
+      next.addEventListener('click', function () {
+        show(items[shown]); shown++;
+        if (shown >= n) finish(items[n - 1]); else label();
+      });
+      all.addEventListener('click', function () {
+        var first = items[shown];
+        for (; shown < n; shown++) show(items[shown]);
+        finish(first);
+      });
+      label();
+      bar.appendChild(next); bar.appendChild(all);
+      block.appendChild(bar);
+    });
+  }
+
   function enhance(root, opts) {
     opts = opts || {};
     if (termPop && !termPop.term.isConnected) closeTermPop(false);
@@ -998,7 +1045,9 @@
     links(root);
     if (opts.gloss) glosses(root);
     headings(root, opts);
-    if (isCjk(root)) root.classList.add('cjk');
+    var zh = isCjk(root);
+    if (zh) root.classList.add('cjk');
+    stepReveal(root, zh, opts.idPrefix);
     mermaidRun(root);
     if (opts.motion) motion(root);
   }

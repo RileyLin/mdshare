@@ -502,6 +502,17 @@ abbr.md-gloss:hover .md-tip, abbr.md-gloss:focus .md-tip, abbr.md-gloss.open .md
 .prose .md-recap > ul:not(.md-keys) > li { position: relative; padding-left: 1.6em; }
 .prose .md-recap > ul:not(.md-keys) > li::before { content: '✓'; position: absolute; left: .15em; top: 0; color: var(--accent); font-weight: 700; }
 .md-recap > :last-child { margin-bottom: 12px; }
+/* :::steps reveal (render.js stepReveal): one step at a time; every step shows in print. */
+@media screen { .md-step-hidden { display: none !important; } }
+.md-reveal-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: -.2em 0 1.5em; }
+.md-reveal > .md-timeline + .md-reveal-bar { padding-left: 30px; }
+.md-reveal > ol.md-steps { margin-bottom: .9em; }
+.btn.md-reveal-next { border-color: var(--accent-line); color: var(--accent-ink); }
+.btn.md-reveal-next:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+.md-reveal-all { font: 500 13px var(--sans); color: var(--ink-3); }
+.md-reveal [tabindex="-1"]:focus { outline: none; }
+html.motion-ok .md-step-in { animation: md-step-in .24s var(--ease) both; }
+@keyframes md-step-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 .mermaid { position: relative; margin: 1.6em 0; padding: 22px 18px 18px; text-align: center; border: 1px solid var(--line); border-radius: 13px; background: var(--card); box-shadow: var(--shadow-1); overflow-x: auto; }
 .mermaid.mermaid-drawn { overflow: hidden; }
 .diagram-scroll { overflow-x: auto; overscroll-behavior-x: contain; }
@@ -817,7 +828,7 @@ body.editing .doc-layout, body.editing .doc-footer-wrap { display: none; }
   :root, :root[data-theme] { --paper: #fff; --paper-2: #f4f4f4; --card: #fff; --card-2: #fff; --ink: #111; --ink-2: #222; --ink-3: #555; --ink-4: #888; --line: #ddd; --line-2: #ccc;
     --ok: #3c774a; --ok-soft: #e4f0e4; --warn: #996110; --warn-soft: #fbefd9; --bad: #a8382f; --bad-soft: #f8e3e0; --info: #3d6b9a; --info-soft: #e5edf6; --zoom: 1; color-scheme: light; }
   body { background: #fff; }
-  .app-header, .toc, .toc-mobile, .progress, .to-top, .doc-footer, .toast, .popover, .batch-bar, .code-copy, .anchor, .editor, .table-tools, .fb-bar, .fb-pill, .fb-panel, .version-line, .lang-switch, .diagram-expand, .resume, .md-term-pop { display: none !important; }
+  .app-header, .toc, .toc-mobile, .progress, .to-top, .doc-footer, .toast, .popover, .batch-bar, .code-copy, .anchor, .editor, .table-tools, .fb-bar, .fb-pill, .fb-panel, .version-line, .lang-switch, .diagram-expand, .resume, .md-term-pop, .md-reveal-bar { display: none !important; }
   .doc-layout { display: block; padding: 0; }
   .prose { padding: 0; font-size: 12pt; line-height: 1.65; }
   .motion-ok .rv, .motion-ok .rv-k { opacity: 1 !important; transform: none !important; transition: none !important; }
