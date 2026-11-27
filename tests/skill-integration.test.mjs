@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { useFakeDb } from './_fakedb.mjs';
+import { unwrapUntrusted } from '../skills/openclaw/mdshare/scripts/mdshare.mjs';
 
 process.env.MDSHARE_HMAC_SECRET = 'test-hmac-secret';
 process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
@@ -36,6 +37,8 @@ function skill(args, extraEnv = {}) {
   });
 }
 const json = (r) => { assert.equal(r.code, 0, `exit ${r.code}\n${r.stderr}`); return JSON.parse(r.stdout); };
+// read/search output is wrapped as UNTRUSTED-CONTENT (ADV-MU-B 5); this is the data inside.
+const inner = (r) => { assert.equal(r.code, 0, `exit ${r.code}\n${r.stderr}`); const t = unwrapUntrusted(r.stdout); assert.notEqual(t, null, `not wrapped:\n${r.stdout}`); return t; };
 
 test('the skill script against the local server: signup, publish, publish --public, read, search, link', async () => {
   db.sb.reset();
@@ -62,9 +65,9 @@ test('the skill script against the local server: signup, publish, publish --publ
   assert.equal(db.sb.tables.mdshare_pastes.find((r) => r.id === open.id).is_public, true, '--public works with the sign-up token (documents:publish on its own document)');
 
   const read = await skill(['read', pub.id]);
-  assert.equal(read.code, 0, read.stderr);
-  assert.match(read.stdout, /^# Integration reply/);
-  const found = json(await skill(['search', 'zebra-quartz']));
+  assert.match(read.stdout, /^<<<UNTRUSTED-CONTENT nonce=[0-9a-f]{16} source=mdshare:read:/);
+  assert.match(inner(read), /^# Integration reply/);
+  const found = JSON.parse(inner(await skill(['search', 'zebra-quartz'])));
   assert.deepEqual(found.results.map((r) => r.id).sort(), [pub.id, open.id].sort());
   assert.equal(found.total, 2);
 
@@ -77,7 +80,7 @@ test('the skill script against the local server: signup, publish, publish --publ
 
   // The owner's documents never show up for the skill's user.
   db.sb.seed('mdshare_pastes', { id: 'ownerZebra', owner_id: 1, title: 'owner zebra-quartz', content: 'owner zebra-quartz', expires_at: '2999-01-01T00:00:00Z' });
-  assert.equal(json(await skill(['search', 'zebra-quartz'])).total, 2);
+  assert.equal(JSON.parse(inner(await skill(['search', 'zebra-quartz']))).total, 2);
   const notMine = await skill(['read', 'ownerZebra']);
   assert.notEqual(notMine.code, 0);
   assert.doesNotMatch(notMine.stdout, /owner zebra-quartz/);
