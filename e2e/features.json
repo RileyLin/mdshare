@@ -627,7 +627,8 @@
       "only the first body occurrence of each term is marked; headings, code, links, diagrams and the glossary are skipped; Latin terms need word boundaries (SM is not in SMS), all-caps terms match case-sensitively",
       "the readable text is unchanged; the popover is built outside the document text",
       "hover, keyboard (focus preview, Enter into the dialog, Tab out, Escape) and click/tap all work; tap outside closes; \"全部术语 / All terms\" links to the section",
-      "must-not-trigger: a Terms section of prose, plain bullets, an inexact title, ordinary documents"
+      "every documented title triggers; must-not-trigger: a Terms section of prose, a term list next to an ordinary list, plain bullets, numbered lists, empty definitions, an inexact title, ordinary documents",
+      "inline markup can't fake a word boundary (**SM**S); names like constructor work; 200 names sharing a long prefix over 60 KB render in under 400ms; a long definition at 160% on a phone stays on screen; All terms moves focus to the glossary"
     ]
   },
   {
@@ -641,7 +642,8 @@
     ],
     "assertions": [
       "the last section becomes a recap card at the end and stays in the contents",
-      "must-not-trigger: a recap title that isn't last; a last section called Conclusion, 总结 or Summary"
+      "every documented title triggers; must-not-trigger: a recap title that isn't last; a last section called Conclusion, 总结, 结论, Summary, Takeaway or \"Recap of the week\"",
+      "a lone first-and-last \"## Key takeaways\" stays the summary card (the first-section rule owns it)"
     ]
   },
   {
@@ -673,7 +675,7 @@
     "assertions": [
       "every chart draws in the house palette led by the page accent; mindmap/timeline sections are warm tints, no lime or yellow; sankey has no default colours",
       "dark and paper redraw with their own palettes",
-      "on a phone bar/line, quadrant and sankey are drawn at the phone's width with labels of 11px or more; a wide mindmap/timeline scrolls inside its frame; no sideways page scroll"
+      "on a phone bar/line, quadrant and sankey are drawn at the phone's width with labels of 11px or more; a sankey whose labels would run together is drawn wider and scrolls in its frame, like a wide mindmap/timeline; no sideways page scroll"
     ]
   },
   {

@@ -53,7 +53,7 @@ try {
       // mermaid), so compare the number of diagrams, not the svg's text and inline styles.
       const diagrams = c.querySelectorAll('.mermaid, pre > code.language-mermaid').length;
       c.querySelectorAll('.mermaid, pre:has(> code.language-mermaid)').forEach((m) => m.replaceWith(document.createTextNode('[diagram]')));
-      if (isNew) c.querySelectorAll('.doc-meta, .toc-mobile, .anchor, .code-head, .table-tools').forEach((e) => e.remove());
+      if (isNew) c.querySelectorAll('.doc-meta, .toc-mobile, .anchor, .code-head, .table-tools, .md-reveal-bar').forEach((e) => e.remove());
       const links = [...c.querySelectorAll('a[href]')].map((a) => a.getAttribute('href')).sort();
       return {
         text: c.textContent.replace(/\s+/g, '').replace(/[：:]/g, ''),

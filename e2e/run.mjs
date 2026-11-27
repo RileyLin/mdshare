@@ -2169,6 +2169,24 @@ async function seedDoc(ctx, markdown) {
   if (r.status !== 200 || !r.json || !r.json.id) throw new Error(`seedDoc failed: ${r.status}`);
   return r.json;
 }
+// Renders each case in the page (the home page loads render.js) and reports what the rules made of
+// it: no documents are created, so every documented title and every negative case can be listed.
+function ruleCases(cases) {
+  /* global MDShareRender */
+  const box = document.createElement('div');
+  box.className = 'prose';
+  document.body.appendChild(box);
+  const out = cases.map((md) => {
+    const t0 = performance.now();
+    MDShareRender.render(md, box, { motion: false });
+    const ms = performance.now() - t0;
+    return { ms, glossary: box.querySelectorAll('.md-glossary').length, terms: [...box.querySelectorAll('.md-term')].map((t) => t.textContent + '@' + t.parentElement.tagName),
+      recap: box.querySelectorAll('.md-recap').length, recapHead: (box.querySelector('.md-recap > h2') || {}).textContent || null, summary: box.querySelectorAll('.md-summary').length,
+      reveal: box.querySelectorAll('.md-reveal').length };
+  });
+  box.remove();
+  return out;
+}
 const notTriggered = (page) => page.evaluate(() => {
   const c = document.getElementById('content');
   return { glossary: c.querySelectorAll('.md-glossary').length, terms: c.querySelectorAll('.md-term').length, recap: c.querySelectorAll('.md-recap').length, reveal: c.querySelectorAll('.md-reveal, .md-reveal-bar, .md-step-hidden').length };
@@ -2259,13 +2277,63 @@ async function runGlossaryTerms(ctx, ok) {
     ok((await pop(page)).link === 'All terms →', 'English documents say "All terms"');
   });
 
+  await withContext(ctx, async (context) => {
+    const page = await openAnon(ctx, context, '/');
+    await page.waitForFunction(() => window.MDShareRender, null, { timeout: 5000 });
+    const list = '\n\n- **API**: the service interface.\n- **SM**: a GPU compute unit.\n';
+    const titles = ['术语', '术语表', '名词解释', '关键术语', 'Glossary', 'Terms', 'Key terms', 'key TERMS', 'Glossary：'];
+    const yes = await page.evaluate(ruleCases, titles.map((t) => `# Doc\n\nThe API and the SM.\n\n## ${t}${list}`));
+    ok(yes.every((r) => r.glossary === 1 && r.terms.join() === 'API@P,SM@P'), `every documented glossary title (trimmed, any case, trailing colon) makes a glossary (${JSON.stringify(yes.map((r) => r.terms.length))})`);
+    const negatives = {
+      'inexact title': '# D\n\nAPI.\n\n## Glossary of terms' + list,
+      'Terms of prose': '# D\n\nAPI.\n\n## Terms\n\nPayment is due in 30 days. The API is not a term here.\n',
+      'a term list plus an ordinary list (review R4)': '# API contract\n\nAPI is discussed here.\n\n## Terms\n\n- **API**: access to the service.\n\nPayment obligations:\n\n- Payment is due monthly.\n- No refunds after deployment.\n',
+      'one plain bullet': '# D\n\nAPI and SM.\n\n## Glossary\n\n- **API**: the interface.\n- SM: no bold\n',
+      'a numbered list': '# D\n\nAPI and SM.\n\n## Glossary\n\n1. **API**: the interface.\n2. **SM**: a unit.\n',
+      'empty definitions': '# D\n\nAPI and SM.\n\n## Glossary\n\n- **API**:\n- **SM**:\n',
+    };
+    const no = await page.evaluate(ruleCases, Object.values(negatives));
+    const wrong = Object.keys(negatives).filter((k, i) => no[i].glossary || no[i].terms.length);
+    ok(wrong.length === 0, `must-not-trigger glossary cases stay ordinary (${wrong.length ? 'triggered: ' + wrong.join('; ') : Object.keys(negatives).join('; ')})`);
+    const [split, proto, longest, perf] = await page.evaluate(ruleCases, [
+      '# Boundary\n\n**SM**S and **TTS**X are not SM or TTS.\n\n## Glossary\n\n- **SM**: streaming multiprocessor.\n- **TTS**: text to speech.\n',
+      '# JavaScript\n\nA constructor creates an object; toString prints it.\n\n## Glossary\n\n- **constructor**: the function that initialises a new object.\n- **toString**: turns a value into text.\n',
+      '# ML\n\nMachine learning needs data. Later, learning alone.\n\n## Glossary\n\n- **Machine learning**: learning from data.\n- **learning**: getting better with practice.\n',
+      '# Stress\n\n' + 'a '.repeat(30000) + '\n\n## Glossary\n\n' + Array.from({ length: 200 }, (_, i) => `- **${'a '.repeat(15)}${i}**: Definition.`).join('\n') + '\n',
+    ]);
+    ok(split.terms.join() === 'SM@P,TTS@P', `a word split by inline markup ("**SM**S") is not a term; the later real SM and TTS are marked (review R5) (${split.terms.join()})`);
+    ok(proto.terms.join() === 'constructor@P,toString@P', `names like "constructor" work (no Object.prototype lookups; review R7) (${proto.terms.join()})`);
+    ok(longest.terms.join() === 'Machine learning@P,learning@P', `the longest name wins and owns its words (${longest.terms.join()})`);
+    ok(perf.ms < 400 && perf.glossary === 1, `a glossary of 200 names sharing a 15-word prefix over a 60 KB body renders in ${Math.round(perf.ms)}ms (was 10-16 s with one big regex; review R1)`);
+  });
+
+  await withContext(ctx, async (context) => {
+    const long = '# 长定义\n\n' + '正文。'.repeat(40) + '\n\n这里提到 TTS 一次。\n\n' + '后文。'.repeat(200) + '\n\n## 术语表\n\n- **TTS**：' + '把文字变成声音的系统，'.repeat(30) + '\n';
+    const doc = await seedDoc(ctx, long);
+    const page = await openOwner(ctx, context, `/v/${doc.id}`);
+    await page.evaluate(() => localStorage.setItem('mdshare-zoom', '1.6'));
+    await page.reload({ waitUntil: 'load' });
+    await waitRendered(page);
+    const t = page.locator('#content .md-term').first();
+    await t.scrollIntoViewIfNeeded();
+    await page.evaluate(() => { const r = document.querySelector('#content .md-term').getBoundingClientRect(); window.scrollBy(0, r.top - 340); });
+    await t.tap();
+    await page.waitForFunction(() => !!document.querySelector('.md-term-pop'), null, { timeout: 3000 });
+    const fit = await page.evaluate(() => { const p = document.querySelector('.md-term-pop'), r = p.getBoundingClientRect(), a = p.querySelector('a'); p.scrollTop = p.scrollHeight; const ar = a.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, h: innerHeight, scrolls: p.scrollHeight > p.clientHeight, linkIn: ar.top >= r.top - 1 && ar.bottom <= r.bottom + 1 }; });
+    ok(fit.top >= 0 && fit.bottom <= fit.h && fit.linkIn, `at 160% on a phone a long definition stays on screen and scrolls inside the popover, its link reachable (review R3) (${JSON.stringify(fit)})`);
+    await page.locator('.md-term-pop a').tap();
+    await page.waitForTimeout(300);
+    const after = await page.evaluate(() => ({ pop: !!document.querySelector('.md-term-pop'), active: document.activeElement.tagName + ':' + document.activeElement.textContent.replace(/^#/, ''), hash: decodeURIComponent(location.hash) }));
+    ok(!after.pop && after.active === 'H2:术语表' && after.hash === '#术语表', `"全部术语" jumps to the glossary and focus goes with it (${JSON.stringify(after)})`);
+  }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' });
+
   for (const name of ['reading-not.md', 'reading-not-zh.md', 'edge-cases.md', 'zh-explainer.md']) {
     const doc = await seedDoc(ctx, fixture(name));
     await withContext(ctx, async (context) => {
       const page = await openOwner(ctx, context, `/v/${doc.id}`);
       await waitRendered(page);
       const n = await notTriggered(page);
-      ok(n.glossary === 0 && n.terms === 0, `${name}: no glossary and no marked terms (a "Terms" section of prose, plain bullets, a title that isn't exact) (${JSON.stringify(n)})`);
+      ok(n.glossary === 0 && n.terms === 0, `${name}: no glossary and no marked terms (plain bullets, a title that isn't exact, ordinary documents) (${JSON.stringify(n)})`);
     });
   }
 }
@@ -2290,6 +2358,19 @@ async function runRecapCard(ctx, ok) {
     const page = await openOwner(ctx, context, `/v/${en.id}`);
     await waitRendered(page);
     ok((await page.locator('#content .md-recap li').count()) === 2, '"## What to remember" as the last section is a recap card too');
+  });
+  await withContext(ctx, async (context) => {
+    const page = await openAnon(ctx, context, '/');
+    await page.waitForFunction(() => window.MDShareRender, null, { timeout: 5000 });
+    const doc = (title) => `# Doc\n\n## Context\n\nSome text.\n\n## ${title}\n\n- One.\n- Two.\n`;
+    const titles = ['要点回顾', '记住这几点', '记住这三点', '关键要点', 'Key takeaways', 'Takeaways', 'Recap', 'What to remember', 'recap', 'Key Takeaways：'];
+    const yes = await page.evaluate(ruleCases, titles.map(doc));
+    ok(yes.every((r, i) => r.recap === 1 && r.recapHead.replace(/^#/, '') === titles[i]), `every documented recap title, as the last section, makes a recap card (${JSON.stringify(yes.map((r) => r.recap))})`);
+    const negatives = ['总结', 'Summary', 'Conclusion', '结论', 'Recap of the week', 'Takeaway', '要点'];
+    const no = await page.evaluate(ruleCases, negatives.map(doc).concat(['# Doc\n\n## Context\n\nText.\n\n## Key takeaways\n\n- One.\n\n## Appendix\n\nMore.\n']));
+    ok(no.every((r) => r.recap === 0), `no recap card for ${negatives.join(', ')} or a recap that isn't last (${JSON.stringify(no.map((r) => r.recap))})`);
+    const [onlyKt, onlyRecap] = await page.evaluate(ruleCases, ['# Report\n\n## Key takeaways\n\n- First point.\n- Second point.\n', '# Report\n\n## Recap\n\n- First point.\n']);
+    ok(onlyKt.summary === 1 && onlyKt.recap === 0 && onlyRecap.recap === 1 && onlyRecap.summary === 0, 'a lone first-and-last "## Key takeaways" stays the summary card it always was (the first-section rule owns it, review R6: by design); a lone "## Recap" is a recap card');
   });
   for (const name of ['reading-not.md', 'reading-not-zh.md', 'edge-cases.md', 'en-report.md']) {
     const doc = await seedDoc(ctx, fixture(name));
@@ -2381,6 +2462,7 @@ async function runChartTheming(ctx, ok) {
       scale: Object.fromEntries(['xychart', 'pie', 'quadrantChart', 'sankey', 'mindmap', 'timeline'].map((t) => [t, +scale(t).toFixed(2)])),
       minFont: Object.fromEntries(['xychart', 'pie', 'quadrantChart', 'sankey'].map((t) => [t, +minFont(t).toFixed(1)])),
       wide: ['mindmap', 'timeline'].map((t) => byType[t] && byType[t].n.classList.contains('diagram-wide')),
+      sankey: byType.sankey && (() => { const rs = [...byType.sankey.svg.querySelectorAll('.node-labels text')].map((t) => t.getBoundingClientRect()); const touch = rs.some((a, i) => rs.some((b, j) => j > i && a.left < b.right + 8 && b.left < a.right + 8 && a.top < b.bottom - 2 && b.top < a.bottom - 2)); return { widened: byType.sankey.n.getAttribute('data-widened') === '1', wide: byType.sankey.n.classList.contains('diagram-wide'), touch }; })(),
       overflow: document.documentElement.scrollWidth - innerWidth,
     };
   });
@@ -2392,6 +2474,7 @@ async function runChartTheming(ctx, ok) {
     ok(f.bar === 'rgb(180, 83, 42)' && f.pie === 'rgb(231, 174, 146)' && f.quadrant === 'rgb(180, 83, 42)', `charts use the house palette led by the page accent (bar ${f.bar}, pie ${f.pie}, point ${f.quadrant})`);
     ok(f.sections >= 6 && f.limeOrYellow.length === 0, `mindmap and timeline sections are warm tints, no lime or yellow (${f.sections} shapes, offenders ${JSON.stringify(f.limeOrYellow)})`);
     ok(f.tableauLeft === false && f.line === 'rgb(179, 169, 153)', `sankey nodes use the house colours; timeline lines are quiet (${f.line})`);
+    ok(!f.sankey.widened && !f.sankey.touch, `on a desktop the sankey fits its frame with separate labels (${JSON.stringify(f.sankey)})`);
     await page.evaluate(() => document.querySelector('#content .mermaid').scrollIntoView({ block: 'start' }));
     await page.screenshot({ path: ctx.proofPath });
     for (const [theme, pie] of [['dark', 'rgb(164, 92, 57)'], ['paper', 'rgb(224, 162, 131)']]) {
@@ -2408,6 +2491,7 @@ async function runChartTheming(ctx, ok) {
     const f = await facts(page);
     ok(f.overflow <= 0, `no sideways scroll on a phone (${f.overflow}px)`);
     ok(f.scale.xychart >= 0.95 && f.scale.quadrantChart >= 0.95 && f.scale.sankey >= 0.95, `bar/line, quadrant and sankey are drawn for the phone's width, not shrunk (${JSON.stringify(f.scale)})`);
+    ok(f.sankey.widened && f.sankey.wide && !f.sankey.touch, `a sankey whose labels would run together at phone width is drawn wider and scrolls in its frame (${JSON.stringify(f.sankey)})`);
     ok(Object.values(f.minFont).every((px) => px >= 11), `chart labels stay legible at 390px, Chinese too (smallest label in px: ${JSON.stringify(f.minFont)})`);
     ok(f.wide.every(Boolean) && f.scale.mindmap >= 0.99 && f.scale.timeline >= 0.99, 'a mindmap or timeline too wide for a phone keeps its size and scrolls inside its frame');
     await page.evaluate(() => document.querySelectorAll('#content .mermaid')[1].scrollIntoView({ block: 'start' }));

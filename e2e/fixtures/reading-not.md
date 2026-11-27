@@ -4,11 +4,9 @@
 
 The first section is a summary card, as before. Nothing below should turn into a glossary, a recap card or a step-by-step reveal.
 
-## Terms
-
-Payment is due within 30 days. The API, SMS and TTS are mentioned here, and nothing is underlined: this "Terms" section has no term list.
-
 ## Details
+
+Payment is due within 30 days. The API, SMS and TTS are mentioned here, and nothing is underlined: the glossary below has plain bullets.
 
 :::steps
 - **One**: plain steps stay a timeline
