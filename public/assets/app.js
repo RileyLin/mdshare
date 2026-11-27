@@ -504,7 +504,93 @@
     }
     addEventListener('scroll', function () { if (!tick) { tick = true; requestAnimationFrame(upd); } }, { passive: true });
     upd();
-    if (top) top.addEventListener('click', function () { scrollTo({ top: 0, behavior: 'smooth' }); });
+    if (top) top.addEventListener('click', function () { scrollTo({ top: 0, behavior: root.classList.contains('motion-ok') ? 'smooth' : 'auto' }); });
+  }
+
+  // ---------- Resume where you left off (documents) ----------
+  // This device remembers, per document id, the section you were in and how far down you were:
+  // localStorage 'mdshare-resume' = { <id>: { h: heading id, r: 0..1, t: ms } }, newest 200 kept.
+  // Reopening a document you were part-way through (10-95%, within 30 days, no #link) offers a
+  // pill; it hides after 8 s or when you scroll. The page never moves by itself.
+  var RESUME_KEY = 'mdshare-resume', RESUME_MAX = 200, RESUME_DAYS = 30;
+  function resumeAll() {
+    var raw = store.get(RESUME_KEY), all;
+    try { all = raw ? JSON.parse(raw) : {}; } catch (e) { all = null; /* not ours or truncated: start over */ }
+    return all && typeof all === 'object' && !Array.isArray(all) ? all : {};
+  }
+  function sectionHeads(c) {
+    return Array.prototype.filter.call(c.querySelectorAll('h2[id], h3[id]'), function (h) { return !h.closest('.md-compare, .md-cards, .md-tabs, .md-callout, .md-summary, .md-steps-block'); });
+  }
+  function headText(h) { var x = h.cloneNode(true); Array.prototype.forEach.call(x.querySelectorAll('.anchor'), function (a) { a.remove(); }); return x.textContent.replace(/\s+/g, ' ').trim(); }
+  function saveSpot() {
+    var c = $('content'); if (!c || !D.id || document.body.classList.contains('editing')) return;
+    var max = document.documentElement.scrollHeight - innerHeight; if (max <= 0) return;
+    var h = '', hs = sectionHeads(c);
+    for (var i = 0; i < hs.length && hs[i].getBoundingClientRect().top < 140; i++) h = hs[i].id;
+    var all = resumeAll();
+    all[D.id] = { h: h, r: Math.round(Math.min(1, Math.max(0, scrollY / max)) * 1000) / 1000, t: Date.now() };
+    var ids = Object.keys(all);
+    if (ids.length > RESUME_MAX) {
+      ids.sort(function (a, b) { return ((all[b] && all[b].t) || 0) - ((all[a] && all[a].t) || 0); })
+        .slice(RESUME_MAX).forEach(function (k) { delete all[k]; });
+    }
+    store.set(RESUME_KEY, JSON.stringify(all));
+  }
+  function initResume() {
+    var c = $('content'); if (!c || !D.id) return;
+    var moved = false, timer = 0;
+    // Saved only once the reader has scrolled in this visit, so opening a page and leaving keeps the
+    // old spot. At most once a second while scrolling, and when the page is hidden or left.
+    addEventListener('scroll', function () {
+      moved = true;
+      if (!timer) timer = setTimeout(function () { timer = 0; saveSpot(); }, 1000);
+    }, { passive: true });
+    var flush = function () { if (moved) saveSpot(); };
+    addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') flush(); });
+    var spot = resumeAll()[D.id];
+    if (location.hash || !spot || !(spot.r > 0.1 && spot.r < 0.95) || !(Date.now() - spot.t < RESUME_DAYS * 864e5)) return;
+    // After load, so the browser's own scroll restoration (reload, back) has happened first.
+    var offer = function () { requestAnimationFrame(function () { offerResume(c, spot); }); };
+    if (document.readyState === 'complete') offer(); else addEventListener('load', offer, { once: true });
+  }
+  function offerResume(c, spot) {
+    var max = document.documentElement.scrollHeight - innerHeight; if (max <= 0) return;
+    var h = spot.h ? document.getElementById(spot.h) : null;
+    if (h && !c.contains(h)) h = null;
+    var targetY = function () { return h ? Math.max(0, h.getBoundingClientRect().top + scrollY - 72) : spot.r * (document.documentElement.scrollHeight - innerHeight); };
+    // Already there (restored by the browser) or the reader has started moving: no offer.
+    if (scrollY > innerHeight * 0.5 || targetY() - scrollY < innerHeight * 0.75) return;
+    var zh = c.classList.contains('cjk') || D.lang === 'zh';
+    var pill = document.createElement('button');
+    pill.type = 'button'; pill.className = 'resume-pill'; pill.id = 'resume-pill';
+    pill.setAttribute('lang', zh ? 'zh' : 'en');
+    var ic = document.createElement('span'); ic.className = 'ic'; ic.setAttribute('aria-hidden', 'true'); ic.textContent = '↓';
+    var t = document.createElement('span'); t.className = 't'; t.textContent = zh ? '从上次读到的地方继续' : 'Continue where you left off';
+    pill.appendChild(ic); pill.appendChild(t);
+    var label = h ? headText(h) : '';
+    if (label) { var s = document.createElement('span'); s.className = 'sec'; s.textContent = '\u00a0\u00b7\u00a0' + label; pill.appendChild(s); }
+    var live = document.createElement('div'); live.className = 'resume'; live.setAttribute('role', 'status');
+    live.appendChild(pill); document.body.appendChild(live);
+    var y0 = scrollY, hideTimer = 0;
+    function hide() {
+      clearTimeout(hideTimer);
+      removeEventListener('scroll', onScroll); document.removeEventListener('keydown', onKey);
+      pill.classList.remove('show');
+      setTimeout(function () { live.remove(); }, root.classList.contains('motion-ok') ? 240 : 0);
+    }
+    function onScroll() { if (Math.abs(scrollY - y0) > 24) hide(); }
+    function onKey(e) { if (e.key === 'Escape') hide(); }
+    pill.addEventListener('click', function () {
+      var y = targetY();
+      hide();
+      scrollTo({ top: y, behavior: root.classList.contains('motion-ok') ? 'smooth' : 'auto' });
+      if (h) { if (!h.hasAttribute('tabindex')) h.setAttribute('tabindex', '-1'); h.focus({ preventScroll: true }); }
+    });
+    addEventListener('scroll', onScroll, { passive: true });
+    document.addEventListener('keydown', onKey);
+    hideTimer = setTimeout(hide, 8000);
+    requestAnimationFrame(function () { pill.classList.add('show'); });
   }
 
   // ---------- Editing (documents) ----------
@@ -565,7 +651,7 @@
     bindPop('btn-aa', 'aa-pop');
     initOwner();
     initCopyLink();
-    if (D.view === 'doc') { renderDoc(); initProgress(); initEditor(); }
+    if (D.view === 'doc') { renderDoc(); initProgress(); initEditor(); initResume(); }
     if (D.view === 'diagram') initDiagram();
     if (/[?&]deleted=1/.test(location.search)) toast('Deleted');
   }
