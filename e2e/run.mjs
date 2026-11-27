@@ -2028,15 +2028,17 @@ async function runCrossUser(ctx, ok) {
 // browser, publishes with the token, rotates the link, and is switched off by the owner.
 async function runSignupFlow(ctx, ok) {
   const bearer = (t) => ['Bea', 'rer'].join('') + ' ' + t;
+  // This stranger's own network (the suite's earlier features used up 127.0.0.1's 50 creates an hour).
+  const net = { 'x-forwarded-for': '10.9.0.7' };
   const ownerMarker = `owner-private-${rand()}`;
-  await seedPaste(ctx.serverUrl, `# Owner ${ownerMarker}\n\n${ownerMarker}`, { cookie: ctx.ownerCookie });
-  const su = await fetch(`${ctx.serverUrl}/api/auth?action=signup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: 'e2e C' }) });
+  ctx.sb.seed('mdshare_pastes', { id: `own${rand(7)}`, owner_id: 1, title: `Owner ${ownerMarker}`, content: `# Owner ${ownerMarker}\n\n${ownerMarker}`, expires_at: '2999-01-01T00:00:00Z' });
+  const su = await fetch(`${ctx.serverUrl}/api/auth?action=signup`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...net }, body: JSON.stringify({ label: 'e2e C' }) });
   const c = await su.json();
   ok(su.status === 201 && Number.isInteger(c.user_id) && c.user_id > 1 && /^mds_/.test(c.token) && c.guide === `${ctx.serverUrl}/llms.txt`, `sign-up answers 201 {user_id, token, entry_url, guide} (user ${c.user_id})`);
   ok(/^http:\/\/127\.0\.0\.1:\d+\/enter#[A-Za-z0-9_-]{43}$/.test(c.entry_url || ''), 'the entry link is <origin>/enter#<43-char secret>');
   const secret = String(c.entry_url).split('#')[1];
   ok(!JSON.stringify(ctx.sb.tables).includes(secret) && ctx.sb.tables.mdshare_users.some((u) => u.id === c.user_id && /^[0-9a-f]{64}$/.test(u.entry_hash)), 'the database holds only a hash of the secret');
-  const tok = { Authorization: bearer(c.token), 'Content-Type': 'application/json' };
+  const tok = { Authorization: bearer(c.token), 'Content-Type': 'application/json', ...net };
   const publish = async (marker) => (await fetch(`${ctx.serverUrl}/api/share`, { method: 'POST', headers: tok, body: JSON.stringify({ markdown: `# C ${marker}\n\n${marker}`, keep: true }) })).json();
   const first = `c-first-${rand()}`;
   const p1 = await publish(first);
