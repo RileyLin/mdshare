@@ -480,7 +480,9 @@ export const classicDocHtml = (content, title, id, authed = false, isPublic = fa
     let editingContent = raw;
 
     function renderPreview(md) {
-      const html = marked.parse(md);
+      // Sanitised like the first render above: the editor preview and the saved view used to run
+      // a stored <img onerror> (adversarial review 2026-11-27, R2).
+      const html = DOMPurify.sanitize(marked.parse(md));
       document.getElementById('preview-content').innerHTML = html;
       hljs.highlightAll();
       renderMermaidBlocks(document.getElementById('preview-content'));
@@ -517,7 +519,7 @@ export const classicDocHtml = (content, title, id, authed = false, isPublic = fa
         if (!res.ok) throw new Error(await res.text());
 
         // Update read view with new content
-        document.getElementById('content').innerHTML = marked.parse(editingContent);
+        document.getElementById('content').innerHTML = DOMPurify.sanitize(marked.parse(editingContent));
         hljs.highlightAll();
         const newH1 = document.querySelector('#content h1');
         if (newH1) document.getElementById('doc-title').textContent = newH1.textContent;

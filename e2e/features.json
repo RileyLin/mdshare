@@ -677,6 +677,18 @@
     ]
   },
   {
+    "id": "classic-edit-safety",
+    "name": "Classic view editor never runs stored HTML",
+    "path": "/v/:id?classic=1 -> Edit -> Save (owner)",
+    "steps": [
+      "seed a document with <img onerror>",
+      "owner opens the classic view, presses Edit, then Save"
+    ],
+    "assertions": [
+      "the editor preview and the saved view are sanitised: no handler attribute, nothing runs"
+    ]
+  },
+  {
     "id": "library-search",
     "name": "Library full-text search (Chinese too) with highlighted snippets",
     "path": "/dashboard search box -> GET /api/doc?action=search",

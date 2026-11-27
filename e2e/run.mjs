@@ -2415,6 +2415,27 @@ async function runChartTheming(ctx, ok) {
   }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' });
 }
 
+// The classic view's editor preview and its post-save render assigned marked.parse() to innerHTML
+// unsanitised: a stored <img onerror> ran when the owner pressed Edit (adversarial review R2).
+async function runClassicEditSafety(ctx, ok) {
+  const doc = await seedDoc(ctx, '# Classic stored XSS\n\n<img src="/missing-image" onerror="window.__classicXss=(window.__classicXss||0)+1">\n\nTEXT-AFTER-PROBE\n');
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${doc.id}?classic=1`);
+    await page.waitForFunction(() => document.getElementById('content')?.textContent.includes('TEXT-AFTER-PROBE'), null, { timeout: 5000 });
+    await page.click('button[onclick="enterEdit()"]');
+    await page.waitForFunction(() => document.getElementById('preview-content')?.textContent.includes('TEXT-AFTER-PROBE'), null, { timeout: 5000 });
+    await page.waitForTimeout(300);
+    const edit = await page.evaluate(() => ({ ran: window.__classicXss || 0, handlers: document.querySelectorAll('#preview-content [onerror]').length }));
+    ok(edit.ran === 0 && edit.handlers === 0, `classic editor preview: stored HTML is sanitised and nothing runs (${JSON.stringify(edit)})`);
+    await page.click('#btn-save-edit');
+    await page.waitForFunction(() => /Saved/.test(document.getElementById('btn-save-edit')?.textContent || ''), null, { timeout: 5000 });
+    await page.waitForTimeout(300);
+    const saved = await page.evaluate(() => ({ ran: window.__classicXss || 0, handlers: document.querySelectorAll('#content [onerror]').length }));
+    ok(saved.ran === 0 && saved.handlers === 0, `classic view after Save: still sanitised (${JSON.stringify(saved)})`);
+    await page.screenshot({ path: ctx.proofPath });
+  });
+}
+
 const RUNNERS = {
   'home-page': runHomePage,
   'create-paste-ui': runCreatePasteUi,
@@ -2468,6 +2489,7 @@ const RUNNERS = {
   'recap-card': runRecapCard,
   'steps-reveal': runStepsReveal,
   'chart-theming': runChartTheming,
+  'classic-edit-safety': runClassicEditSafety,
 };
 
 async function main() {
