@@ -545,6 +545,131 @@ const checks = [
     },
   },
   {
+    id: 'tenant-scoped',
+    why: 'Multi-user beta (2026-11-27): the server uses the Supabase service key, so one unscoped query leaks another user\'s documents. Every read and write of a user table goes through api/_lib/tenant.js, which puts owner_id first in every query; "signed in" never means "may see every row".',
+    run() {
+      const errs = [];
+      const T = 'api/_lib/tenant.js';
+      if (!exists(T)) return [`${T} is missing: it is the only file that talks to PostgREST tables.`];
+      // 1. Nobody else builds a table URL, holds the service key, or keeps the old unscoped helpers.
+      const KEY_FILES = [T, 'api/_lib/search.js', 'api/_lib/session.js'];
+      for (const f of apiFiles()) {
+        if (f === T) continue;
+        lines(f).forEach((l, i) => {
+          if (isCommentLine(l)) return;
+          if (/rest\/v1\//.test(l) && !(f === 'api/_lib/search.js' && /rest\/v1\/rpc\/mdshare_search_owned`/.test(l))) errs.push(`${f}:${i + 1}: no PostgREST URL outside ${T}; use readOwned/selectOwned/patchOwned/deleteOwned/insertOwned with the request's principal ("${l.trim()}").`);
+          if (/SUPABASE_SERVICE_KEY|SUPABASE_KEY\b/.test(l) && !KEY_FILES.includes(f)) errs.push(`${f}:${i + 1}: only ${T} (and the search rpc / session HMAC fallback) read the service key ("${l.trim()}").`);
+          if (/\b(getRow|sbSelect|patchRow|deleteRow)\s*\(/.test(l)) errs.push(`${f}:${i + 1}: the unscoped helpers getRow/sbSelect/patchRow/deleteRow are gone; use ${T} (readForView only for a document's own page, then isVisible) ("${l.trim()}").`);
+        });
+      }
+      // 2. Inside tenant.js: every exported function that queries is owner-scoped, an insert, or on the fixed UNSCOPED list.
+      const src = read(T);
+      const UNSCOPED = ['readForView', 'findTokenByHash', 'touchToken', 'pingDb', 'recentEventsAllUsers'];
+      const listed = ((/export const UNSCOPED = \[([^\]]*)\];/.exec(src) || [])[1] || '').match(/'[^']+'/g)?.map((x) => x.slice(1, -1)) || [];
+      if (listed.join() !== UNSCOPED.join()) errs.push(`${T}: UNSCOPED must be exactly [${UNSCOPED.join(', ')}] (got [${listed.join(', ')}]). A new unscoped read is a cross-user leak until proven otherwise: scope it with ownerFilter(me) instead.`);
+      if ((src.match(/\bfetch\(/g) || []).length !== 1 || !/function request\(table, query, init = \{\}\) \{\n\s*if \(!USER_TABLES\.includes\(table\)\) throw/.test(src)) errs.push(`${T}: exactly one fetch(), inside request(table, query, init), which throws for a table outside USER_TABLES.`);
+      if (/export (async )?function request\b/.test(src)) errs.push(`${T}: request() stays private; export scoped helpers instead.`);
+      if (!/function ownerFilter\(me\) \{\n\s*return `owner_id=eq\.\$\{encodeURIComponent\(uidOf\(me\)\)\}`;\n\}/.test(src)) errs.push(`${T}: ownerFilter(me) returns \`owner_id=eq.\${encodeURIComponent(uidOf(me))}\`.`);
+      if (!/const readable = \(me\) => !!me && PRINCIPALS\.has\(me\) && me\.via !== 'anonymous-create' && isUid\(me\.uid\);/.test(src)) errs.push(`${T}: readable(me) accepts only principals minted here, never the anonymous-create principal.`);
+      if (!/export function uidOf\(me\) \{\n\s*if \(!readable\(me\)\) throw/.test(src)) errs.push(`${T}: uidOf(me) throws for anything but a readable principal.`);
+      const fns = [...src.matchAll(/\nexport (?:async )?function (\w+)\([^)]*\) \{\n([\s\S]*?)\n\}/g)];
+      for (const [, name, body] of fns) {
+        const queries = /\b(request|byId)\(/.test(body);
+        if (!queries || name === 'insertOwned' || UNSCOPED.includes(name)) continue;
+        if (!/\$\{ownerFilter\(me\)\}/.test(body)) errs.push(`${T}: ${name}() queries without \${ownerFilter(me)}; every per-user query starts with the owner filter.`);
+      }
+      // 3. readForView (unscoped by id) is only for routes that then call isVisible().
+      for (const f of apiFiles()) {
+        if (f === T) continue;
+        const code = read(f).split('\n').filter((l) => !isCommentLine(l)).join('\n');
+        if (/\breadForView\(/.test(code) && !/\bisVisible\(row, req, res/.test(code)) errs.push(`${f}: readForView() is the unscoped read for a document's own page; pass the row through isVisible(row, req, res, ...) or use readOwned(table, me, id, ...).`);
+      }
+      // 4. "Signed in" is not "owns this": the any-session booleans only where any user is meant.
+      const ANY_SESSION_OK = ['api/auth.js', 'api/dashboard.js', 'api/_lib/session.js', 'api/_lib/content.js', 'api/_lib/raw.js', 'api/_lib/collection-page.js'];
+      for (const f of apiFiles()) {
+        if (ANY_SESSION_OK.includes(f)) continue;
+        lines(f).forEach((l, i) => {
+          if (!isCommentLine(l) && /\b(checkAuthAndRefresh|isAuthenticated)\(/.test(l)) errs.push(`${f}:${i + 1}: a session alone doesn't say whose rows these are. Use sessionOwner()/ownerOf() with tenant.js, viewerOwns(row, req, res) or isVisible() ("${l.trim()}").`);
+        });
+      }
+      const access = read('api/_lib/access.js');
+      const vis = (/export function isVisible\(row, req, res, opts\) \{\n([\s\S]*?)\n\}/.exec(access) || [])[1] || '';
+      if (!/if \(owns\(sessionOwner\(req, res\), row\)\) return true;/.test(vis)) errs.push('api/_lib/access.js: isVisible() grants a private row only to its owner: `if (owns(sessionOwner(req, res), row)) return true;`.');
+      const tcr = (/export function tokenCanRead\(agentAuth, row\) \{\n([\s\S]*?)\n\}/.exec(access) || [])[1] || '';
+      if (!/if \(!owns\(tokenOwner\(agentAuth\), row\)\) return false;/.test(tcr)) errs.push("api/_lib/access.js: tokenCanRead() first requires the token's own user to own the row: `if (!owns(tokenOwner(agentAuth), row)) return false;`.");
+      for (const f of ['api/_lib/raw.js', 'api/diagram.js', 'api/archify.js']) {
+        if (!/const agentOwns = tokenCanRead\(agentAuth, row\);/.test(read(f))) errs.push(`${f}: compute the token branch with \`const agentOwns = tokenCanRead(agentAuth, row);\` (api/_lib/access.js).`);
+      }
+      return errs;
+    },
+  },
+  {
+    id: 'owner-on-insert',
+    why: 'Multi-user beta (2026-11-27): a row\'s owner decides who can see it, so owner_id is set in exactly one place (tenant.js insertOwned) from the request\'s principal (ownerOf/creatorOf), never from the request body or any other code.',
+    run() {
+      const errs = [];
+      const T = 'api/_lib/tenant.js';
+      if (!exists(T)) return [`${T} is missing.`];
+      for (const f of apiFiles()) {
+        if (f === T) continue;
+        lines(f).forEach((l, i) => {
+          if (!isCommentLine(l) && /owner_id/.test(l)) errs.push(`${f}:${i + 1}: owner_id is only written, filtered and compared in ${T} (insertOwned, ownerFilter, owns); pass a principal instead ("${l.trim()}").`);
+        });
+      }
+      const src = read(T);
+      const ins = (/export async function insertOwned\(table, owner, row, \{ returning = false \} = \{\}\) \{\n([\s\S]*?)\n\}/.exec(src) || [])[1];
+      if (!ins) errs.push(`${T}: keep \`export async function insertOwned(table, owner, row, { returning = false } = {})\`, the one insert.`);
+      else {
+        if (!/^\s*assertNoOwner\(row, 'insertOwned'\);/.test(ins)) errs.push(`${T}: insertOwned() starts with assertNoOwner(row, 'insertOwned') so a row can't carry its own owner_id.`);
+        if (!/if \(!PRINCIPALS\.has\(owner\) \|\| !isUid\(owner\.uid\)\) throw/.test(ins)) errs.push(`${T}: insertOwned() accepts only a principal minted by tenant.js (PRINCIPALS) as the owner.`);
+        if (!/body: JSON\.stringify\(\{ \.\.\.row, owner_id: uid \}\)/.test(ins)) errs.push(`${T}: insertOwned() writes \`{ ...row, owner_id: uid }\` (the principal's uid last, so nothing in row overrides it).`);
+      }
+      if ((src.match(/method: 'POST'/g) || []).length !== 1) errs.push(`${T}: insertOwned() is the only POST (insert) in this file.`);
+      if (!/function assertNoOwner|const assertNoOwner = /.test(src) || !/assertNoOwner\(patch, 'patchOwned'\);/.test(src)) errs.push(`${T}: patchOwned() refuses a patch that sets owner_id (assertNoOwner(patch, 'patchOwned')).`);
+      // Creates: the owner is creatorOf(req, res, agentAuth) (the token's user, the cookie's, or the site owner for anonymous).
+      for (const f of CREATE_ROUTES) {
+        const code = read(f);
+        if (!/supabaseSet\(creatorOf\(req, res, agentAuth\), /.test(code)) errs.push(`${f}: the create passes creatorOf(req, res, agentAuth) as the owner: supabaseSet(creatorOf(req, res, agentAuth), ...).`);
+        if (!/await insertOwned\('mdshare_\w+', me,/.test(code)) errs.push(`${f}: insert through insertOwned('<table>', me, {...}) with that owner.`);
+      }
+      for (const f of apiFiles()) {
+        if (f === T || CREATE_ROUTES.includes(f)) continue;
+        lines(f).forEach((l, i) => {
+          if (!isCommentLine(l) && /\bcreatorOf\(/.test(l)) errs.push(`${f}:${i + 1}: creatorOf() (which maps anonymous to the site owner) is only for the create routes; reads use ownerOf()/sessionOwner() ("${l.trim()}").`);
+        });
+      }
+      const other = { 'api/_lib/agent-tokens.js': /await insertOwned\(TABLE, me, insertBody, \{ returning: true \}\)/, 'api/_lib/activity.js': /if \(method === 'POST'\) return insertOwned\(table, me, body, \{ returning: true \}\);/, 'api/_lib/events.js': /await insertOwned\('mdshare_events', owner, /};
+      for (const [f, re] of Object.entries(other)) if (exists(f) && !re.test(read(f))) errs.push(`${f}: insert through insertOwned(<table>, <principal>, ...) (${re.source}).`);
+      return errs;
+    },
+  },
+  {
+    id: 'search-owner-param',
+    why: 'Multi-user beta (2026-11-27): full-text search runs in SQL over every row, so the rpc must always get p_owner (the requester\'s uid). It is a new function name, so a call without p_owner fails instead of reaching the unscoped mdshare_search.',
+    run() {
+      const errs = [];
+      const src = exists('api/_lib/search.js') ? read('api/_lib/search.js') : '';
+      const fn = (/export async function searchDocs\(me, \{ q, limit, offset \}\) \{\n([\s\S]*?)\n\}/.exec(src) || [])[1];
+      if (!fn) errs.push('api/_lib/search.js: keep `export async function searchDocs(me, { q, limit, offset })`.');
+      else {
+        if (!/const owner = uidOf\(me\);/.test(fn)) errs.push('api/_lib/search.js: searchDocs() takes the owner from `const owner = uidOf(me);` (tenant.js; throws without a principal).');
+        if (!/body: JSON\.stringify\(\{ q, lim: limit, skip: offset, p_owner: owner \}\)/.test(fn)) errs.push('api/_lib/search.js: the rpc body is `JSON.stringify({ q, lim: limit, skip: offset, p_owner: owner })`.');
+        if (!/rest\/v1\/rpc\/mdshare_search_owned`/.test(fn)) errs.push('api/_lib/search.js: call rpc/mdshare_search_owned (migration 013), never the unscoped mdshare_search.');
+      }
+      for (const f of apiFiles()) {
+        lines(f).forEach((l, i) => {
+          if (!isCommentLine(l) && /rpc\/mdshare_search(?!_owned)\b/.test(l)) errs.push(`${f}:${i + 1}: the unscoped rpc/mdshare_search searches every user; call mdshare_search_owned with p_owner.`);
+        });
+      }
+      const doc = read('api/doc.js');
+      const action = (/\n {2}search: \{([\s\S]*?)\n {2}\},/.exec(doc) || [])[1] || '';
+      if (!/await searchDocs\(me, v\.value\)/.test(action) || !/async run\(\{ query, me \}\)/.test(action)) errs.push("api/doc.js: the search action runs `searchDocs(me, v.value)` with the handler's `me` (ownerOf).");
+      const mig = walk('migrations', (p) => p.endsWith('.sql')).map(read).join('\n');
+      if (!/CREATE FUNCTION public\.mdshare_search_owned\(p_owner bigint, /.test(mig) || !/WHERE t\.owner_id = p_owner\b/.test(mig)) errs.push('migrations: mdshare_search_owned(p_owner bigint, ...) must filter `WHERE t.owner_id = p_owner` (013).');
+      return errs;
+    },
+  },
+  {
     id: 'mermaid-vendored',
     why: 'Diagrams must draw with one pinned library in production, e2e and the preview tool, and never with a script-capable security level: with securityLevel "loose" a click/call line in a diagram ran script on the owner\'s session (adversarial review 2026-11-25).',
     run() {

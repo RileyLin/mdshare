@@ -190,6 +190,51 @@ for (const [id, label, file, fn] of batchBMutations) {
   });
 }
 
+// Multi-user beta (2026-11-27): the three tenant invariants. Each line removes one scope (or adds
+// one unscoped path) and must be caught by the named check.
+const tenantMutations = [
+  ['tenant-scoped', 'the library queries PostgREST directly', 'api/pastes.js', (s) => s.replace("  const me = sessionOwner(req, res);\n", "  const me = sessionOwner(req, res);\n  const raw = await fetch(`${process.env.SUPABASE_URL}/rest/v1/mdshare_pastes?select=id`); void raw;\n")],
+  ['tenant-scoped', 'selectOwned drops the owner filter', 'api/_lib/tenant.js', (s) => s.replace("const res = await request(table, `${ownerFilter(me)}${query ? `&${query}` : ''}`);", "const res = await request(table, query || '');")],
+  ['tenant-scoped', 'readOwned becomes an unscoped by-id read', 'api/_lib/tenant.js', (s) => s.replace("return byId(table, `${ownerFilter(me)}&`, id, select);", "return byId(table, '', id, select);")],
+  ['tenant-scoped', 'a new unscoped export joins UNSCOPED', 'api/_lib/tenant.js', (s) => s.replace("'recentEventsAllUsers'];", "'recentEventsAllUsers', 'allPastes'];\nexport async function allPastes() { return rowsOf(await request('mdshare_pastes', 'select=id')); }")],
+  ['tenant-scoped', 'a new export queries without the owner filter', 'api/_lib/tenant.js', (s) => s + "\nexport async function everyFeedback() {\n  return rowsOf(await request('mdshare_feedback', 'select=*'));\n}\n"],
+  ['tenant-scoped', 'ownerFilter stops encoding / scoping', 'api/_lib/tenant.js', (s) => s.replace('return `owner_id=eq.${encodeURIComponent(uidOf(me))}`;', 'return `owner_id=not.is.null`;')],
+  ['tenant-scoped', 'the anonymous-create principal becomes readable', 'api/_lib/tenant.js', (s) => s.replace(" && me.via !== 'anonymous-create'", '')],
+  ['tenant-scoped', 'isVisible goes back to "any signed-in user sees everything"', 'api/_lib/access.js', (s) => s.replace('if (owns(sessionOwner(req, res), row)) return true;', 'if (sessionOwner(req, res)) return true;')],
+  ['tenant-scoped', 'tokenCanRead stops checking the token\'s user', 'api/_lib/access.js', (s) => s.replace('  if (!owns(tokenOwner(agentAuth), row)) return false;\n', '')],
+  ['tenant-scoped', 'the reader page shows owner controls to any session', 'api/render.js', (s) => s.replace("import { readForView } from './_lib/tenant.js';", "import { readForView } from './_lib/tenant.js';\nimport { checkAuthAndRefresh } from './_lib/session.js';").replace('const authed = viewerOwns(row, req, res);', 'const authed = checkAuthAndRefresh(req, res);')],
+  ['tenant-scoped', 'the doc API reads a row without scoping it', 'api/doc.js', (s) => s.replace("const { row, dbError } = await readOwned('mdshare_pastes', me, body.id, 'id,expires_at');", "const { row, dbError } = await readForView('mdshare_pastes', body.id, 'id,expires_at');").replace("import { ownerOf, readOwned } from './_lib/tenant.js';", "import { ownerOf, readOwned, readForView } from './_lib/tenant.js';")],
+  ['tenant-scoped', 'a route reads the service key itself', 'api/pin.js', (s) => s + '\nexport const leakKey = () => process.env.SUPABASE_SERVICE_KEY;\n'],
+  ['tenant-scoped', 'the old getRow helper comes back', 'api/_lib/access.js', (s) => s + '\nexport async function getRow(table, id) { return { table, id }; }\n'],
+  ['tenant-scoped', 'the diagram API computes the token branch itself', 'api/diagram.js', (s) => s.replace('const agentOwns = tokenCanRead(agentAuth, row);', "const agentOwns = !!(agentAuth.valid && row && hasScope(agentAuth, 'documents:read'));")],
+  ['owner-on-insert', 'share.js takes the owner from the body', 'api/share.js', (s) => s.replace('origin: links.origin || null,', 'origin: links.origin || null, owner_id: body?.owner_id,')],
+  ['owner-on-insert', 'insertOwned lets the row carry its own owner', 'api/_lib/tenant.js', (s) => s.replace("  assertNoOwner(row, 'insertOwned');\n", '')],
+  ['owner-on-insert', 'insertOwned lets the row override the owner', 'api/_lib/tenant.js', (s) => s.replace('body: JSON.stringify({ ...row, owner_id: uid }),', 'body: JSON.stringify({ owner_id: uid, ...row }),')],
+  ['owner-on-insert', 'insertOwned accepts a lookalike principal', 'api/_lib/tenant.js', (s) => s.replace('if (!PRINCIPALS.has(owner) || !isUid(owner.uid)) throw', 'if (!isUid(owner.uid)) throw')],
+  ['owner-on-insert', 'a diagram create stops naming its owner', 'api/diagram.js', (s) => s.replace('await supabaseSet(creatorOf(req, res, agentAuth), id,', 'await supabaseSet(null, id,')],
+  ['owner-on-insert', 'tenant.js grows a second insert path', 'api/_lib/tenant.js', (s) => s + "\nexport function rawInsert(table, row) {\n  return request(table, '', { method: 'POST', body: JSON.stringify(row) });\n}\n"],
+  ['owner-on-insert', 'patchOwned may move a row to another owner', 'api/_lib/tenant.js', (s) => s.replace("  assertNoOwner(patch, 'patchOwned');\n", '')],
+  ['owner-on-insert', 'a read path uses creatorOf (anonymous would read as the site owner)', 'api/pastes.js', (s) => s.replace('const me = sessionOwner(req, res);', 'const me = creatorOf(req, res, null);')],
+  ['search-owner-param', 'search stops sending p_owner', 'api/_lib/search.js', (s) => s.replace('body: JSON.stringify({ q, lim: limit, skip: offset, p_owner: owner }),', 'body: JSON.stringify({ q, lim: limit, skip: offset }),')],
+  ['search-owner-param', 'search sends a fixed owner', 'api/_lib/search.js', (s) => s.replace('const owner = uidOf(me);', 'const owner = 1;')],
+  ['search-owner-param', 'search goes back to the unscoped rpc', 'api/_lib/search.js', (s) => s.replace('/rest/v1/rpc/mdshare_search_owned`', '/rest/v1/rpc/mdshare_search`')],
+  ['search-owner-param', 'the search action drops the principal', 'api/doc.js', (s) => s.replace('const r = await searchDocs(me, v.value);', 'const r = await searchDocs(null, v.value);')],
+  ['search-owner-param', 'the migration function stops filtering by owner', 'migrations/013_multiuser_owner.sql', (s) => s.replace('WHERE t.owner_id = p_owner\n            AND', 'WHERE')],
+];
+for (const [id, label, file, fn] of tenantMutations) {
+  test(`invariant "${id}" fails when ${label}`, () => {
+    const dir = copyRepo();
+    try {
+      const before = readFileSync(join(dir, file), 'utf8');
+      edit(dir, file, fn);
+      assert.notEqual(readFileSync(join(dir, file), 'utf8'), before, 'the mutation applied');
+      const r = run(dir);
+      assert.equal(r.code, 1, r.out);
+      assert.match(r.out, new RegExp(`✗ ${id.replace(/[-]/g, '\\-')} `), r.out);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+}
+
 // Second mutation for the write allowlist: a direct write from api/doc.js.
 test('invariant "activity-writes-allowlist" fails when api/doc.js writes directly', () => {
   const dir = copyRepo();
