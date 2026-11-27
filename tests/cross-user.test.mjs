@@ -1,6 +1,9 @@
 // The cross-user matrix (multi-user beta P2, 2026-11-27; PLAN.md "cross-user matrix"): every route
-// × {A cookie, A v2 cookie, A token, B cookie, B token, anonymous} × {A private, A public, B private,
-// expired} against a fresh two-user database for every single call. For each call:
+// × {A cookie, A v2 cookie, A token, B cookie, B token, C cookie, C token, D cookie, D token,
+// anonymous} × {A private, A public, B private, C private, D public, expired} against a fresh
+// database for every single call. C is a freshly signed-up user (P3); D is a disabled one, whose
+// cookie must act exactly like no cookie, whose token exactly like an unknown token, and whose
+// documents (public ones too) exactly like missing ones, for everyone including D. For each call:
 //   1. no leak: the response never contains a marker (title, body, svg, html, feedback quote, token
 //      name, or the id) of a row the caller doesn't own, except the public document it asked for;
 //   2. missing == forbidden: on a row the caller doesn't own (and on any expired row a content route
@@ -39,7 +42,13 @@ test.after(() => db.close());
 // ---------- Two users and their rows ----------
 const FUTURE = '2999-01-01T00:00:00Z';
 const PAST = '2001-01-01T00:00:00Z';
-const RAW = { 1: 'mds_matrix_token_user_A_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 2: 'mds_matrix_token_user_B_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB' };
+const RAW = { 1: 'mds_matrix_token_user_A_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 2: 'mds_matrix_token_user_B_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', 3: 'mds_matrix_token_user_C_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC', 4: 'mds_matrix_token_user_D_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD' };
+const BOGUS = 'mds_matrix_token_nobody_ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ';
+// Users besides #1 (seeded by the fake on every reset): B, C (fresh sign-up), D (disabled).
+const USERS = [{ id: 2, label: 'B' }, { id: 3, label: 'C fresh' }, { id: 4, label: 'D', disabled: true }];
+const DISABLED = new Set([4]);
+const TOKEN_OF = { 1: 'tok_userA1', 2: 'tok_userB1', 3: 'tok_userC1', 4: 'tok_userD1' };
+const FEEDBACK_OF = { 1: 'fb_Apriv0001', 2: 'fb_Bpriv0001', 3: 'fb_Cpriv0001', 4: 'fb_Dpub00001' };
 const mk = (key, what) => `mk_${key}_${what}`;
 const paste = (key, id, owner, extra = {}) => ({ table: 'mdshare_pastes', key, id, owner, row: { id, owner_id: owner, title: `${mk(key, 'title')} zebra`, content: `# ${mk(key, 'title')} zebra\n\n${mk(key, 'body')} zebra`, is_public: false, expires_at: FUTURE, pinned: false, created_at: '2026-11-20T00:00:00Z', ...extra } });
 const diag = (key, id, owner, extra = {}) => ({ table: 'mdshare_diagrams', key, id, owner, row: { id, owner_id: owner, title: mk(key, 'title'), svg: `<svg><text>${mk(key, 'svg')}</text></svg>`, markdown: `${mk(key, 'body')} zebra`, is_public: false, expires_at: FUTURE, pinned: false, ...extra } });
@@ -64,19 +73,39 @@ const ROWS = [
   arch('aPubX', 'aPubArchi1', 1, { is_public: true }),
   arch('aExpX', 'aExpArchi1', 1, { expires_at: PAST }),
   arch('bPrivX', 'bPrivArchi', 2, { created_by_token: 'tok_userB1' }),
+  paste('cPriv', 'cPrivPaste', 3, { created_by_token: 'tok_userC1', collection: 'shared', lang: 'en' }),
+  paste('cMine', 'cMinePaste', 3, { created_by_token: 'tok_userC1', lang: 'en' }),
+  diag('cPrivD', 'cPrivDiagr', 3, { created_by_token: 'tok_userC1' }),
+  arch('cPrivX', 'cPrivArchi', 3, { created_by_token: 'tok_userC1' }),
+  // D is disabled: even its public documents must answer like missing ones.
+  paste('dPub', 'dPubPaste1', 4, { is_public: true, created_by_token: 'tok_userD1', collection: 'shared', lang: 'en' }),
+  paste('dMine', 'dMinePaste', 4, { created_by_token: 'tok_userD1', lang: 'en' }),
+  diag('dPubD', 'dPubDiagr1', 4, { is_public: true, created_by_token: 'tok_userD1' }),
+  arch('dPubX', 'dPubArchi1', 4, { is_public: true, created_by_token: 'tok_userD1' }),
   { table: 'mdshare_feedback', key: 'fbA', id: 'fb_Apriv0001', owner: 1, row: { id: 'fb_Apriv0001', owner_id: 1, doc_id: 'aPrivPaste', kind: 'note', quote: mk('fbA', 'quote'), note: mk('fbA', 'note'), status: 'open' } },
   { table: 'mdshare_feedback', key: 'fbB', id: 'fb_Bpriv0001', owner: 2, row: { id: 'fb_Bpriv0001', owner_id: 2, doc_id: 'bPrivPaste', kind: 'note', quote: mk('fbB', 'quote'), note: mk('fbB', 'note'), status: 'open' } },
   { table: 'mdshare_reads', key: 'readA', id: 'aPrivPaste', owner: 1, row: { doc_id: 'aPrivPaste', owner_id: 1, open_count: 3, max_scroll: 41 } },
   { table: 'mdshare_reads', key: 'readB', id: 'bPrivPaste', owner: 2, row: { doc_id: 'bPrivPaste', owner_id: 2, open_count: 7, max_scroll: 77 } },
+  { table: 'mdshare_feedback', key: 'fbC', id: 'fb_Cpriv0001', owner: 3, row: { id: 'fb_Cpriv0001', owner_id: 3, doc_id: 'cPrivPaste', kind: 'note', quote: mk('fbC', 'quote'), note: mk('fbC', 'note'), status: 'open' } },
+  { table: 'mdshare_feedback', key: 'fbD', id: 'fb_Dpub00001', owner: 4, row: { id: 'fb_Dpub00001', owner_id: 4, doc_id: 'dPubPaste1', kind: 'note', quote: mk('fbD', 'quote'), note: mk('fbD', 'note'), status: 'open' } },
+  { table: 'mdshare_reads', key: 'readC', id: 'cPrivPaste', owner: 3, row: { doc_id: 'cPrivPaste', owner_id: 3, open_count: 2, max_scroll: 22 } },
+  { table: 'mdshare_reads', key: 'readD', id: 'dPubPaste1', owner: 4, row: { doc_id: 'dPubPaste1', owner_id: 4, open_count: 4, max_scroll: 44 } },
   { table: 'mdshare_agent_tokens', key: 'tokA', id: 'tok_userA1', owner: 1, row: { id: 'tok_userA1', owner_id: 1, name: mk('tokA', 'name'), token_hash: sha256Hex(RAW[1]), scopes: ALLOWED_SCOPES, expires_at: FUTURE } },
   { table: 'mdshare_agent_tokens', key: 'tokB', id: 'tok_userB1', owner: 2, row: { id: 'tok_userB1', owner_id: 2, name: mk('tokB', 'name'), token_hash: sha256Hex(RAW[2]), scopes: ALLOWED_SCOPES, expires_at: FUTURE } },
+  // C's token is what sign-up issues (no publish:any); D's is as strong as A's, and must still be a 401.
+  { table: 'mdshare_agent_tokens', key: 'tokC', id: 'tok_userC1', owner: 3, row: { id: 'tok_userC1', owner_id: 3, name: mk('tokC', 'name'), token_hash: sha256Hex(RAW[3]), scopes: ['documents:read', 'documents:write', 'documents:publish'], expires_at: FUTURE } },
+  { table: 'mdshare_agent_tokens', key: 'tokD', id: 'tok_userD1', owner: 4, row: { id: 'tok_userD1', owner_id: 4, name: mk('tokD', 'name'), token_hash: sha256Hex(RAW[4]), scopes: ALLOWED_SCOPES, expires_at: FUTURE } },
 ];
 const byId = new Map(ROWS.map((r) => [r.id + r.table, r]));
 const isPublic = (r) => r.row.is_public === true;
 const isExpired = (r) => r.row.expires_at === PAST;
+const ownerDisabled = (r) => DISABLED.has(r.owner);
+// Whose rows a caller really acts for: nobody for a disabled user.
+const effUid = (who) => (who.disabled ? null : who.uid);
 
 function reseed() {
   db.sb.reset();
+  for (const u of USERS) db.sb.seed('mdshare_users', structuredClone(u));
   for (const r of ROWS) db.sb.seed(r.table, structuredClone(r.row));
 }
 const snapshot = () => structuredClone(db.sb.tables);
@@ -84,6 +113,9 @@ const snapshot = () => structuredClone(db.sb.tables);
 // ---------- Who is asking ----------
 const A_COOKIE = await userCookie(1);
 const B_COOKIE = await userCookie(2);
+const C_COOKIE = await userCookie(3);
+const D_COOKIE = await userCookie(4);
+const bearer = (raw) => ['Bea', 'rer'].join('') + ' ' + raw;
 const A_V2 = `mdshare_auth=${encodeURIComponent(signSessionToken(Math.floor(Date.now() / 1000) + 3600))}`;
 const WHO = [
   { name: 'A cookie', uid: 1, via: 'cookie', headers: { cookie: A_COOKIE } },
@@ -91,9 +123,16 @@ const WHO = [
   { name: 'A token', uid: 1, via: 'token', headers: { authorization: `Bearer ${RAW[1]}` } },
   { name: 'B cookie', uid: 2, via: 'cookie', headers: { cookie: B_COOKIE } },
   { name: 'B token', uid: 2, via: 'token', headers: { authorization: `Bearer ${RAW[2]}` } },
+  { name: 'C cookie', uid: 3, via: 'cookie', headers: { cookie: C_COOKIE } },
+  { name: 'C token', uid: 3, via: 'token', headers: { authorization: bearer(RAW[3]) } },
+  { name: 'D cookie (disabled)', uid: 4, via: 'cookie', disabled: true, headers: { cookie: D_COOKIE } },
+  { name: 'D token (disabled)', uid: 4, via: 'token', disabled: true, headers: { authorization: bearer(RAW[4]) } },
   { name: 'anonymous', uid: null, via: 'none', headers: {} },
 ].map((w, i) => ({ ...w, ip: `10.200.${i}.1` }));
 const ANON = WHO.find((w) => w.via === 'none');
+// What a disabled caller must be indistinguishable from: no cookie at all, or a token that never existed.
+const BOGUS_TOKEN = { name: 'unknown token', uid: null, via: 'token', headers: { authorization: bearer(BOGUS) }, ip: '10.200.99.1' };
+const lookalike = (who) => (who.via === 'cookie' ? ANON : BOGUS_TOKEN);
 
 // ---------- Targets ----------
 // For each target class, the id used per kind of route. "missing" ids never exist.
@@ -101,12 +140,14 @@ const TARGETS = {
   'A private': { paste: 'aPrivPaste', diagram: 'aPrivDiagr', archify: 'aPrivArchi', feedback: 'fb_Apriv0001', token: 'tok_userA1' },
   'A public': { paste: 'aPubPaste1', diagram: 'aPubDiagr1', archify: 'aPubArchi1', feedback: 'fb_Apub00001', token: 'tok_nopub01' },
   'B private': { paste: 'bPrivPaste', diagram: 'bPrivDiagr', archify: 'bPrivArchi', feedback: 'fb_Bpriv0001', token: 'tok_userB1' },
+  'C private': { paste: 'cPrivPaste', diagram: 'cPrivDiagr', archify: 'cPrivArchi', feedback: 'fb_Cpriv0001', token: 'tok_userC1' },
+  'D public (disabled)': { paste: 'dPubPaste1', diagram: 'dPubDiagr1', archify: 'dPubArchi1', feedback: 'fb_Dpub00001', token: 'tok_userD1' },
   expired: { paste: 'aExpPaste1', diagram: 'aExpDiagr1', archify: 'aExpArchi1', feedback: 'fb_Aexp00001', token: 'tok_noexp01' },
 };
 const MISSING = { paste: 'zzMissing1', diagram: 'zzMissing2', archify: 'zzMissing3', feedback: 'fb_missing01', token: 'tok_missing' };
 const TABLE_OF = { paste: 'mdshare_pastes', diagram: 'mdshare_diagrams', archify: 'mdshare_archify', feedback: 'mdshare_feedback', token: 'mdshare_agent_tokens' };
 const rowFor = (kind, id) => byId.get(id + TABLE_OF[kind]) || null;
-const mineFor = (who) => (who.uid === 1 ? 'aMinePaste' : who.uid === 2 ? 'bMinePaste' : 'zzNobody01');
+const mineFor = (who) => ({ 1: 'aMinePaste', 2: 'bMinePaste', 3: 'cMinePaste', 4: 'dMinePaste' }[who.uid] || 'zzNobody01');
 
 // ---------- Routes ----------
 // view: a content read that serves a public row to anyone (then it must equal the anonymous view).
@@ -159,10 +200,11 @@ async function call(who, [handler, req]) {
 // A value stored in the caller's own row is the caller's data, not a leak (the planted B row names
 // A's ids in its root_id/translation_of; B's own collection page may echo them as a group key).
 function forbiddenMarkers(who, allowed) {
-  const ownText = JSON.stringify(ROWS.filter((r) => r.owner === who.uid).map((r) => r.row));
+  const me = effUid(who);
+  const ownText = JSON.stringify(ROWS.filter((r) => r.owner === me).map((r) => r.row));
   const out = [];
   for (const r of ROWS) {
-    if (r.owner === who.uid || r === allowed) continue;
+    if (r.owner === me || r === allowed) continue;
     out.push(r.id, ...(JSON.stringify(r.row).match(/mk_[A-Za-z0-9]+_[a-z]+/g) || []));
   }
   return [...new Set(out)].filter((m) => !ownText.includes(m));
@@ -180,7 +222,7 @@ const norm = (resp, ids) => {
 function assertNoForeignWrites(label, who, before) {
   for (const [table, rows] of Object.entries(before)) {
     for (const row of rows) {
-      if (row.owner_id === who.uid) continue;
+      if (row.owner_id !== undefined && row.owner_id === effUid(who)) continue;
       const key = row.id ?? row.doc_id;
       const now = db.sb.tables[table].find((x) => (x.id ?? x.doc_id) === key);
       // last_used_at: the fire-and-forget touch of the caller's own token may land after a reseed.
@@ -194,6 +236,7 @@ let cases = 0;
 let positives = 0;
 let sameAsMissing = 0;
 let sameAsAnon = 0;
+let sameAsDisabledLookalike = 0;
 test('matrix: every route x every caller x every target — no leak, missing == forbidden, no foreign writes', async () => {
   for (const route of TARGET_ROUTES) {
     for (const who of WHO) {
@@ -207,10 +250,19 @@ test('matrix: every route x every caller x every target — no leak, missing == 
         const before = snapshot();
         const resp = await call(who, route.build(id, who));
         cases++;
-        const allowed = route.view && row && isPublic(row) && !isExpired(row) ? row : null;
+        const allowed = route.view && row && isPublic(row) && !isExpired(row) && !ownerDisabled(row) ? row : null;
         assertNoLeak(label, who, resp, allowed, id);
         assertNoForeignWrites(label, who, before);
-        const own = row && row.owner === who.uid;
+        if (who.disabled) {
+          // A disabled user's cookie is no cookie, its token an unknown token: byte for byte.
+          reseed();
+          const like = lookalike(who);
+          const other = await call(like, route.build(id, like));
+          assert.deepEqual(norm(resp, [id]), norm(other, [id]), `${label}: differs from ${like.name}`);
+          sameAsDisabledLookalike++;
+          continue; // no cookie / an unknown token are themselves covered by the anonymous rows and the 401 tests
+        }
+        const own = row && row.owner === effUid(who);
         if (allowed && !own) {
           // A public row the caller doesn't own: readable, and for a browser session exactly the
           // anonymous reader's view (a Bearer on /v gets the Markdown form of the same row).
@@ -233,7 +285,8 @@ test('matrix: every route x every caller x every target — no leak, missing == 
   }
   assert.ok(cases >= TARGET_ROUTES.length * WHO.length * 4, `ran ${cases} cases`);
   assert.ok(positives > 40, `owners read their own rows in ${positives} cases`);
-  console.log(`cross-user matrix: ${cases} cases (${TARGET_ROUTES.length} routes x ${WHO.length} callers x ${Object.keys(TARGETS).length} targets), ${sameAsMissing} identical to a missing id, ${sameAsAnon} identical to the anonymous view, ${positives} owner reads`);
+  assert.ok(sameAsDisabledLookalike >= TARGET_ROUTES.length * 2 * Object.keys(TARGETS).length, 'every disabled-caller case was compared');
+  console.log(`cross-user matrix: ${cases} cases (${TARGET_ROUTES.length} routes x ${WHO.length} callers x ${Object.keys(TARGETS).length} targets), ${sameAsMissing} identical to a missing id, ${sameAsAnon} identical to the anonymous view, ${sameAsDisabledLookalike} disabled-user calls identical to no cookie / an unknown token, ${positives} owner reads`);
 });
 
 // ---------- Positive controls: the matrix is not vacuous ----------
@@ -285,23 +338,24 @@ test('lists: library, catalog, search, collections, reads, feedback, tokens are 
     await L('GET /dashboard', { query: {} }, dashboard);
     await L('GET /settings', { query: { view: 'settings' } }, dashboard);
 
-    if (who.via === 'cookie') {
+    if (who.via === 'cookie' && !who.disabled) {
       const items = JSON.parse(lib.text);
       const got = (k) => items.filter((i) => i.kind === k).map((i) => i.id).sort();
       assert.deepEqual(got('paste'), liveOwned(who.uid, 'mdshare_pastes'), `${who.name}: library documents`);
       assert.deepEqual(got('diagram'), liveOwned(who.uid, 'mdshare_diagrams'), `${who.name}: library diagrams`);
       assert.deepEqual(got('archify'), liveOwned(who.uid, 'mdshare_archify'), `${who.name}: library archify`);
-      assert.deepEqual(JSON.parse(toks.text).tokens.map((t) => t.id), [who.uid === 1 ? 'tok_userA1' : 'tok_userB1']);
-      assert.equal(cShared.status, 200);
-      assert.equal(cAlpha.status, 200);
+      assert.deepEqual(JSON.parse(toks.text).tokens.map((t) => t.id), [TOKEN_OF[who.uid]], `${who.name}: Settings lists only their own tokens`);
+      const has = (slug) => ROWS.some((r) => r.owner === who.uid && r.table === 'mdshare_pastes' && r.row.collection === slug && !isExpired(r));
+      assert.equal(cShared.status, has('shared') ? 200 : 404);
+      assert.equal(cAlpha.status, has('alpha-only') ? 200 : 404, `${who.name}: /c/alpha-only exists only for users with documents in it`);
     }
-    if (who.via === 'token') {
+    if (who.via === 'token' && !who.disabled) {
       // Catalog search for "zebra": title/content (documents), title/markdown (diagrams); archify rows have none.
       const c = JSON.parse(cat.text);
       assert.deepEqual(c.items.map((i) => i.id).sort(), [...liveOwned(who.uid, 'mdshare_pastes'), ...liveOwned(who.uid, 'mdshare_diagrams')].sort(), `${who.name}: catalog`);
       assert.equal(JSON.parse(whoami.text).user_id, who.uid);
     }
-    if (who.via !== 'none') {
+    if (effUid(who) !== null) {
       const s = JSON.parse(search.text);
       assert.equal(s.total, zebraTotal(who.uid), `${who.name}: search total counts only their documents`);
       const counts = Object.fromEntries(JSON.parse(colls.text).collections.map((c) => [c.slug, c.count]));
@@ -309,11 +363,16 @@ test('lists: library, catalog, search, collections, reads, feedback, tokens are 
       for (const r of ROWS) if (r.table === 'mdshare_pastes' && r.owner === who.uid && !isExpired(r) && r.row.collection) (expectCounts[r.row.collection] ||= new Set()).add(r.row.translation_of || r.row.root_id || r.id);
       assert.deepEqual(counts, Object.fromEntries(Object.entries(expectCounts).map(([k, v]) => [k, v.size])), `${who.name}: collection counts`);
       assert.ok(JSON.parse(shared.text).items.every((e) => e.links.every((l) => ROWS.find((r) => r.id === l.id).owner === who.uid)));
-      assert.ok(JSON.parse(alpha.text).items.every((e) => e.links.every((l) => ROWS.find((r) => r.id === l.id).owner === who.uid)));
-      assert.ok(JSON.parse(unread.text).items.every((d) => ROWS.find((r) => r.id === d.id).owner === who.uid));
-      assert.deepEqual(JSON.parse(fb.text).items.map((f) => f.id), [who.uid === 1 ? 'fb_Apriv0001' : 'fb_Bpriv0001']);
+      assert.ok((JSON.parse(alpha.text).items || []).every((e) => e.links.every((l) => ROWS.find((r) => r.id === l.id).owner === who.uid)));
+      // C's token is a sign-up token (documents:* only): read receipts and feedback are refused.
+      const activity = who.via !== 'token' || ROWS.find((r) => r.id === TOKEN_OF[who.uid]).row.scopes.includes('activity:read');
+      if (!activity) assert.deepEqual([unread.status, fb.status], [403, 403], `${who.name}: no activity:read`);
+      else {
+        assert.ok(JSON.parse(unread.text).items.every((d) => ROWS.find((r) => r.id === d.id).owner === who.uid), `${who.name}: ${unread.status} ${unread.text}`);
+        assert.deepEqual(JSON.parse(fb.text).items.map((f) => f.id), [FEEDBACK_OF[who.uid]]);
+      }
     } else {
-      for (const r of [lib, cat, search, colls, toks, whoami]) assert.ok(r.status === 401 || r.status === 403, `anonymous list refused (${r.status})`);
+      for (const r of [lib, cat, search, colls, toks, whoami]) assert.ok(r.status === 401 || r.status === 403, `${who.name}: list refused (${r.status})`);
     }
   }
 });
@@ -327,13 +386,21 @@ test('creates are owned by the caller (anonymous: the site owner), never by a bo
       ['mdshare_diagrams', await call(who, [diagram, { method: 'POST', body: { ...body, svg: '<svg></svg>' } }])],
       ['mdshare_archify', await call(who, [archify, { method: 'POST', body: { ...body, kind: 'workflow', html: '<html><svg></svg></html>' } }])],
     ];
+    if (who.disabled) {
+      // Never filed under anyone: a disabled cookie is refused (not an anonymous create for user #1), its token is a 401.
+      for (const [table, resp] of made) {
+        assert.equal(resp.status, who.via === 'cookie' ? 403 : 401, `${who.name} creates in ${table}: ${resp.text}`);
+        assert.equal(db.sb.tables[table].length, ROWS.filter((r) => r.table === table).length, `${who.name}: nothing was created in ${table}`);
+      }
+      continue;
+    }
     for (const [table, resp] of made) {
       assert.equal(resp.status, 200, `${who.name} creates in ${table}: ${resp.text}`);
       const row = db.sb.tables[table].find((r) => r.id === JSON.parse(resp.text).id);
       assert.equal(row.owner_id, who.uid ?? 1, `${who.name}: ${table} row owner`);
       assert.equal(row.is_public, false);
     }
-    if (who.uid === 1 || who.uid === 2) {
+    if (who.uid !== null) {
       // The new document is in the creator's library and nobody else's.
       const other = WHO.find((w) => w.via === 'cookie' && w.uid !== who.uid);
       const mine = WHO.find((w) => w.via === 'cookie' && w.uid === who.uid);

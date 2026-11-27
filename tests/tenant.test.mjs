@@ -82,6 +82,7 @@ test('only tenant-minted principals are accepted: a lookalike object is refused 
 test('owner_id is never taken from a row or patch, and the owner filter comes first', async () => {
   const db = await useFakeDb();
   try {
+    db.sb.seed('mdshare_users', { id: 2, label: 'B' });
     const a = tenant.sessionOwner({ headers: { cookie: await userCookie(1) } });
     const b = tenant.sessionOwner({ headers: { cookie: await userCookie(2) } });
     await assert.rejects(tenant.insertOwned('mdshare_pastes', b, { id: 'aaaaaaaaaa', content: 'x', owner_id: 1 }), /owner_id is set only by insertOwned/);
@@ -98,7 +99,8 @@ test('owner_id is never taken from a row or patch, and the owner filter comes fi
     assert.equal(db.sb.tables.mdshare_pastes.find((x) => x.id === 'aaaaaaaaaa').title ?? null, null);
     assert.deepEqual(await tenant.deleteOwned('mdshare_pastes', b, 'aaaaaaaaaa'), []);
     assert.equal(db.sb.tables.mdshare_pastes.length, 2);
-    const scoped = db.calls.filter((c) => c.method !== 'POST');
+    // Every user-table query is scoped (the accounts table, read for B's quota, is keyed by id).
+    const scoped = db.calls.filter((c) => c.method !== 'POST' && c.path !== '/rest/v1/mdshare_users');
     assert.ok(scoped.every((c) => /^\?owner_id=eq\.[12]&/.test(c.query)), scoped.map((c) => c.query).join('\n'));
     const { row } = await tenant.readForView('mdshare_pastes', 'aaaaaaaaaa', 'id,is_public');
     assert.equal(row.owner_id, 1, 'readForView always returns the owner so isVisible can decide');

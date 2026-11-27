@@ -110,7 +110,7 @@ export function parseBearer(req) {
  *   { present: true, valid: true, id, name, scopes, ownerId } — a currently-usable token; ownerId
  *                                                      is the user it acts for (tenant.js tokenOwner).
  *   { present: true, valid: false, reason }          — header was present but unusable
- *     (malformed | not_found | revoked | expired | no_owner | lookup_failed | lookup_error). Callers MUST
+ *     (malformed | not_found | revoked | expired | no_owner | disabled | lookup_failed | lookup_error). Callers MUST
  *     respond 401 and must NOT fall back to treating the request as anonymous.
  */
 export async function resolveAgentToken(req) {
@@ -129,6 +129,8 @@ export async function resolveAgentToken(req) {
     if (row.expires_at && new Date(row.expires_at) < new Date()) return { present: true, valid: false, reason: 'expired' };
     // A token acts for exactly one user; an ownerless row (impossible after migration 013) fails closed.
     if (!row.ownerId) return { present: true, valid: false, reason: 'no_owner' };
+    // The kill switch (tenant.js findTokenByHash): every token of a disabled user is a 401.
+    if (row.ownerDisabled) return { present: true, valid: false, reason: 'disabled' };
     touchToken(row.id);
     // row.scopes is `null` for a legacy (pre-migration-006 or scopes-omitted-at-creation) token,
     // or an array for a scoped one — passed through verbatim; see isLegacyToken()/hasScope() above.
@@ -142,8 +144,9 @@ export async function resolveAgentToken(req) {
 // user (tenant.js sessionOwner): a token is created for them and only they list or revoke it. ---
 
 export async function createToken(me, { name, expiresInDays, scopes, neverExpires = false }) {
-  // Only a signed-in user mints tokens; a token can't mint another one.
-  if (!me || me.via !== 'cookie') throw new Error('createToken: needs the signed-in user (sessionOwner)');
+  // Only a signed-in user mints tokens (or sign-up, for the new user's first token, api/auth.js);
+  // a token can't mint another one.
+  if (!me || (me.via !== 'cookie' && me.via !== 'signup')) throw new Error('createToken: needs the signed-in user (sessionOwner) or a new user (createUser)');
   const id = 'tok_' + nanoid(16);
   const raw = generateRawToken();
   const hash = sha256Hex(raw);

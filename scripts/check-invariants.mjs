@@ -567,7 +567,18 @@ const checks = [
       const UNSCOPED = ['readForView', 'findTokenByHash', 'touchToken', 'pingDb', 'recentEventsAllUsers', 'ownerlessTables'];
       const listed = ((/export const UNSCOPED = \[([^\]]*)\];/.exec(src) || [])[1] || '').match(/'[^']+'/g)?.map((x) => x.slice(1, -1)) || [];
       if (listed.join() !== UNSCOPED.join()) errs.push(`${T}: UNSCOPED must be exactly [${UNSCOPED.join(', ')}] (got [${listed.join(', ')}]). A new unscoped read is a cross-user leak until proven otherwise: scope it with ownerFilter(me) instead.`);
-      if ((src.match(/\bfetch\(/g) || []).length !== 1 || !/function request\(table, query, init = \{\}\) \{\n\s*if \(!USER_TABLES\.includes\(table\)\) throw/.test(src)) errs.push(`${T}: exactly one fetch(), inside request(table, query, init), which throws for a table outside USER_TABLES.`);
+      if ((src.match(/\bfetch\(/g) || []).length !== 1 || !/function request\(table, query, init = \{\}\) \{\n\s*if \(!USER_TABLES\.includes\(table\) && !ACCOUNT_PATHS\.includes\(table\)\) throw/.test(src)) errs.push(`${T}: exactly one fetch(), inside request(table, query, init), which throws for a table outside USER_TABLES and ACCOUNT_PATHS.`);
+      // Accounts (P3): the users table and the stats rpc, only in the Accounts section, which touches nothing else.
+      if (!/const USERS = 'mdshare_users';\nconst STATS_RPC = 'rpc\/mdshare_user_stats';\nconst ACCOUNT_PATHS = \[USERS, STATS_RPC\];/.test(src)) errs.push(`${T}: keep \`const USERS = 'mdshare_users'; const STATS_RPC = 'rpc/mdshare_user_stats'; const ACCOUNT_PATHS = [USERS, STATS_RPC];\`.`);
+      const ACCOUNTS = ['userActive', 'gateSession', 'countSeats', 'createUser', 'findUserByEntry', 'rotateEntry', 'setUserDisabled', 'userStats'];
+      const accList = ((/export const ACCOUNTS = \[([^\]]*)\];/.exec(src) || [])[1] || '').match(/'[^']+'/g)?.map((x) => x.slice(1, -1)) || [];
+      if (accList.join() !== ACCOUNTS.join()) errs.push(`${T}: ACCOUNTS must be exactly [${ACCOUNTS.join(', ')}] (got [${accList.join(', ')}]).`);
+      const accAt = src.indexOf('\n// ---------- Accounts (');
+      const accounts = accAt < 0 ? '' : src.slice(accAt);
+      if (accAt < 0) errs.push(`${T}: keep the users-table code in a final "// ---------- Accounts (...) ----------" section.`);
+      for (const m of accounts.matchAll(/\brequest\((\w+)/g)) if (!['USERS', 'STATS_RPC'].includes(m[1])) errs.push(`${T}: the Accounts section queries only USERS / STATS_RPC (found request(${m[1]}, ...)); user tables go through the scoped helpers above.`);
+      for (const m of src.slice(0, accAt < 0 ? src.length : accAt).matchAll(/\brequest\((USERS|STATS_RPC)\b/g)) errs.push(`${T}: request(${m[1]}, ...) outside the Accounts section; add an ACCOUNTS function instead.`);
+      for (const m of accounts.matchAll(/\nexport (?:async )?function (\w+)\(/g)) if (!ACCOUNTS.includes(m[1]) && m[1] !== 'isAdmin' && m[1] !== 'maxUsers') errs.push(`${T}: ${m[1]}() is exported from the Accounts section but not listed in ACCOUNTS.`);
       if (/export (async )?function request\b/.test(src)) errs.push(`${T}: request() stays private; export scoped helpers instead.`);
       if (!/function ownerFilter\(me\) \{\n\s*return `owner_id=eq\.\$\{encodeURIComponent\(uidOf\(me\)\)\}`;\n\}/.test(src)) errs.push(`${T}: ownerFilter(me) returns \`owner_id=eq.\${encodeURIComponent(uidOf(me))}\`.`);
       if (!/const readable = \(me\) => !!me && PRINCIPALS\.has\(me\) && me\.via !== 'anonymous-create' && isUid\(me\.uid\);/.test(src)) errs.push(`${T}: readable(me) accepts only principals minted here, never the anonymous-create principal.`);
@@ -575,7 +586,7 @@ const checks = [
       const fns = [...src.matchAll(/\nexport (?:async )?function (\w+)\([^)]*\) \{\n([\s\S]*?)\n\}/g)];
       for (const [, name, body] of fns) {
         const queries = /\b(request|byId)\(/.test(body);
-        if (!queries || name === 'insertOwned' || UNSCOPED.includes(name)) continue;
+        if (!queries || name === 'insertOwned' || UNSCOPED.includes(name) || ACCOUNTS.includes(name)) continue;
         if (!/\$\{ownerFilter\(me\)\}/.test(body)) errs.push(`${T}: ${name}() queries without \${ownerFilter(me)}; every per-user query starts with the owner filter.`);
       }
       // 3. readForView (unscoped by id) is only for routes that then call isVisible().
@@ -624,7 +635,8 @@ const checks = [
         if (!/if \(!PRINCIPALS\.has\(owner\) \|\| !isUid\(owner\.uid\)\) throw/.test(ins)) errs.push(`${T}: insertOwned() accepts only a principal minted by tenant.js (PRINCIPALS) as the owner.`);
         if (!/body: JSON\.stringify\(\{ \.\.\.row, owner_id: uid \}\)/.test(ins)) errs.push(`${T}: insertOwned() writes \`{ ...row, owner_id: uid }\` (the principal's uid last, so nothing in row overrides it).`);
       }
-      if ((src.match(/method: 'POST'/g) || []).length !== 1) errs.push(`${T}: insertOwned() is the only POST (insert) in this file.`);
+      if ((src.match(/method: 'POST'/g) || []).length !== 1) errs.push(`${T}: insertOwned() is the only POST (insert) in this file; the Accounts section POSTs only with request(USERS|STATS_RPC, ..., jsonInit('POST', ...)).`);
+      src.split('\n').forEach((l, i) => { if (/jsonInit\('POST'/.test(l) && !/request\((USERS|STATS_RPC), /.test(l)) errs.push(`${T}:${i + 1}: jsonInit('POST', ...) only for request(USERS|STATS_RPC, ...) ("${l.trim()}").`); });
       if (!/function assertNoOwner|const assertNoOwner = /.test(src) || !/assertNoOwner\(patch, 'patchOwned'\);/.test(src)) errs.push(`${T}: patchOwned() refuses a patch that sets owner_id (assertNoOwner(patch, 'patchOwned')).`);
       // Creates: the owner is creatorOf(req, res, agentAuth) (the token's user, the cookie's, or the site owner for anonymous).
       for (const f of CREATE_ROUTES) {

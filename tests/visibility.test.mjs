@@ -258,7 +258,8 @@ test('archify.js GET (raw IR): anonymous private deny, public allow', async () =
     assert.equal(res.statusCode, 404);
   } finally { restoreFetch(); }
 
-  mockRowFetch({ ir: { public: true }, kind: 'workflow', title: 'Public', expires_at: '2999-01-01T00:00:00Z', is_public: true });
+  // owner_id: since P3 a row without an owner (or of a disabled user) is missing even when public.
+  mockRowFetch({ owner_id: 1, ir: { public: true }, kind: 'workflow', title: 'Public', expires_at: '2999-01-01T00:00:00Z', is_public: true });
   try {
     const res = responseRecorder();
     await archifyHandler({ method: 'GET', query: { id: 'ir12345678' }, headers: {} }, res);

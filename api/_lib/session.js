@@ -124,9 +124,18 @@ export function freshSessionCookie(uid, nowSeconds = Math.floor(Date.now() / 100
   return buildSessionCookieHeader(signUserSession(uid, nowSeconds + COOKIE_MAX_AGE));
 }
 
+// Requests whose session was refused for this request: the user is disabled or unknown (tenant.js
+// gateSession, run by withErrors() before every handler). sessionUid() then sees nobody.
+const REJECTED = new WeakSet();
+export function rejectSession(req) {
+  if (req && typeof req === 'object') REJECTED.add(req);
+}
+export const sessionRejected = (req) => !!req && typeof req === 'object' && REJECTED.has(req);
+
 // The signed-in user's id, or null. A legacy cookie (before the cutoff) is user #1 and, when `res`
 // is given, is silently re-issued as a fresh v2 cookie (also user #1) on this same response.
 export function sessionUid(req, res, now = new Date()) {
+  if (sessionRejected(req)) return null; // a disabled or unknown user (gateSession)
   if (!PASSWORD) return null; // no password set -> fail closed
   const token = parseCookies(req && req.headers && req.headers.cookie)[COOKIE_NAME];
   if (!token) return null;

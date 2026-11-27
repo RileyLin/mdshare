@@ -6,7 +6,7 @@
 // Recording never throws: monitoring must not take the site down with it.
 // Multi-user (2026-11-27): an event row carries the signed-in user it happened to (owner_id via
 // tenant.js insertOwned), or no owner; only the monitor reads them, and only as counts.
-import { insertOwned, sessionOwner, dbConfigured } from './tenant.js';
+import { insertOwned, sessionOwner, dbConfigured, gateSession, Refused } from './tenant.js';
 
 export const COMMIT = (process.env.VERCEL_GIT_COMMIT_SHA || 'local').slice(0, 12);
 
@@ -28,11 +28,22 @@ function requestOwner(req) {
   try { return req && req.headers ? sessionOwner(req) : null; } catch { return null; }
 }
 
+// Every handler: first the kill-switch gate on the session (tenant.js gateSession: a disabled user's
+// cookie counts as nobody for this request), then the handler. A Refused (quota, disabled account,
+// owner-only) is answered with its status; anything else is a recorded server_error and a plain 500.
 export function withErrors(route, handler) {
   return async function wrapped(req, res) {
     try {
+      await gateSession(req);
       return await handler(req, res);
     } catch (err) {
+      if (err instanceof Refused) {
+        if (res && !res.headersSent) {
+          if (err.retryAfter) res.setHeader('Retry-After', String(err.retryAfter));
+          res.status(err.status).json({ error: err.message, ...(err.retryAfter ? { retry_after: err.retryAfter } : {}) });
+        }
+        return undefined;
+      }
       const message = (err && err.message) || String(err);
       console.error(`[server_error] ${route}: ${message}`);
       await recordEvent('server_error', `${route}: ${message}`, { route, method: req && req.method, stack: clip(err && err.stack, 2000) }, requestOwner(req));
