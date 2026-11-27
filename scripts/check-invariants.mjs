@@ -3,7 +3,7 @@
 // security property CLAUDE.md used to ask agents to remember). When review catches a new
 // recurring mistake, add a check here instead of another paragraph of prose.
 // Usage: node scripts/check-invariants.mjs [--root <dir>]   (exit 1 on any violation)
-import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync, lstatSync } from 'node:fs';
 import { join, relative, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -710,6 +710,10 @@ const checks = [
       catch { files = walk('.', () => true); }
       for (const f of files) {
         if (f === 'package-lock.json' || f.endsWith('.png') || !existsSync(join(ROOT, f))) continue;
+        // A worktree's node_modules is a symlink to a directory (`node_modules/` in .gitignore only
+        // matches a real directory, so git lists the link): skip links and directories (EISDIR).
+        const st = lstatSync(join(ROOT, f));
+        if (st.isSymbolicLink() || st.isDirectory()) continue;
         const src = readFileSync(join(ROOT, f), 'utf8');
         for (const p of patterns) if (p.test(src)) errs.push(`${f}: looks like a credential (${p.source.slice(0, 16)}…). Remove it and rotate the key.`);
       }

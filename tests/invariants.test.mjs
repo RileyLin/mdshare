@@ -2,7 +2,7 @@
 // dir, break exactly one invariant, and expect that check (and only a failure) to be reported.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, cpSync, mkdtempSync, readFileSync, writeFileSync, rmSync, appendFileSync } from 'node:fs';
+import { readdirSync, cpSync, mkdtempSync, readFileSync, writeFileSync, rmSync, appendFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -307,4 +307,23 @@ test('invariant "mermaid-vendored" passes on the real public/ and fails when the
       else assert.equal(r.code, 0, `${label}\n${r.out}`);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
+});
+
+// Worktrees symlink node_modules; git then lists the link itself (".gitignore: node_modules/" only
+// matches a real directory) and no-secrets used to crash reading it (EISDIR, REPORT-P4).
+test('invariant "no-secrets" skips a symlinked node_modules in a git checkout (no EISDIR crash)', () => {
+  const dir = copyRepo();
+  const target = mkdtempSync(join(tmpdir(), 'mdshare-nm-'));
+  try {
+    writeFileSync(join(target, 'x.js'), 'export {};\n');
+    writeFileSync(join(dir, '.gitignore'), 'node_modules/\n');
+    symlinkSync(target, join(dir, 'node_modules'));
+    const g = spawnSync('git', ['init', '-q'], { cwd: dir, encoding: 'utf8' });
+    assert.equal(g.status, 0, g.stderr);
+    const listed = spawnSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd: dir, encoding: 'utf8' }).stdout.split('\n');
+    assert.ok(listed.includes('node_modules'), 'git lists the symlink itself (the case that crashed)');
+    const r = run(dir);
+    assert.equal(r.code, 0, r.out);
+    assert.doesNotMatch(r.out, /check crashed|EISDIR/, r.out);
+  } finally { rmSync(dir, { recursive: true, force: true }); rmSync(target, { recursive: true, force: true }); }
 });
