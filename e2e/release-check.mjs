@@ -145,6 +145,10 @@ if (KEY) {
   const server = (ev.counts && ev.counts.server_error) || 0, client = (ev.counts && ev.counts.client_error) || 0;
   check(`errors: no server errors in the last ${minutes} min`, r.status === 200 && server === 0, r.status !== 200 ? `status ${r.status}` : `${server} server errors${ev.top && ev.top.length ? `; top: ${ev.top[0].m}` : ''}`);
   check(`errors: at most 5 browser errors in the last ${minutes} min`, r.status === 200 && client <= 5, `${client} client errors`);
+  // COMPAT-CHECK G1 (multi-user): every row of every user table has an owner, or it would vanish
+  // from its owner's library. The check needs the database, so it rides on the monitor-key-gated
+  // health call (table names only, never counts). mdshare_events may be ownerless by design.
+  check('owners: no user-table row without an owner', r.status === 200 && ev.owners && ev.owners.ok === true, ev.owners ? (ev.owners.error || `ownerless: ${(ev.owners.ownerless || []).join(', ')}`) : 'no owners field (pre-multi-user deploy?)');
 } else {
   check('errors: monitor key present', MODE !== 'monitor', 'MDSHARE_MONITOR_KEY not set; error log not checked');
 }

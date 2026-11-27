@@ -23,8 +23,12 @@ export const USER_TABLES = ['mdshare_pastes', 'mdshare_diagrams', 'mdshare_archi
 export const CONTENT_TABLES = ['mdshare_pastes', 'mdshare_diagrams', 'mdshare_archify'];
 export const SITE_OWNER_UID = 1;
 // Not scoped to one user, on purpose: a document's own page (then isVisible), the credential
-// lookup, the token last-used touch, the health ping and the monitor's event counts.
-export const UNSCOPED = ['readForView', 'findTokenByHash', 'touchToken', 'pingDb', 'recentEventsAllUsers'];
+// lookup, the token last-used touch, the health ping, the monitor's event counts and its
+// "every row has an owner" check.
+export const UNSCOPED = ['readForView', 'findTokenByHash', 'touchToken', 'pingDb', 'recentEventsAllUsers', 'ownerlessTables'];
+// Tables where every row must have an owner (COMPAT-CHECK G1). mdshare_events is not one: an event
+// with no signed-in user (an anonymous browser error, a crash before auth) is ownerless by design.
+export const OWNED_TABLES = USER_TABLES.filter((t) => t !== 'mdshare_events');
 
 // mdshare ids are nanoid(10) from the base64url alphabet; anything else never reaches a filter.
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -222,4 +226,18 @@ export async function recentEventsAllUsers(sinceIso) {
   const r = await request('mdshare_events', `select=kind,message,commit,created_at&created_at=gte.${encodeURIComponent(sinceIso)}&order=created_at.desc&limit=500`);
   if (!r.ok) return { error: `events query failed: ${r.status}` };
   return { rows: await rowsOf(r) };
+}
+
+// The monitor's G1 check (api/health.js, x-monitor-key only): the names of OWNED_TABLES that have
+// at least one row without an owner. One `limit=1` probe per table; never counts or ids.
+// { ok: true, ownerless: [] } | { ok: false, ownerless: [...] } | { error }.
+export async function ownerlessTables() {
+  const found = await Promise.all(OWNED_TABLES.map(async (t) => {
+    const r = await request(t, `select=${t === 'mdshare_reads' ? 'doc_id' : 'id'}&owner_id=is.null&limit=1`);
+    if (!r.ok) throw new Error(`${t}: ${r.status}`);
+    return (await rowsOf(r)).length ? t : null;
+  })).catch((e) => ({ error: `owner check failed: ${e.message}` }));
+  if (found.error) return found;
+  const ownerless = found.filter(Boolean);
+  return { ok: ownerless.length === 0, ownerless };
 }

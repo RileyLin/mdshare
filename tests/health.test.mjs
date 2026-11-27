@@ -32,7 +32,7 @@ test('GET /api/health reports ok + commit when the database answers, 503 when it
 
 test('GET /api/health?events=1 is hidden (404) without the monitor key and summarises with it', async () => {
   let asked = null;
-  global.fetch = async (url) => { asked = String(url); return { ok: true, json: async () => [
+  global.fetch = async (url) => { if (/owner_id=is\.null/.test(String(url))) return { ok: true, json: async () => [] }; asked = String(url); return { ok: true, json: async () => [
     { kind: 'client_error', message: 'TypeError: x', created_at: '2026-11-19T00:00:00Z' },
     { kind: 'client_error', message: 'TypeError: x', created_at: '2026-11-19T00:00:01Z' },
     { kind: 'server_error', message: 'render: boom', created_at: '2026-11-19T00:00:02Z' }] }; };
@@ -46,7 +46,27 @@ test('GET /api/health?events=1 is hidden (404) without the monitor key and summa
     assert.deepEqual(ok.body.counts, { client_error: 2, server_error: 1 });
     assert.deepEqual(ok.body.top[0], { n: 2, m: 'client_error: TypeError: x' });
     assert.match(asked, /mdshare_events\?select=.*created_at=gte\./);
+    assert.deepEqual(ok.body.owners, { ok: true, ownerless: [] });
   } finally { restore(); }
+});
+
+// COMPAT-CHECK G1: the monitor (and the release check) learn whether any user-table row has lost
+// its owner — table names only, never counts or ids; ownerless events are fine by design.
+test('GET /api/health?events=1 reports ownerless user-table rows by table name only', async () => {
+  const { useFakeDb } = await import('./_fakedb.mjs');
+  const db = await useFakeDb();
+  try {
+    const ask = async () => { const r = rec(); await health({ method: 'GET', query: { events: '1' }, headers: { 'x-monitor-key': process.env.MDSHARE_MONITOR_KEY } }, r); return r.body.owners; };
+    db.sb.seed('mdshare_pastes', { id: 'owned00001', content: 'x' });
+    db.sb.seed('mdshare_events', { kind: 'client_error', message: 'anon', owner_id: null, created_at: new Date().toISOString() });
+    assert.deepEqual(await ask(), { ok: true, ownerless: [] }, 'an ownerless event is fine');
+    db.sb.seed('mdshare_pastes', { id: 'orphan0001', content: 'secret-orphan', owner_id: null });
+    db.sb.seed('mdshare_reads', { doc_id: 'orphan0001', owner_id: null });
+    const owners = await ask();
+    assert.deepEqual(owners, { ok: false, ownerless: ['mdshare_pastes', 'mdshare_reads'] });
+    assert.doesNotMatch(JSON.stringify(owners), /orphan|secret|\d/, 'no ids, content or counts');
+    assert.ok(db.calls.filter((c) => /owner_id=is\.null/.test(c.query)).every((c) => /limit=1(&|$)/.test(c.query)), 'one limit=1 probe per table');
+  } finally { await db.close(); }
 });
 
 test('POST /api/health stores client errors without query strings, rejects junk, caps size and rate', async () => {

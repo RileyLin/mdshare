@@ -564,7 +564,7 @@ const checks = [
       }
       // 2. Inside tenant.js: every exported function that queries is owner-scoped, an insert, or on the fixed UNSCOPED list.
       const src = read(T);
-      const UNSCOPED = ['readForView', 'findTokenByHash', 'touchToken', 'pingDb', 'recentEventsAllUsers'];
+      const UNSCOPED = ['readForView', 'findTokenByHash', 'touchToken', 'pingDb', 'recentEventsAllUsers', 'ownerlessTables'];
       const listed = ((/export const UNSCOPED = \[([^\]]*)\];/.exec(src) || [])[1] || '').match(/'[^']+'/g)?.map((x) => x.slice(1, -1)) || [];
       if (listed.join() !== UNSCOPED.join()) errs.push(`${T}: UNSCOPED must be exactly [${UNSCOPED.join(', ')}] (got [${listed.join(', ')}]). A new unscoped read is a cross-user leak until proven otherwise: scope it with ownerFilter(me) instead.`);
       if ((src.match(/\bfetch\(/g) || []).length !== 1 || !/function request\(table, query, init = \{\}\) \{\n\s*if \(!USER_TABLES\.includes\(table\)\) throw/.test(src)) errs.push(`${T}: exactly one fetch(), inside request(table, query, init), which throws for a table outside USER_TABLES.`);

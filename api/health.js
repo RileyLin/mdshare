@@ -2,14 +2,16 @@
 //   GET                      -> { ok, commit, db } — public liveness + which commit is live. The release
 //                               check waits for `commit` to match the commit it just shipped.
 //   GET  ?events=1&since=<minutes>, header x-monitor-key: <MDSHARE_MONITOR_KEY>
-//                            -> error counts and recent messages for the monitor. 404 without the key.
+//                            -> error counts and recent messages for the monitor, plus `owners`
+//                               ({ ok, ownerless: [table names] }: does every row of a user table have
+//                               an owner? COMPAT-CHECK G1; booleans/names only, never counts). 404 without the key.
 //   POST { type: 'client_error', message, source, line, col, page }
 //                            -> records a browser error (from /assets/errors.js). Rate-limited, size-capped,
 //                               no cookies or document content stored.
 import { timingSafeEqual } from 'crypto';
 import { parseJsonBody } from './_lib/body.js';
 import { recordEvent, withErrors, COMMIT } from './_lib/events.js';
-import { pingDb, recentEventsAllUsers, sessionOwner } from './_lib/tenant.js';
+import { pingDb, recentEventsAllUsers, ownerlessTables, sessionOwner } from './_lib/tenant.js';
 
 const hits = new Map(); // ip -> { n, reset }
 const sweep = setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (now > v.reset) hits.delete(k); }, 10 * 60 * 1000);
@@ -57,7 +59,8 @@ async function handler(req, res) {
     if (req.query && req.query.events) {
       if (!keyOk(req.headers['x-monitor-key'])) return res.status(404).json({ error: 'Not found' });
       const minutes = Math.min(Math.max(parseInt(req.query.since, 10) || 60, 1), 7 * 24 * 60);
-      return res.status(200).json({ commit: COMMIT, ...(await eventSummary(minutes)) });
+      const [summary, owners] = await Promise.all([eventSummary(minutes), ownerlessTables()]);
+      return res.status(200).json({ commit: COMMIT, ...summary, owners });
     }
     const db = await pingDb();
     return res.status(db === 'ok' ? 200 : 503).json({ ok: db === 'ok', commit: COMMIT, db });
