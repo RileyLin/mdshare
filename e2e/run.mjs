@@ -1987,6 +1987,7 @@ async function runCollectionPage(ctx, ok) {
 // with the same signer the server uses (sign-up is P3); everything else goes through the UI and API.
 async function runCrossUser(ctx, ok) {
   const { signUserSession } = await import('../api/_lib/session.js');
+  ctx.sb.seed('mdshare_users', { id: 2, label: 'B' }); // a cookie for a user with no row is signed out (P3)
   const bCookie = `mdshare_auth=${encodeURIComponent(signUserSession(2, Math.floor(Date.now() / 1000) + 3600))}`;
   const aSecret = `a-private-${rand()}`;
   const aPubMarker = `a-public-${rand()}`;
@@ -2023,6 +2024,100 @@ async function runCrossUser(ctx, ok) {
   ok(bPin.status === 404 && ctx.sb.tables.mdshare_pastes.find((r) => r.id === aPriv.id).is_public === false, "B cannot publish A's document (404, unchanged)");
 }
 
+// Multi-user beta P3: a stranger signs up through the API, opens the private entry link in a real
+// browser, publishes with the token, rotates the link, and is switched off by the owner.
+async function runSignupFlow(ctx, ok) {
+  const bearer = (t) => ['Bea', 'rer'].join('') + ' ' + t;
+  const ownerMarker = `owner-private-${rand()}`;
+  await seedPaste(ctx.serverUrl, `# Owner ${ownerMarker}\n\n${ownerMarker}`, { cookie: ctx.ownerCookie });
+  const su = await fetch(`${ctx.serverUrl}/api/auth?action=signup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: 'e2e C' }) });
+  const c = await su.json();
+  ok(su.status === 201 && Number.isInteger(c.user_id) && c.user_id > 1 && /^mds_/.test(c.token) && c.guide === `${ctx.serverUrl}/llms.txt`, `sign-up answers 201 {user_id, token, entry_url, guide} (user ${c.user_id})`);
+  ok(/^http:\/\/127\.0\.0\.1:\d+\/enter#[A-Za-z0-9_-]{43}$/.test(c.entry_url || ''), 'the entry link is <origin>/enter#<43-char secret>');
+  const secret = String(c.entry_url).split('#')[1];
+  ok(!JSON.stringify(ctx.sb.tables).includes(secret) && ctx.sb.tables.mdshare_users.some((u) => u.id === c.user_id && /^[0-9a-f]{64}$/.test(u.entry_hash)), 'the database holds only a hash of the secret');
+  const tok = { Authorization: bearer(c.token), 'Content-Type': 'application/json' };
+  const publish = async (marker) => (await fetch(`${ctx.serverUrl}/api/share`, { method: 'POST', headers: tok, body: JSON.stringify({ markdown: `# C ${marker}\n\n${marker}`, keep: true }) })).json();
+  const first = `c-first-${rand()}`;
+  const p1 = await publish(first);
+  ok(ctx.sb.tables.mdshare_pastes.find((r) => r.id === p1.id)?.owner_id === c.user_id, "the token's document belongs to C");
+
+  let cCookie = null;
+  await withContext(ctx, async (context) => {
+    const page = await context.newPage();
+    page.on('dialog', (d) => d.accept());
+    const sent = [];
+    page.on('request', (r) => { if (r.url().includes('/api/auth')) sent.push({ url: r.url(), body: r.postData() || '', page: page.url() }); });
+    await gotoResilient(page, c.entry_url, { waitUntil: 'load' });
+    await page.waitForURL('**/dashboard', { timeout: 5000 });
+    const enterReq = sent.find((x) => x.url.endsWith('/api/auth?action=enter'));
+    ok(enterReq && enterReq.body.includes(secret) && !enterReq.url.includes(secret), 'the page POSTs the secret in the body, never in a URL');
+    ok(enterReq && enterReq.page === `${ctx.serverUrl}/enter`, `the fragment is gone from the address bar before the secret is sent (${enterReq && enterReq.page})`);
+    await page.waitForFunction((t) => document.body.innerText.includes(t), first, { timeout: 5000 });
+    let lib = await page.innerText('#lib-list');
+    ok(lib.includes(first) && !lib.includes(ownerMarker), "the entry link opens C's Library: C's document, none of the owner's");
+    const second = `c-second-${rand()}`;
+    await publish(second);
+    await gotoResilient(page, `${ctx.serverUrl}/dashboard`, { waitUntil: 'load' });
+    await page.waitForFunction((t) => document.body.innerText.includes(t), second, { timeout: 5000 });
+    lib = await page.innerText('#lib-list');
+    ok(lib.includes(first) && lib.includes(second) && !lib.includes(ownerMarker), 'a document published with the token appears in the Library');
+    await page.screenshot({ path: ctx.proofPath, fullPage: true });
+    await gotoResilient(page, `${ctx.serverUrl}/settings`, { waitUntil: 'load' });
+    await page.waitForSelector('#tokens-list .token-row', { timeout: 5000 });
+    const names = await page.$$eval('#tokens-list .token-row .name', (els) => els.map((e) => e.firstChild.textContent));
+    ok(JSON.stringify(names) === JSON.stringify(['mdshare skill (e2e C)']) && (await page.isVisible('#btn-entry-link')), `Settings: only C's own token (${JSON.stringify(names)}) and the entry-link card`);
+    await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-settings.png'), fullPage: true });
+    cCookie = (await context.cookies()).find((x) => x.name === 'mdshare_auth');
+  });
+  ok(!!cCookie && /^v3\./.test(decodeURIComponent(cCookie.value)), 'the browser holds a v3 session cookie');
+
+  const rot = await fetch(`${ctx.serverUrl}/api/auth?action=entry-link`, { method: 'POST', headers: tok });
+  const fresh = await rot.json();
+  ok(rot.status === 200 && fresh.entry_url && fresh.entry_url !== c.entry_url, 'rotating with the token returns a new entry link');
+  await withContext(ctx, async (context) => {
+    const page = await context.newPage();
+    await gotoResilient(page, c.entry_url, { waitUntil: 'load' });
+    await page.waitForFunction(() => /does not work/.test(document.getElementById('enter-title').textContent), null, { timeout: 5000 });
+    ok(page.url() === `${ctx.serverUrl}/enter` && !(await context.cookies()).some((x) => x.name === 'mdshare_auth'), 'the old link fails: no session, and its secret is gone from the address bar');
+    await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-old-link.png') });
+    await gotoResilient(page, fresh.entry_url, { waitUntil: 'load' });
+    await page.waitForURL('**/dashboard', { timeout: 5000 });
+    ok(true, 'the new link opens the Library');
+  });
+
+  // The kill switch, on a public page of C's.
+  const pub = await fetch(`${ctx.serverUrl}/api/pin`, { method: 'PATCH', headers: tok, body: JSON.stringify({ id: p1.id, kind: 'paste', is_public: true, keep: true }) });
+  ok(pub.status === 200 && (await fetch(`${ctx.serverUrl}/v/${p1.id}`)).status === 200, "C's token publishes its own document; anyone can open it");
+  const dis = await ownerApi(ctx, 'POST', '/api/auth?action=disable-user', { user_id: c.user_id, disabled: true });
+  ok(dis.status === 200 && dis.json.disabled === true, 'the owner disables C');
+  const [ownerView, anonView, anonMissing] = await Promise.all([
+    fetch(`${ctx.serverUrl}/v/${p1.id}`, { headers: { cookie: ctx.ownerCookie } }),
+    fetch(`${ctx.serverUrl}/v/${p1.id}`),
+    fetch(`${ctx.serverUrl}/v/zzMissing42`),
+  ]);
+  const norm = async (r, id) => (await r.text()).split(id).join('<ID>');
+  ok(ownerView.status === 404, `C's public page is a 404 for a signed-in reader (${ownerView.status})`);
+  ok(anonView.status === anonMissing.status && (await norm(anonView, p1.id)) === (await norm(anonMissing, 'zzMissing42')), 'and exactly a missing link for anyone else');
+  const who = await fetch(`${ctx.serverUrl}/api/auth?action=whoami`, { headers: tok });
+  ok(who.status === 401, `C's token is refused (${who.status})`);
+  await withContext(ctx, async (context) => {
+    const page = await ownerPage(context, ctx.serverUrl, `mdshare_auth=${cCookie.value}`);
+    const r = await gotoResilient(page, `${ctx.serverUrl}/dashboard`, { waitUntil: 'load' });
+    ok(r.status() === 401 && (await page.isVisible('#pwd')), "C's browser session is signed out (the Library shows the sign-in card)");
+    const view = await gotoResilient(page, `${ctx.serverUrl}/v/${p1.id}`, { waitUntil: 'load' });
+    ok(view.status() === 401 && !(await page.content()).includes(first), "C's own page is gone for C too");
+    await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-disabled.png') });
+  });
+  const back = await ownerApi(ctx, 'POST', '/api/auth?action=disable-user', { user_id: c.user_id, disabled: false });
+  ok(back.status === 200 && (await fetch(`${ctx.serverUrl}/v/${p1.id}`)).status === 200, 're-enabling C brings the public page back');
+  const one = await ownerApi(ctx, 'POST', '/api/auth?action=disable-user', { user_id: 1, disabled: true });
+  ok(one.status === 400 && (await ownerApi(ctx, 'GET', '/api/pastes')).status === 200, 'user #1 can never be disabled');
+  const stats = await ownerApi(ctx, 'GET', '/api/doc?action=stats');
+  const row = stats.json && stats.json.users.find((u) => u.user_id === c.user_id);
+  ok(stats.status === 200 && row && row.docs_this_week === 2 && !stats.text.includes(first), `the owner's stats count C's documents without titles (${JSON.stringify(row)})`);
+}
+
 const RUNNERS = {
   'home-page': runHomePage,
   'create-paste-ui': runCreatePasteUi,
@@ -2055,6 +2150,7 @@ const RUNNERS = {
   'guide-llms': runGuideAndLlms,
   'shells-and-errors': runShells,
   'cross-user': runCrossUser,
+  'signup-flow': runSignupFlow,
   'mobile': runMobile,
   'classic-view': runClassicView,
   'renderer-fuzz': runRendererFuzz,

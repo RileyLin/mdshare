@@ -690,5 +690,26 @@
       "each Library lists only its own user's documents; B's search finds only B's",
       "B cannot publish A's document (404, unchanged)"
     ]
+  },
+  {
+    "id": "signup-flow",
+    "name": "A stranger signs up, opens the private entry link, publishes, rotates the link and is switched off",
+    "path": "POST /api/auth?action=signup|enter|entry-link|disable-user, /enter#<secret>, /dashboard, /settings, /v/:id, /api/doc?action=stats",
+    "steps": [
+      "sign up through the API (local server); publish one document with the returned token",
+      "open the entry link in Chromium: the page clears the fragment, signs in and opens the Library",
+      "publish a second document with the token and reload the Library; open Settings",
+      "rotate the link with the token; open the old link in a fresh browser, then the new one",
+      "make a document public, disable the user as the owner, open the page as the owner, anonymous and the user; re-enable; try to disable user #1; read the stats"
+    ],
+    "assertions": [
+      "201 {user_id, token, entry_url, guide}; entry_url is <origin>/enter#<43-char secret>; only a hash is stored",
+      "the secret is POSTed in the body after the fragment is gone from the address bar; never in a URL",
+      "the Library shows only the new user's documents, including one published with the token after sign-in",
+      "Settings lists only the user's own token and shows the entry-link card",
+      "the old link fails with no session; the new one works",
+      "disabled: the public page is a 404 for a signed-in reader and exactly a missing link for anyone else; the token is a 401; the user's session is signed out",
+      "re-enabling restores the page; user #1 can't be disabled; the stats count documents without titles"
+    ]
   }
 ]
