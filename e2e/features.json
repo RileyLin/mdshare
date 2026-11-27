@@ -267,6 +267,20 @@
     ]
   },
   {
+    "id": "raw-content-sandbox",
+    "name": "Raw user content opened directly can't use the reader's session",
+    "path": "/api/diagram?id=, /api/archify-html?id=",
+    "steps": [
+      "seed a public diagram and archify page whose stored markup carries a script marker (as rows written before the sanitiser)",
+      "the owner opens both raw URLs as top-level pages in Chromium"
+    ],
+    "assertions": [
+      "GET /api/diagram sends the sandbox CSP and nosniff",
+      "the SVG's script never runs",
+      "archify HTML keeps its own script but runs in an opaque origin (window.origin is 'null')"
+    ]
+  },
+  {
     "id": "reading-settings",
     "name": "Aa reading settings persist",
     "path": "/v/:id Aa panel",

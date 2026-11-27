@@ -321,6 +321,33 @@ async function runDiagramCreateRender(ctx, ok) {
   });
 }
 
+// ADV-MU-A F1 (2026-11-27): raw user content opened as a top-level page must not run script on this
+// origin. The rows are seeded directly, like a diagram stored before the sanitiser existed; markers only.
+async function runRawContentSandbox(ctx, ok) {
+  const far = new Date(Date.now() + 86400000).toISOString();
+  const svgId = `rawsvg${rand(4)}`;
+  const arcId = `rawarc${rand(4)}`;
+  ctx.sb.seed('mdshare_diagrams', { id: svgId, owner_id: 1, title: 'raw svg', is_public: true, expires_at: far, svg: '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="#ccc"/><script>window.__rawsvg = "MARKER"</script></svg>' });
+  ctx.sb.seed('mdshare_archify', { id: arcId, owner_id: 1, title: 'raw archify', kind: 'architecture', is_public: true, expires_at: far, html: '<!DOCTYPE html><html><body><svg width="10" height="10"></svg><script>window.__arch = "MARKER"</script></body></html>' });
+  const head = await fetch(`${ctx.serverUrl}/api/diagram?id=${svgId}`, { headers: { cookie: ctx.ownerCookie } });
+  ok(/sandbox/.test(head.headers.get('content-security-policy') || '') && head.headers.get('x-content-type-options') === 'nosniff', `GET /api/diagram sends a sandbox CSP + nosniff (${head.headers.get('content-security-policy')})`);
+  await withContext(ctx, async (ownerCtx) => {
+    const page = await openOwner(ctx, ownerCtx, `/api/diagram?id=${svgId}`);
+    await page.waitForTimeout(300);
+    ok((await page.evaluate(() => window.__rawsvg)) === undefined, "the owner opening a stored SVG's raw URL runs none of its script");
+    // Chromium logs the refusal as a console error; it is the asserted outcome here, so it is
+    // checked and then removed from the feature's error list (any other error still fails it).
+    const blocked = ctx.jsErrors.filter((e) => /Blocked script execution/.test(e) && e.includes(`/api/diagram?id=${svgId}`));
+    ok(blocked.length >= 1, 'Chromium reports the SVG script as blocked by the sandbox');
+    for (const e of blocked) ctx.jsErrors.splice(ctx.jsErrors.indexOf(e), 1);
+    await page.screenshot({ path: ctx.proofPath });
+    const arch = await openOwner(ctx, ownerCtx, `/api/archify-html?id=${arcId}`);
+    await arch.waitForTimeout(300);
+    const r = await arch.evaluate(() => ({ ran: window.__arch, origin: window.origin }));
+    ok(r.ran === 'MARKER' && r.origin === 'null', `archify HTML opened directly keeps its own script but runs in an opaque origin (${JSON.stringify(r)})`);
+  });
+}
+
 async function runArchifyCreateRender(ctx, ok) {
   const marker = `ARCHIFY-E2E-MARKER-${rand()}`;
   const html = `<!DOCTYPE html><html><head></head><body><svg xmlns="http://www.w3.org/2000/svg"></svg><p>${marker}</p></body></html>`;
@@ -2145,6 +2172,7 @@ const RUNNERS = {
   'text-equivalence': runTextEquivalence,
   'directives': runDirectives,
   'xss-safety': runXssSafety,
+  'raw-content-sandbox': runRawContentSandbox,
   'reading-settings': runReadingSettings,
   'reader-prefs': runReaderPrefs,
   'reader-motion': runReaderMotion,
