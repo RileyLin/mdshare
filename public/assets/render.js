@@ -356,79 +356,96 @@
     });
     return out.slice(0, 6);
   }
-  // Same key for an alias and for the text it matched: whitespace collapsed, none next to CJK.
-  function wkey(s) { return s.replace(/\s+/g, ' ').replace(new RegExp(' ?([' + CJK + ']) ?', 'g'), '$1').trim(); }
-  function aliasPattern(a) {
-    var p = '', prev = '';
-    for (var i = 0; i < a.length; i++) {
-      var c = a.charAt(i);
-      if (/\s/.test(c)) continue;
-      if (prev) {
-        var gap = /\s/.test(a.charAt(i - 1)), cj = CJK_CH.test(c), pj = CJK_CH.test(prev);
-        if (cj !== pj) p += '\\s*'; else if (gap) p += cj ? '\\s*' : '\\s+';
-      }
-      p += c.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
-      prev = c;
-    }
-    return p;
+  // Matching works on tokens: a run of Latin letters/digits, one CJK character, or one other visible
+  // character; whitespace between tokens is free (soft line breaks). Names go into a token trie, so
+  // the scan is linear in the text however many names share a prefix (an alternation regex was
+  // quadratic on "a a a …" glossaries: adversarial review R1). Latin tokens are whole words, so "SM"
+  // never matches inside "SMS"; at the edge of a text node the neighbouring text in the same block
+  // is checked too ("**SM**S").
+  var TOKEN_RE = new RegExp('[A-Za-z0-9\\u00c0-\\u024f]+|[' + CJK + ']|\\S', 'g');
+  var TERM_BLOCK = 'p, li, td, th, dt, dd, h1, h2, h3, h4, h5, h6, blockquote, figcaption, summary, pre, div, section';
+  function tokenize(s) {
+    var out = [], m;
+    TOKEN_RE.lastIndex = 0;
+    while ((m = TOKEN_RE.exec(s))) out.push({ t: m[0], k: m[0].toLowerCase(), i: m.index, e: m.index + m[0].length });
+    return out;
   }
+  function trieNode() { return { next: Object.create(null), ends: [] }; }
   function glossary(root) {
     var all = kids(root), h = null;
     for (var i = 0; i < all.length && !h; i++) if (all[i].tagName === 'H2' && GLOSSARY_RE.test(headTitle(all[i]))) h = all[i];
     if (!h) return;
-    var run = [], entries = [];
+    var run = [], entries = [], lists = 0;
     for (var n = h.nextElementSibling; n && (/^(P|UL|OL|H3|H4|H5|H6|BLOCKQUOTE)$/.test(n.tagName) || n.classList.contains('md-callout')); n = n.nextElementSibling) run.push(n);
-    run.forEach(function (list) {
-      if (list.tagName !== 'UL' || !list.children.length) return;
-      var es = kids(list).map(glossaryEntry);
+    // Every list in the section must be a term list; one ordinary list means it is not a glossary.
+    for (var j = 0; j < run.length; j++) {
+      if (!/^(UL|OL)$/.test(run[j].tagName)) continue;
+      var es = run[j].tagName === 'UL' && run[j].children.length ? kids(run[j]).map(glossaryEntry) : [null];
       if (es.some(function (e) { return !e; })) return;
-      list.classList.add('md-glossary-list');
+      lists++;
       entries = entries.concat(es);
-    });
-    if (!entries.length) return;
+    }
+    if (!lists) return;
     var card = el('section', 'md-glossary');
     h.parentNode.insertBefore(card, h);
     card.appendChild(h);
-    run.forEach(function (x) { card.appendChild(x); });
+    run.forEach(function (x) { if (/^UL$/.test(x.tagName)) x.classList.add('md-glossary-list'); card.appendChild(x); });
     entries.forEach(shapeGlossaryRow);
     markTerms(root, entries.slice(0, 200), h);
   }
   function markTerms(root, entries, head) {
-    var keys = {}, alts = [], names = entries.map(function (e) { return termAliases(e.term); });
-    // Every entry's first name before anyone's second; bounded, since it is one regex over the document.
-    for (var r = 0; r < 6; r++) {
-      names.forEach(function (list, i) {
-        var a = list[r], k = a && wkey(a).toLowerCase();
-        if (!a || keys[k] || alts.length >= 240) return;
+    var trie = trieNode(), names = 0;
+    entries.forEach(function (e) {
+      termAliases(e.term).forEach(function (a) {
+        var toks = tokenize(a).slice(0, 48), node = trie;
+        if (!toks.length) return;
+        toks.forEach(function (tk) { node = node.next[tk.k] || (node.next[tk.k] = trieNode()); });
         // ALL-CAPS names (TTS, H100) match case-sensitively; others ignore case.
-        keys[k] = { entry: entries[i], cs: !/[a-z]/.test(a), wk: wkey(a), lead: LATIN_EDGE.test(a.charAt(0)), tail: LATIN_EDGE.test(a.charAt(a.length - 1)) };
-        alts.push(a);
+        node.ends.push({ entry: e, cs: !/[a-z]/.test(a), toks: toks.map(function (tk) { return tk.t; }), lead: LATIN_EDGE.test(toks[0].t), tail: LATIN_EDGE.test(toks[toks.length - 1].t) });
+        names++;
       });
-    }
-    if (!alts.length) return;
-    alts.sort(function (x, y) { return y.length - x.length; }); // longest first
-    var re = new RegExp(alts.map(aliasPattern).join('|'), 'gi');
-    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode: function (t) { return !t.nodeValue.trim() || t.parentElement.closest(TERM_SKIP) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT; },
     });
-    var list = [], left = entries.length;
-    while (walker.nextNode()) list.push(walker.currentNode);
-    for (var i = 0; i < list.length && left > 0; i++) {
-      var t = list[i], s = t.nodeValue, m, last = 0, frag = null;
-      re.lastIndex = 0;
-      while (left > 0 && (m = re.exec(s))) {
-        var info = keys[wkey(m[0]).toLowerCase()], st = m.index, en = st + m[0].length;
-        if (!info) continue;
-        // Latin terms need non-alphanumeric neighbours ("SM" is not in "SMS"); CJK terms match as is.
-        if ((info.cs && wkey(m[0]) !== info.wk) || (info.lead && st > 0 && LATIN_EDGE.test(s.charAt(st - 1))) || (info.tail && en < s.length && LATIN_EDGE.test(s.charAt(en)))) { re.lastIndex = st + 1; continue; }
-        if (info.entry.marked) continue; // first occurrence only
-        info.entry.marked = true; left--;
+    if (!names) return;
+    // Every text node in order (skipped ones too), so a match at a node's edge can see its neighbours.
+    var every = [], w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    while (w.nextNode()) every.push(w.currentNode);
+    var blockOf = function (t) { return t.parentElement ? t.parentElement.closest(TERM_BLOCK) : null; };
+    var touches = function (i, d) { // does the text right before (d=-1) / after (d=1) node i end/start with a letter?
+      var n = every[i + d];
+      if (!n || blockOf(n) !== blockOf(every[i])) return false;
+      var v = n.nodeValue || '';
+      return LATIN_EDGE.test(d < 0 ? v.charAt(v.length - 1) : v.charAt(0));
+    };
+    var sameCase = function (toks, a, end) { for (var q = 0; q < end.toks.length; q++) if (toks[a + q].t !== end.toks[q]) return false; return true; };
+    var left = entries.length;
+    for (var i = 0; i < every.length && left > 0; i++) {
+      var t = every[i], s = t.nodeValue;
+      if (!s.trim() || !t.parentElement || t.parentElement.closest(TERM_SKIP)) continue;
+      var toks = tokenize(s), last = 0, frag = null;
+      for (var k = 0; k < toks.length && left > 0; k++) {
+        var node = trie, best = null, bestEnd = -1;
+        for (var j = k; j < toks.length && j - k < 48; j++) {
+          node = node.next[toks[j].k];
+          if (!node) break;
+          for (var x = 0; x < node.ends.length; x++) {
+            var end = node.ends[x];
+            if (end.cs && !sameCase(toks, k, end)) continue;
+            if (end.lead && toks[k].i === 0 && touches(i, -1)) continue;
+            if (end.tail && toks[j].e === s.length && touches(i, 1)) continue;
+            best = end; bestEnd = j; break; // longest so far; keep walking for a longer one
+          }
+        }
+        if (!best) continue;
+        var st = toks[k].i, en = toks[bestEnd].e;
+        k = bestEnd; // the longest name owns its words, even when its entry is already marked
+        if (best.entry.marked) continue; // first occurrence only
+        best.entry.marked = true; left--;
         frag = frag || document.createDocumentFragment();
         frag.appendChild(document.createTextNode(s.slice(last, st)));
-        var term = el('span', 'md-term', m[0]);
+        var term = el('span', 'md-term', s.slice(st, en));
         term.setAttribute('role', 'button'); term.tabIndex = 0;
         term.setAttribute('aria-haspopup', 'dialog'); term.setAttribute('aria-expanded', 'false');
-        term._mdGloss = { term: info.entry.term, def: info.entry.def, head: head };
+        term._mdGloss = { term: best.entry.term, def: best.entry.def, head: head };
         frag.appendChild(term);
         last = en;
       }
@@ -446,11 +463,15 @@
     var t = termPop.term, pop = termPop.pop;
     if (!t.isConnected) { closeTermPop(false); return; }
     var rs = t.getClientRects(), first = rs[0] || t.getBoundingClientRect(), last = rs[rs.length - 1] || first;
-    var vw = document.documentElement.clientWidth, vh = innerHeight, pw = pop.offsetWidth, ph = pop.offsetHeight;
-    var up = last.bottom + 8 + ph > vh - 8 && first.top - 8 - ph > 8;
-    var anchor = up ? first : last;
-    pop.style.left = Math.round(Math.max(8, Math.min(anchor.left, vw - pw - 8))) + 'px';
-    pop.style.top = Math.round(up ? first.top - 8 - ph : last.bottom + 8) + 'px';
+    var vw = document.documentElement.clientWidth, vh = innerHeight, gap = 8;
+    // Never taller than the screen (it scrolls inside); below the term, else above, else as close
+    // as fits (a long definition at 160% on a phone, adversarial review R3).
+    pop.style.maxHeight = Math.max(120, vh - 2 * gap) + 'px';
+    var pw = pop.offsetWidth, ph = pop.offsetHeight, below = vh - last.bottom - 2 * gap, above = first.top - 2 * gap;
+    var up = ph > below && (ph <= above || above > below), anchor = up ? first : last;
+    var top = up ? first.top - gap - ph : last.bottom + gap;
+    pop.style.left = Math.round(Math.max(gap, Math.min(anchor.left, vw - pw - gap))) + 'px';
+    pop.style.top = Math.round(Math.max(gap, Math.min(top, vh - gap - ph))) + 'px';
   }
   function openTermPop(t, pinned, focusIn) {
     clearTimeout(termTimer);
@@ -461,7 +482,7 @@
     var pop = el('div', 'md-term-pop'); pop.id = 'md-term-pop'; pop.tabIndex = -1;
     pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-labelledby', 'md-term-pop-t'); pop.setAttribute('aria-describedby', 'md-term-pop-d');
     var title = el('div', 'md-term-pop-t', g.term); title.id = 'md-term-pop-t';
-    var def = el('p', 'md-term-pop-d', g.def.length > 320 ? g.def.slice(0, 300) + '…' : g.def); def.id = 'md-term-pop-d';
+    var def = el('p', 'md-term-pop-d', g.def.length > 260 ? g.def.slice(0, 240) + '…' : g.def); def.id = 'md-term-pop-d';
     pop.appendChild(title); pop.appendChild(def);
     if (g.head && g.head.id) { var a = el('a', 'md-term-pop-all', zh ? '全部术语 →' : 'All terms →'); a.setAttribute('href', '#' + g.head.id); pop.appendChild(a); }
     document.body.appendChild(pop);
@@ -487,7 +508,12 @@
     document.addEventListener('click', function (e) {
       var t = termOf(e.target);
       if (t) { if (termPop && termPop.term === t && termPop.pinned) closeTermPop(false); else openTermPop(t, true, false); return; }
-      if (termPop && e.target.closest && e.target.closest('.md-term-pop-all')) closeTermPop(false);
+      if (termPop && e.target.closest && e.target.closest('.md-term-pop-all')) {
+        // The link jumps to the glossary; focus goes with it (not left on <body>).
+        var head = termPop.term._mdGloss && termPop.term._mdGloss.head;
+        closeTermPop(false);
+        if (head && head.isConnected) { head.tabIndex = -1; head.focus({ preventScroll: true }); }
+      }
     });
     document.addEventListener('keydown', function (e) {
       var t = termOf(e.target);
