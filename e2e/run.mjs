@@ -1983,6 +1983,46 @@ async function runCollectionPage(ctx, ok) {
   ok(missing.status === 404, `the owner gets a not-found page for a missing collection (status ${missing.status})`);
 }
 
+// Multi-user beta (2026-11-27): a second signed-in user (B) in a real browser. B's cookie is minted
+// with the same signer the server uses (sign-up is P3); everything else goes through the UI and API.
+async function runCrossUser(ctx, ok) {
+  const { signUserSession } = await import('../api/_lib/session.js');
+  const bCookie = `mdshare_auth=${encodeURIComponent(signUserSession(2, Math.floor(Date.now() / 1000) + 3600))}`;
+  const aSecret = `a-private-${rand()}`;
+  const aPubMarker = `a-public-${rand()}`;
+  const bSecret = `b-private-${rand()}`;
+  const aPriv = await seedPaste(ctx.serverUrl, `# A private ${aSecret}\n\n${aSecret}`, { cookie: ctx.ownerCookie });
+  const aPub = await seedPaste(ctx.serverUrl, `# A public ${aPubMarker}\n\n${aPubMarker}`, { cookie: ctx.ownerCookie });
+  const pub = await ownerApi(ctx, 'PATCH', '/api/pin', { id: aPub.id, kind: 'paste', is_public: true });
+  ok(pub.status === 200, 'the owner publishes one document');
+  const bDoc = await seedPaste(ctx.serverUrl, `# B private ${bSecret}\n\n${bSecret}`, { cookie: bCookie });
+  ok(ctx.sb.tables.mdshare_pastes.find((r) => r.id === bDoc.id)?.owner_id === 2, "B's create is owned by B");
+  await withContext(ctx, async (context) => {
+    const page = await ownerPage(context, ctx.serverUrl, bCookie);
+    await gotoResilient(page, `${ctx.serverUrl}/v/${aPriv.id}`, { waitUntil: 'load' });
+    const html = await page.content();
+    ok(html.includes('This link has expired') && !html.includes(aSecret), "B opening A's private link gets the not-found page, no title or body");
+    const missing = await fetch(`${ctx.serverUrl}/v/zzMissing99`, { headers: { cookie: bCookie } });
+    const priv = await fetch(`${ctx.serverUrl}/v/${aPriv.id}`, { headers: { cookie: bCookie } });
+    ok(missing.status === 404 && priv.status === 404 && (await missing.text()) === (await priv.text()), "A's private document and a missing id are the same 404 for B");
+    await gotoResilient(page, `${ctx.serverUrl}/v/${aPub.id}`, { waitUntil: 'load' });
+    await waitRendered(page);
+    ok((await page.content()).includes(aPubMarker), "B reads A's public document");
+    ok((await page.locator('#status-pill, #btn-edit, #btn-delete').count()) === 0, 'B gets the reader view: no owner controls on a document B does not own');
+    await gotoResilient(page, `${ctx.serverUrl}/dashboard`, { waitUntil: 'load' });
+    await page.waitForFunction((t) => document.body.innerText.includes(t), bSecret, { timeout: 5000 });
+    const lib = await page.innerText('#lib-list');
+    ok(lib.includes(bSecret) && !lib.includes(aSecret) && !lib.includes(aPubMarker), "B's library lists only B's documents");
+    await page.screenshot({ path: ctx.proofPath, fullPage: true });
+  });
+  const aLib = await listing(ctx);
+  ok(aLib.some((p) => p.id === aPriv.id) && !aLib.some((p) => p.id === bDoc.id), "the owner's library has A's documents and not B's");
+  const bSearch = await (await fetch(`${ctx.serverUrl}/api/doc?action=search&q=private`, { headers: { cookie: bCookie } })).json();
+  ok(bSearch.results.every((r) => r.id === bDoc.id) && bSearch.total === 1, `B's search finds only B's document (total ${bSearch.total})`);
+  const bPin = await fetch(`${ctx.serverUrl}/api/pin`, { method: 'PATCH', headers: { cookie: bCookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ id: aPriv.id, kind: 'paste', is_public: true }) });
+  ok(bPin.status === 404 && ctx.sb.tables.mdshare_pastes.find((r) => r.id === aPriv.id).is_public === false, "B cannot publish A's document (404, unchanged)");
+}
+
 const RUNNERS = {
   'home-page': runHomePage,
   'create-paste-ui': runCreatePasteUi,
@@ -2014,6 +2054,7 @@ const RUNNERS = {
   'settings-signout': runSettingsSignout,
   'guide-llms': runGuideAndLlms,
   'shells-and-errors': runShells,
+  'cross-user': runCrossUser,
   'mobile': runMobile,
   'classic-view': runClassicView,
   'renderer-fuzz': runRendererFuzz,

@@ -673,5 +673,22 @@
       "/c lists collections with counts; the Library chip lists exactly the collection's newest versions and sets ?collection=",
       "a missing collection is a 404 page for the owner"
     ]
+  },
+  {
+    "id": "cross-user",
+    "name": "Two users: B never sees A's private documents; A's public page is a reader view for B",
+    "path": "/v/:id, /dashboard, /api/doc?action=search, /api/pin (as a second signed-in user)",
+    "steps": [
+      "the owner (A) creates a private and a public document; a second user (B, v3 cookie for uid 2) creates one",
+      "B opens A's private link, a missing link, A's public link and the Library in a browser",
+      "B searches and tries to publish A's private document"
+    ],
+    "assertions": [
+      "B's create is owned by B",
+      "A's private document and a missing id are the same 404 for B, with no title or body",
+      "B reads A's public document without owner controls",
+      "each Library lists only its own user's documents; B's search finds only B's",
+      "B cannot publish A's document (404, unchanged)"
+    ]
   }
 ]
