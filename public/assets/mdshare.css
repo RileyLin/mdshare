@@ -493,6 +493,15 @@ abbr.md-gloss:hover .md-tip, abbr.md-gloss:focus .md-tip, abbr.md-gloss.open .md
   .md-gl-row > ul, .md-gl-row > ol { grid-column: 1; }
   .prose ul.md-glossary-list > li > .md-gl-row ~ * { margin-left: 0; }
 }
+/* Recap card (render.js recapCard): the last "## 要点回顾 / Key takeaways" section, answering the summary card. */
+.md-recap { position: relative; margin: 2.8em 0 1.2em; padding: 18px 22px 6px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--accent); box-shadow: var(--shadow-2); }
+.prose .md-recap > h2:first-child { display: flex; align-items: center; gap: 9px; margin: 0 0 10px; font: 600 11.5px/1.4 var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }
+.prose .md-recap > h2:first-child::before { content: '✓'; display: grid; place-items: center; flex-shrink: 0; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); color: var(--card); font: 700 11px/1 var(--sans); letter-spacing: 0; }
+.md-recap > p, .md-recap li { color: var(--ink); font-size: 1.04em; }
+.prose .md-recap > ul:not(.md-keys) { list-style: none; padding-left: 0; }
+.prose .md-recap > ul:not(.md-keys) > li { position: relative; padding-left: 1.6em; }
+.prose .md-recap > ul:not(.md-keys) > li::before { content: '✓'; position: absolute; left: .15em; top: 0; color: var(--accent); font-weight: 700; }
+.md-recap > :last-child { margin-bottom: 12px; }
 .mermaid { position: relative; margin: 1.6em 0; padding: 22px 18px 18px; text-align: center; border: 1px solid var(--line); border-radius: 13px; background: var(--card); box-shadow: var(--shadow-1); overflow-x: auto; }
 .mermaid.mermaid-drawn { overflow: hidden; }
 .diagram-scroll { overflow-x: auto; overscroll-behavior-x: contain; }
@@ -815,7 +824,7 @@ body.editing .doc-layout, body.editing .doc-footer-wrap { display: none; }
   .code-block { background: #f6f4f0; border-color: #ddd; break-inside: avoid; }
   .code-block pre { color: #222; }
   .code-head { color: #777; border-color: #ddd; }
-  .md-summary, .md-stat, ol.md-steps > li, .md-callout, .table-wrap { box-shadow: none !important; break-inside: avoid; }
+  .md-summary, .md-recap, .md-stat, ol.md-steps > li, .md-callout, .table-wrap { box-shadow: none !important; break-inside: avoid; }
   .md-glossary { box-shadow: none !important; }
   .table-block { margin-left: 0 !important; margin-right: 0 !important; }
   .prose a { color: #111; text-decoration: none; }

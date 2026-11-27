@@ -274,6 +274,24 @@
     }
   }
 
+  // Recap card: the LAST "##" section, when it is titled as a recap (要点回顾, Key takeaways, Recap …),
+  // becomes a card at the end that answers the summary card at the top. Never 总结/Summary/Conclusion,
+  // never a recap heading followed by another section. The heading stays an <h2> (contents, anchor);
+  // the card takes the prose under it and stops at tables, code, diagrams and rules.
+  var RECAP_RE = /^(要点回顾|记住这几点|记住这三点|关键要点|Key takeaways|Takeaways|Recap|What to remember)$/i;
+  function recapCard(root) {
+    var all = kids(root), h = null;
+    for (var i = all.length - 1; i >= 0 && !h; i--) if (all[i].tagName === 'H2') h = all[i];
+    if (!h || !RECAP_RE.test(headTitle(h))) return;
+    var body = [];
+    for (var n = h.nextElementSibling; n && body.length < 12 && (/^(P|UL|OL|H3|H4|BLOCKQUOTE)$/.test(n.tagName) || n.classList.contains('md-callout')); n = n.nextElementSibling) body.push(n);
+    if (!body.length) return;
+    var card = el('section', 'md-recap');
+    h.parentNode.insertBefore(card, h);
+    card.appendChild(h);
+    body.forEach(function (b) { card.appendChild(b); });
+  }
+
   // Glossary: a "##" section titled 术语 / 术语表 / 名词解释 / 关键术语 / Glossary / Terms / Key terms whose bullet
   // lists are all "- **TERM**：definition" becomes a tidy card, and the FIRST time each term appears in
   // the body it gets a dotted underline that opens its definition. Text nodes only (TreeWalker +
@@ -972,6 +990,7 @@
     callouts(root);
     subheads(root);
     summaryCard(root);
+    recapCard(root);
     glossary(root);
     listRules(root);
     tables(root, opts.meta);
