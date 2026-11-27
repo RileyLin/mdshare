@@ -140,7 +140,7 @@ function describeError(res, data) {
     return 'mdshare beta is full (403): no signup seats left right now — try again later';
   }
   if (res.status === 401) {
-    return `unauthorized (401): ${data.error || 'the saved token is missing or invalid'} — run "signup" again`;
+    return `unauthorized (401): ${data.error || 'the saved token is missing or invalid'} — tell the user; do not sign up again unless they ask for a new account (a new account starts empty)`;
   }
   return `request failed (${res.status}): ${data.error || 'unknown error'}`;
 }

@@ -137,8 +137,10 @@ or to answer "what did you send me about X" without re-reading the whole convers
 
 ## Errors
 
-- **401** — the saved token is missing or invalid. Delete the local token file and run `signup`
-  again — it will detect no existing token and issue a new one.
+- **401**: the saved token is missing, revoked or invalid. Tell the user and stop. Do NOT
+  delete the token file or sign up again on your own: a new sign-up creates a second, empty
+  account, and the user's existing pages stay with the old one. Only sign up again if the user
+  explicitly asks for a fresh account.
 - **403 "beta full"** — no signup seats are left. Tell the user and stop; don't retry in a loop.
 - **429** — rate limited; the error message includes how many seconds to wait. Wait that long
   before retrying the same command.
