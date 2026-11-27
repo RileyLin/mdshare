@@ -64,6 +64,14 @@ Token scopes: documents:read, documents:write, documents:publish (own docs), doc
 activity:read (read receipts + feedback), activity:write (resolve feedback).
 To publish (make public): PATCH /api/pin {"id", "kind": "paste", "is_public": true, "keep": true}.
 
+## Your own account (beta)
+
+POST /api/auth?action=signup {"label"?} -> 201 {"user_id", "token", "entry_url", "guide"}: a new,
+empty library and a token (documents:read, documents:write, documents:publish). Do it once; save
+the token; give entry_url (the person's private sign-in link) to them only. 403 {"error": "beta
+full"}; 429 with Retry-After. POST /api/auth?action=entry-link with the token -> {"entry_url"}, a
+new link (the old one stops working). Beta limits: 200 documents a day (429) and 512 KB each (413).
+
 ## Reading loop: did they read it, what did they ask for
 
 The owner's opens and reader feedback are recorded; readers' (anyone else's) never are.
