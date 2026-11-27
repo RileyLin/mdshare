@@ -168,8 +168,11 @@
             b.type = 'button'; b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', i === 0 ? 'true' : 'false');
             sec.hidden = i !== 0;
             b.addEventListener('click', function () {
-              kids(bar).forEach(function (x, j) { x.setAttribute('aria-selected', j === i ? 'true' : 'false'); });
-              kids(wrap).forEach(function (x, j) { if (x !== bar) x.hidden = (j - 1) !== i; });
+              var show = function () {
+                kids(bar).forEach(function (x, j) { x.setAttribute('aria-selected', j === i ? 'true' : 'false'); });
+                kids(wrap).forEach(function (x, j) { if (x !== bar) x.hidden = (j - 1) !== i; });
+              };
+              if (window.MDShareMotion) window.MDShareMotion.transition(show); else show();
             });
             bar.appendChild(b);
           });
@@ -626,47 +629,100 @@
     });
   }
 
+  // Motion, only under html.motion-ok (PREFS_BOOT in api/_lib/ui.js sets it when the reader's Motion
+  // switch is on, the OS doesn't ask for reduced motion and IntersectionObserver exists; app.js keeps
+  // it current). Top-level blocks that start below the screen rise 8px and fade in over 220ms as
+  // they arrive; lists and card grids bring their first 8 children in 35ms apart. A block already on
+  // screen when the page opens (or next to a #link target) is never hidden, nothing is hidden without
+  // JS, print shows everything, and the classes go once a block has arrived.
+  var RV_MS = 220, RV_STEP = 35, RV_MAX = 8, revealIO = null, revealRoot = null;
+  function motionOn() { return document.documentElement.classList.contains('motion-ok') && 'IntersectionObserver' in window; }
+  function staggerKids(c) {
+    if (/^(UL|OL)$/.test(c.tagName) || /(^|\s)md-(stats|cards|compare)(\s|$)/.test(c.className)) return kids(c);
+    var tl = c.classList.contains('md-steps-block') && c.querySelector('.md-timeline');
+    return tl ? kids(tl) : null;
+  }
+  function hashTarget() {
+    var h = location.hash.slice(1);
+    if (!h) return null;
+    var id;
+    try { id = decodeURIComponent(h); } catch (e) { id = h; /* malformed escape: use it as written */ }
+    return document.getElementById(id);
+  }
+  function settle(c) {
+    c.classList.remove('rv', 'rv-group', 'rv-in');
+    Array.prototype.forEach.call(c.querySelectorAll('.rv-k'), function (k) { k.classList.remove('rv-k'); k.style.removeProperty('--rv-d'); });
+  }
+  function arrive(c) {
+    var n = c.classList.contains('rv-group') ? Math.min(c.querySelectorAll('.rv-k').length, RV_MAX) : 1;
+    c.classList.add('rv-in');
+    Array.prototype.forEach.call(c.querySelectorAll('.md-stat .v'), countUp);
+    setTimeout(function () { settle(c); }, RV_MS + Math.max(0, n - 1) * RV_STEP + 80);
+  }
   function motion(root) {
-    if (!('IntersectionObserver' in window) || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches)) return;
-    root.classList.add('motion');
-    var targets = [];
-    kids(root).forEach(function (c, i) {
-      if (/^(md-stats|md-cards|md-compare)$/.test(c.className) || c.classList.contains('md-steps')) {
-        kids(c).forEach(function (k, j) { k.classList.add('rv'); k.style.setProperty('--d', Math.min(j, 8) * 70 + 'ms'); targets.push(k); });
+    if (revealIO) { revealIO.disconnect(); revealIO = null; }
+    if (!motionOn()) return;
+    var vh = window.innerHeight || document.documentElement.clientHeight;
+    var target = hashTarget(), near = target && root.contains(target) ? target.getBoundingClientRect().top : null;
+    revealIO = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { if (e.isIntersecting) { revealIO.unobserve(e.target); arrive(e.target); } });
+    }, { rootMargin: '0px 0px -6% 0px' });
+    revealRoot = root;
+    // Measure every block first, then mark: interleaving reads and class writes would restyle the
+    // page once per block on a long document.
+    var blocks = kids(root), rects = blocks.map(function (c) { return c.getBoundingClientRect(); });
+    blocks.forEach(function (c, i) {
+      var r = rects[i];
+      var onScreen = (r.bottom > 0 && r.top < vh) || (near !== null && r.bottom > near - vh && r.top < near + vh);
+      if (onScreen) { Array.prototype.forEach.call(c.querySelectorAll('.md-stat .v'), countUp); return; }
+      var group = staggerKids(c);
+      if (group && group.length) {
+        c.classList.add('rv-group');
+        group.forEach(function (k, j) { k.classList.add('rv-k'); k.style.setProperty('--rv-d', Math.min(j, RV_MAX - 1) * RV_STEP + 'ms'); });
       } else {
         c.classList.add('rv');
-        if (i < 6) c.style.setProperty('--d', i * 90 + 'ms');
-        targets.push(c);
       }
+      revealIO.observe(c);
     });
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (e) {
-        if (!e.isIntersecting) return;
-        e.target.classList.add('in');
-        io.unobserve(e.target);
-        if (e.target.classList.contains('md-stat')) countUp(e.target.querySelector('.v'));
-      });
-    }, { rootMargin: '0px 0px -6% 0px', threshold: 0.05 });
-    targets.forEach(function (t) { io.observe(t); });
   }
 
+  // :::stats count-up: once, when the card is first on screen, 600ms ease-out from 0. Only a value
+  // with exactly one number animates ("$140.6M", "+1,252%", "25,000", "1.2万", "3x"); a year, a
+  // "Q3"-style label, a range or a date stays still. It ends on the original text, exactly, and
+  // stops at once if motion is switched off or the page is printed.
+  var COUNT_MS = 600, counting = [];
+  function countable(text) {
+    var m = /^(\D*?)(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(\D*)$/.exec(text);
+    if (!m || /[A-Za-z]$/.test(m[1])) return null;
+    if (!m[3] && /^(1[5-9]|2[01])\d\d$/.test(m[2])) return null;
+    var target = parseFloat(m[2].replace(/,/g, '') + (m[3] || ''));
+    return target > 0 ? { pre: m[1], post: m[4], target: target, decimals: m[3] ? m[3].length - 1 : 0, comma: m[2].indexOf(',') > -1 } : null;
+  }
   function countUp(v) {
-    if (!v || v.getAttribute('data-counted')) return;
+    if (!v || v.getAttribute('data-counted') || !motionOn()) return;
     v.setAttribute('data-counted', '1');
-    var text = v.textContent, m = /^(\D*?)(\d[\d,]*(?:\.\d+)?)(.*)$/.exec(text);
-    if (!m) return;
-    var target = parseFloat(m[2].replace(/,/g, '')), decimals = (m[2].split('.')[1] || '').length, comma = m[2].indexOf(',') > -1;
-    if (!isFinite(target) || target === 0) return;
-    var t0 = null, dur = 900;
-    function fmt(x) { var s = x.toFixed(decimals); if (comma) { var p = s.split('.'); p[0] = p[0].replace(/\B(?=(\d{3})+(?!\d))/g, ','); s = p.join('.'); } return m[1] + s + m[3]; }
-    function step(ts) {
-      if (!t0) t0 = ts;
-      var k = Math.min(1, (ts - t0) / dur), e = 1 - Math.pow(1 - k, 3);
-      v.textContent = fmt(target * e);
-      if (k < 1) requestAnimationFrame(step); else v.textContent = text;
+    var text = v.textContent, c = countable(text);
+    if (!c) return;
+    var job = { v: v, text: text }, t0 = null;
+    function fmt(x) {
+      var s = x.toFixed(c.decimals);
+      if (c.comma) { var p = s.split('.'); p[0] = p[0].replace(/\B(?=(\d{3})+(?!\d))/g, ','); s = p.join('.'); }
+      return c.pre + s + c.post;
     }
+    function end() { v.textContent = text; var i = counting.indexOf(job); if (i >= 0) counting.splice(i, 1); }
+    function step(ts) {
+      if (job.stop || !motionOn()) { end(); return; }
+      if (t0 === null) t0 = ts;
+      var k = Math.min(1, (ts - t0) / COUNT_MS);
+      if (k >= 1) { end(); return; }
+      v.textContent = fmt(c.target * (1 - Math.pow(1 - k, 3)));
+      requestAnimationFrame(step);
+    }
+    counting.push(job);
+    v.textContent = fmt(0);
     requestAnimationFrame(step);
   }
+  window.addEventListener('beforeprint', function () { counting.slice().forEach(function (j) { j.stop = true; j.v.textContent = j.text; }); });
 
   function isCjk(root) {
     var s = (root.textContent || '').slice(0, 4000), n = 0;
@@ -693,6 +749,7 @@
 
   function render(md, target, opts) {
     opts = opts || {};
+    if (revealIO && target === revealRoot) { revealIO.disconnect(); revealIO = null; }
     var out = toHtml(md);
     target.innerHTML = out.html;
     if (opts.classic) return out.meta;

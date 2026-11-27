@@ -651,6 +651,8 @@ async function runDirectives(ctx, ok) {
     ok(r.mark === 'Dec 3' && JSON.stringify(r.badges) === '["green","red","blue"]', '==highlight== and :badge[...] with automatic and explicit colors');
     ok(!r.rawSyntax, 'no directive syntax leaks into the page');
     await page.click('.md-tabbar button:nth-child(2)');
+    // Tabs switch inside a view transition when motion is on: the DOM changes on the next frame.
+    await page.waitForFunction(() => document.querySelector('.md-tabbar button:nth-child(2)')?.getAttribute('aria-selected') === 'true', null, { timeout: 3000 });
     const shown = await page.evaluate(() => [...document.querySelectorAll('.md-tabs > section')].map((s) => !s.hidden));
     ok(JSON.stringify(shown) === '[false,true]', 'clicking the second tab shows its panel only');
     await page.evaluate(() => window.scrollTo(0, 0));
@@ -1054,11 +1056,14 @@ async function runTableReadability(ctx, ok) {
 
     // Cards toggle and back: same text, labels from the headers.
     await page.click('#content .table-block >> nth=0 >> button[data-view="cards"]');
+    // Table/Cards switches inside a view transition when motion is on: the DOM changes on the next frame.
+    await page.waitForFunction(() => document.querySelector('#content .table-wrap')?.dataset.view === 'cards', null, { timeout: 3000 });
     const c1 = await page.evaluate(() => { const w = document.querySelector('#content .table-wrap'), td = w.querySelector('tbody td:nth-child(2)'); return { view: w.dataset.view, display: getComputedStyle(w.querySelector('tr')).display, label: getComputedStyle(td, '::before').content, width: w.parentElement.getBoundingClientRect().width, art: document.getElementById('content').getBoundingClientRect().width }; });
     ok(c1.view === 'cards' && c1.display === 'block' && c1.label === '"白话解释"' && Math.abs(c1.width - c1.art) < 2, `Cards turns each row into a card labelled from the header (label ${c1.label}), back inside the column`);
     ok((await text(page)) === before, 'Cards shows exactly the same text (labels are drawn, not added)');
     await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-cards.png') });
     await page.click('#content .table-block >> nth=0 >> button[data-view="table"]');
+    await page.waitForFunction(() => document.querySelector('#content .table-wrap')?.dataset.view === 'table', null, { timeout: 3000 });
     const back = (await blocks(page))[0];
     ok(back.view === 'table' && back.width > back.art.width + 200, 'Table brings the wide layout back');
 

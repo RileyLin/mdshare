@@ -517,13 +517,18 @@ abbr.md-gloss:hover .md-tip, abbr.md-gloss:focus .md-tip, abbr.md-gloss.open .md
 .diff .d-ctx { color: var(--ink-3); }
 .diff .d-gap { justify-content: center; color: var(--ink-4); background: var(--paper-2); }
 
-/* ---------- Motion (once, subtle; off for reduced motion and print) ---------- */
-.motion .rv { opacity: 0; transform: translateY(10px); transition: opacity .6s var(--ease), transform .6s var(--ease); transition-delay: var(--d, 0ms); }
-.motion .rv.in { opacity: 1; transform: none; }
+/* ---------- Motion (render.js motion(); only under html.motion-ok, which PREFS_BOOT in api/_lib/ui.js
+   sets when the reader's Motion switch is on and the OS doesn't ask for reduced motion) ---------- */
+html.motion-ok .rv:not(.rv-in), html.motion-ok .rv-group:not(.rv-in) .rv-k { opacity: 0; transform: translateY(8px); }
+html.motion-ok .rv.rv-in, html.motion-ok .rv-group.rv-in .rv-k { transition: opacity .22s ease-out, transform .22s ease-out; transition-delay: var(--rv-d, 0ms); }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: .2s; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
-  .motion .rv { opacity: 1; transform: none; }
+  html.motion-ok .rv, html.motion-ok .rv-k { opacity: 1 !important; transform: none !important; }
 }
+/* Aa → Motion off: the same as the OS setting. */
+:root[data-motion="off"] *, :root[data-motion="off"] *::before, :root[data-motion="off"] *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
+:root[data-motion="off"] { scroll-behavior: auto !important; }
 
 /* ---------- Editor ---------- */
 .editor { display: none; height: calc(100vh - 56px); }

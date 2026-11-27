@@ -411,7 +411,7 @@
     if (cap) { cap.parentNode.insertBefore(bar, cap.nextSibling); block.classList.add('has-caption'); } else block.insertBefore(bar, wrap);
     bar.addEventListener('click', function (e) {
       var b = e.target.closest('button'); if (!b) return;
-      if (b.getAttribute('data-view')) { block.setAttribute('data-view-user', b.getAttribute('data-view')); placeTable(block, articleOf(block)); return; }
+      if (b.getAttribute('data-view')) { var v = b.getAttribute('data-view'); withTransition(function () { block.setAttribute('data-view-user', v); placeTable(block, articleOf(block)); }); return; }
       if (b.getAttribute('data-act') === 'copy') { copyText(tableTsv(t), 'Table copied. Paste it into a spreadsheet.'); return; }
       if (b.getAttribute('data-act') === 'expand') expandTable(block);
     });
