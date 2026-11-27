@@ -1,7 +1,7 @@
 // Shared visibility + Supabase access helpers for mdshare content routes.
 // Underscore-prefixed directory: Vercel does not expose files under api/_lib/* as their own
 // routes, so this is safe to import from without creating an extra public endpoint.
-import { privateGatePage } from './ui.js';
+import { privateGatePage, hiddenGatePage, hiddenSignedInPage } from './ui.js';
 import { sessionOwner, tokenOwner, owns, isValidId, CONTENT_TABLES } from './tenant.js';
 import { hasScope } from './agent-tokens.js';
 
@@ -66,6 +66,13 @@ export function setPrivacyHeaders(res) {
 // `hint` (api/_lib/raw.js refusalHint) is extra, escaped text for an agent that sent its token the wrong way.
 export function privateGateHtml({ hint } = {}) {
   return privateGatePage({ hint });
+}
+
+// /v, /d, /a when isVisible() said no (or there is no row): the same status and page for a missing,
+// expired or someone else's private document, chosen only by who is asking (ui.js hiddenGatePage).
+// Returns [status, html]. `hint` (api/_lib/raw.js refusalHint) is extra, escaped agent text.
+export function notVisibleHtml(req, res, { what = 'document', hint } = {}) {
+  return sessionOwner(req, res) ? [404, hiddenSignedInPage(what)] : [401, hiddenGatePage({ what, hint })];
 }
 
 // A row is "kept" (never expires) when pinned; legacy pinned rows were pushed to 2099.

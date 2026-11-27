@@ -110,15 +110,16 @@ test('a token sent as x-api-key or ?key= gets the Bearer hint on the refusal, sa
   const { token } = await mint(['documents:read']);
   const id = seed();
   const bodies = [];
+  const pages = [];
   const work = [];
   for (const [target, headers, extra] of [[id, { 'x-api-key': token }, {}], ['missingId123', { 'x-api-key': token }, {}], [id, {}, { key: token }], [id, { 'api-key': token }, {}]]) {
     const r = await view(target, headers, extra);
-    if (target === id) {
-      assert.equal(r.statusCode, 401, '/v keeps its sign-in gate');
-      assert.match(r.headers['www-authenticate'], /Bearer/);
-      assert.match(r.body, /Send the token as Authorization: Bearer &lt;token&gt;/);
-      assert.doesNotMatch(r.body, /secret-marker/);
-    } else assert.equal(r.statusCode, 404, '/v keeps its not-found page');
+    // Multi-user (2026-11-27): /v gives a missing id the same sign-in gate as a private one.
+    assert.equal(r.statusCode, 401, '/v keeps its sign-in gate, for an existing and a missing id alike');
+    assert.match(r.headers['www-authenticate'], /Bearer/);
+    assert.match(r.body, /Send the token as Authorization: Bearer &lt;token&gt;/);
+    assert.doesNotMatch(r.body, /secret-marker/);
+    pages.push(r.body);
     const before = db.calls.length;
     const rr = await raw(target, headers, extra);
     work.push(db.calls.length - before);
@@ -127,6 +128,7 @@ test('a token sent as x-api-key or ?key= gets the Bearer hint on the refusal, sa
     bodies.push(JSON.stringify(rr.body));
   }
   assert.equal(new Set(bodies).size, 1, 'identical answer whatever the id');
+  assert.equal(new Set(pages).size, 1, 'identical /v page whatever the id');
   assert.equal(new Set(work).size, 1, 'the same database work for an existing and a missing id');
   assert.equal(apiKeyMisuse({ headers: { authorization: 'Bearer ' + token, 'x-api-key': 'x' }, query: {} }), false, 'a real Bearer header wins');
 });
@@ -159,8 +161,10 @@ test('anonymous: unchanged gate (with or without Accept: text/markdown), no cont
     assert.match(r.body, /Authorization: Bearer &lt;token&gt;/, 'the gate tells an agent how to authenticate');
     assert.match(r.headers['www-authenticate'], /^Bearer/);
   }
+  // Multi-user (2026-11-27): a missing id gets exactly the private gate, so a link never says it exists.
   const missing = await view('missingId123', {});
-  assert.equal(missing.statusCode, 404, 'missing id unchanged');
+  assert.equal(missing.statusCode, 401, 'missing id: the same gate');
+  assert.equal(missing.body, (await view(id, {})).body, 'byte-identical to the private gate');
   assert.doesNotMatch(missing.body, /rel="alternate"/);
   const pub = seed({ is_public: true });
   const page = await view(pub, {});

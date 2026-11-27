@@ -66,7 +66,7 @@ for (const [p, marker, type] of [
 }
 
 // 3. Gates and error pages.
-for (const [p, status, marker] of [['/dashboard', 401, 'Welcome back'], ['/settings', 401, 'Welcome back'], ['/v/zzzzzzzzz0', 404, 'This link has expired'], ['/d/zzzzzzzzz0', 404, 'This link has expired'], ['/a/zzzzzzzzz0', 404, 'This link has expired'], ['/c', 401, 'This content is private'], ['/c/zzzzzzzzz0', 401, 'This content is private']]) {
+for (const [p, status, marker] of [['/dashboard', 401, 'Welcome back'], ['/settings', 401, 'Welcome back'], ['/v/zzzzzzzzz0', 401, 'Private or expired'], ['/d/zzzzzzzzz0', 401, 'Private or expired'], ['/a/zzzzzzzzz0', 401, 'Private or expired'], ['/c', 401, 'This content is private'], ['/c/zzzzzzzzz0', 401, 'This content is private']]) {
   const r = await get(p);
   check(`gate ${p} -> ${status}`, r.status === status && r.text.includes(marker), `status ${r.status}`);
 }
@@ -90,6 +90,8 @@ if (MODE === 'release') {
   if (body.id) {
     const v = await get(`/v/${body.id}`);
     check('create: new document is private (sign-in card, no content)', v.status === 401 && !v.text.includes(marker) && v.headers.get('cache-control') === 'private, no-store', `status ${v.status}`);
+    const none = await get('/v/zzzzzzzzz0');
+    check('create: a private document looks exactly like a missing one', v.status === none.status && v.text === none.text, `status ${v.status} vs ${none.status}`);
     const raw = await get(`/raw/${body.id}`);
     check('create: raw route denies anonymous reads', raw.status === 404 && !raw.text.includes(marker), `status ${raw.status}`);
   }

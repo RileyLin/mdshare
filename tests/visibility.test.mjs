@@ -269,12 +269,26 @@ test('archify.js GET (raw IR): anonymous private deny, public allow', async () =
 
 // --- Missing / never-created id ---
 
-test('render.js: a never-created id returns generic not-found, not a login gate', async () => {
-  mockRowFetch(null);
-  try {
-    const req = { query: { id: 'nonexistent1' }, headers: {} };
-    const res = responseRecorder();
-    await renderHandler(req, res);
-    assert.equal(res.statusCode, 404);
-  } finally { restoreFetch(); }
+// Multi-user (2026-11-27): a missing id must not look different from a private one, or a link
+// would reveal that a document exists. Anonymous: the same 401 sign-in card; signed in: the same 404.
+test('render.js: a never-created id gets exactly the answer a private one gets', async () => {
+  const { userCookie } = await import('./_fakedb.mjs');
+  const cookie = await userCookie(1);
+  const answer = async (row, headers) => {
+    mockRowFetch(row);
+    try {
+      const res = responseRecorder();
+      await renderHandler({ query: { id: 'nonexistent1' }, headers }, res);
+      return [res.statusCode, res.body];
+    } finally { restoreFetch(); }
+  };
+  const privateRow = { owner_id: 2, content: '# Someone else\n\nbody', expires_at: '2999-01-01T00:00:00Z', is_public: false };
+  const anonMissing = await answer(null, {});
+  assert.equal(anonMissing[0], 401);
+  assert.match(anonMissing[1], /id="pwd"/, 'anonymous: the sign-in card, so an owner can open their own link');
+  assert.deepEqual(await answer(privateRow, {}), anonMissing);
+  const signedMissing = await answer(null, { cookie });
+  assert.equal(signedMissing[0], 404);
+  assert.match(signedMissing[1], /This link has expired/);
+  assert.deepEqual(await answer(privateRow, { cookie }), signedMissing, "another user's private document is the same 404 as a missing one");
 });

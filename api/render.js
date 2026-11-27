@@ -8,9 +8,9 @@
 // stored is rewritten. ?as=reader shows the owner what a reader sees; ?classic=1 is the old page.
 // Agents: a request with Authorization: Bearer (or the owner asking for Accept: text/markdown)
 // gets the stored Markdown through api/_lib/raw.js, under exactly the /raw/:id rules.
-import { isVisible, viewerOwns, isKept, setPrivacyHeaders, privateGateHtml } from './_lib/access.js';
+import { isVisible, viewerOwns, isKept, setPrivacyHeaders, notVisibleHtml } from './_lib/access.js';
 import { readForView } from './_lib/tenant.js';
-import { head, header, ownerControls, readerControls, toast, dataBlock, scripts, CSP_PAGE, notFoundPage, unavailablePage, esc } from './_lib/ui.js';
+import { head, header, ownerControls, readerControls, toast, dataBlock, scripts, CSP_PAGE, unavailablePage, esc } from './_lib/ui.js';
 import { classicDocHtml } from './_lib/classic.js';
 import { renderDiagram } from './_lib/diagram-page.js';
 import { renderCollection } from './_lib/collection-page.js';
@@ -102,13 +102,13 @@ async function handler(req, res) {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
 
   if (dbError) return res.status(503).send(unavailablePage());
-  if (!row) return res.status(404).send(notFoundPage('document'));
-
   const authed = viewerOwns(row, req, res);
+  // Missing, expired and someone else's private document: one answer (access.js notVisibleHtml).
   if (!isVisible(row, req, res)) {
     res.setHeader('WWW-Authenticate', 'Bearer realm="mdshare"');
     // A token sent as x-api-key / ?key= adds one sentence to the gate; nothing else changes.
-    return res.status(401).send(privateGateHtml({ hint: refusalHint(req) }));
+    const [status, html] = notVisibleHtml(req, res, { what: 'document', hint: refusalHint(req) });
+    return res.status(status).send(html);
   }
 
   const markdown = row.content;

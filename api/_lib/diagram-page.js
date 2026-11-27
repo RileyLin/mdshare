@@ -4,9 +4,9 @@
 // Rebuilt 2026-11-19 on the shared chrome (api/_lib/ui.js + /assets/app.js). The SVG travels as
 // JSON and is sanitised with DOMPurify before it touches the DOM (the old page inlined raw SVG into
 // the HTML first, so an embedded <script> could run before sanitising).
-import { isVisible, viewerOwns, isKept, setPrivacyHeaders, privateGateHtml } from './access.js';
+import { isVisible, viewerOwns, isKept, setPrivacyHeaders, notVisibleHtml } from './access.js';
 import { readForView } from './tenant.js';
-import { head, header, ownerControls, readerControls, toast, dataBlock, scripts, CSP_PAGE, notFoundPage, unavailablePage, esc } from './ui.js';
+import { head, header, ownerControls, readerControls, toast, dataBlock, scripts, CSP_PAGE, unavailablePage, esc } from './ui.js';
 
 function diagramPage({ id, row, owner }) {
   const title = row.title || 'Diagram';
@@ -42,10 +42,13 @@ export async function renderDiagram(req, res) {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
 
   if (dbError) return res.status(503).send(unavailablePage());
-  if (!row) return res.status(404).send(notFoundPage('diagram'));
 
   const authed = viewerOwns(row, req, res);
-  if (!isVisible(row, req, res)) return res.status(401).send(privateGateHtml());
+  // Missing, expired and someone else's private diagram: one answer (access.js notVisibleHtml).
+  if (!isVisible(row, req, res)) {
+    const [status, html] = notVisibleHtml(req, res, { what: 'diagram' });
+    return res.status(status).send(html);
+  }
 
   res.setHeader('Content-Security-Policy', CSP_PAGE);
   return res.status(200).send(diagramPage({ id, row, owner: authed && req.query.as !== 'reader' }));

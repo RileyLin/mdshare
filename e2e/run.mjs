@@ -1295,12 +1295,18 @@ async function runShells(ctx, ok) {
     await page.waitForSelector('#svg-frame svg', { timeout: 5000 });
     ok((await page.locator('#status-pill').count()) === 0, 'anonymous diagram view after publish: content, no owner controls');
   });
+  // Multi-user (2026-11-27): missing, expired and private look the same, chosen only by who asks:
+  // anonymous gets the sign-in card (401), a signed-in user the designed 404 page.
   const nf = await fetch(`${ctx.serverUrl}/v/doesnotexist1`);
   const nfHtml = await nf.text();
-  ok(nf.status === 404 && nfHtml.includes('This link has expired') && nfHtml.includes('/assets/mdshare.css'), 'missing documents get the designed 404 page');
+  ok(nf.status === 401 && nfHtml.includes('Private or expired') && nfHtml.includes('id="pwd"') && nfHtml.includes('/assets/mdshare.css'), 'anonymous: a missing document gets the same sign-in card as a private one');
+  const nfOwner = await fetch(`${ctx.serverUrl}/v/doesnotexist1`, { headers: { cookie: ctx.ownerCookie } });
+  ok(nfOwner.status === 404 && (await nfOwner.text()).includes('This link has expired'), 'signed in: a missing document gets the designed 404 page');
   for (const p of ['/d/doesnotexist1', '/a/doesnotexist1']) {
     const r = await fetch(`${ctx.serverUrl}${p}`);
-    ok(r.status === 404 && (await r.text()).includes('This link has expired'), `${p} gets the same 404 page`);
+    ok(r.status === 401 && (await r.text()).includes('Private or expired'), `${p} gets the same card anonymously`);
+    const o = await fetch(`${ctx.serverUrl}${p}`, { headers: { cookie: ctx.ownerCookie } });
+    ok(o.status === 404 && (await o.text()).includes('This link has expired'), `${p} gets the same 404 page signed in`);
   }
 }
 

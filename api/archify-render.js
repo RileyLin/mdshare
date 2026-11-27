@@ -10,9 +10,9 @@
 // allow-same-origin keeps it in an opaque, unique origin that can still run its own client-side
 // interactivity (pan/zoom/hover/theme-toggle — all local DOM work) but cannot read mdshare cookies
 // or call mdshare APIs with the owner's session. Do not change this back to inlining HTML.
-import { isVisible, viewerOwns, isKept, setPrivacyHeaders, privateGateHtml } from './_lib/access.js';
+import { isVisible, viewerOwns, isKept, setPrivacyHeaders, notVisibleHtml } from './_lib/access.js';
 import { readForView } from './_lib/tenant.js';
-import { head, header, ownerControls, readerControls, toast, dataBlock, scripts, CSP_PAGE, notFoundPage, unavailablePage, messagePage, esc } from './_lib/ui.js';
+import { head, header, ownerControls, readerControls, toast, dataBlock, scripts, CSP_PAGE, unavailablePage, messagePage, esc } from './_lib/ui.js';
 import { withErrors } from './_lib/events.js';
 
 function chrome({ id, row, owner }) {
@@ -56,10 +56,11 @@ async function handler(req, res) {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
 
   if (dbError) return res.status(503).send(unavailablePage());
-  if (!row) return res.status(404).send(notFoundPage('diagram'));
 
+  // Missing, expired and someone else's private diagram: one answer (access.js notVisibleHtml).
   if (!isVisible(row, req, res)) {
-    return res.status(401).send(privateGateHtml());
+    const [status, html] = notVisibleHtml(req, res, { what: 'diagram' });
+    return res.status(status).send(html);
   }
 
   const authed = viewerOwns(row, req, res);

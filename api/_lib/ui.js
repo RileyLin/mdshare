@@ -193,3 +193,20 @@ export function privateGatePage({ hint } = {}) {
     fine: `Agent or script? Send <code>Authorization: Bearer &lt;token&gt;</code>. See <a href="/llms.txt">/llms.txt</a>.${hint ? ` <span id="agent-hint">${esc(hint)}</span>` : ''}`,
   });
 }
+// The one answer for "nothing here you may see" on /v, /d and /a (multi-user, 2026-11-27): a missing
+// id, an expired one and someone else's private document give the same status and the same page,
+// so a link never reveals whether a document exists. It depends only on who is asking: anonymous
+// gets 401 with the sign-in card (an owner opening their own link in a fresh browser), a signed-in
+// user a plain 404 (api/_lib/access.js notVisibleHtml picks one).
+export function hiddenGatePage({ what = 'document', hint } = {}) {
+  return loginPage({
+    title: 'Private or expired',
+    heading: 'Private or expired',
+    sub: `This ${what} is private, has expired, or doesn't exist. If it's yours, sign in to open it. A document shared publicly works for anyone without signing in.`,
+    fine: `Agent or script? Send <code>Authorization: Bearer &lt;token&gt;</code>. See <a href="/llms.txt">/llms.txt</a>.${hint ? ` <span id="agent-hint">${esc(hint)}</span>` : ''}`,
+  });
+}
+
+export function hiddenSignedInPage(what = 'document') {
+  return messagePage({ title: 'Not found', heading: 'This link has expired', body: `This ${what} doesn't exist, has expired, or belongs to another account. Documents that aren't kept expire automatically.`, glyph: '⌛' });
+}

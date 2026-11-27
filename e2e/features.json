@@ -418,7 +418,7 @@
     "assertions": [
       "diagram publishes and keeps",
       "reader has no owner controls",
-      "404 page on all three routes"
+      "a missing id on all three routes: the sign-in card (401) anonymously, the designed 404 signed in (the same answers a private document gets)"
     ]
   },
   {
