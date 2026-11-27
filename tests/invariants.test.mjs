@@ -13,7 +13,7 @@ const SCRIPT = join(ROOT, 'scripts', 'check-invariants.mjs');
 
 function copyRepo() {
   const dir = mkdtempSync(join(tmpdir(), 'mdshare-inv-'));
-  for (const p of ['api', 'migrations', 'scripts', 'vercel.json', 'CLAUDE.md', 'README.md']) {
+  for (const p of ['api', 'migrations', 'scripts', 'vercel.json', 'CLAUDE.md', 'README.md', 'public/enter.html']) {
     cpSync(join(ROOT, p), join(dir, p), { recursive: true });
   }
   return dir;
@@ -327,3 +327,63 @@ test('invariant "no-secrets" skips a symlinked node_modules in a git checkout (n
     assert.doesNotMatch(r.out, /check crashed|EISDIR/, r.out);
   } finally { rmSync(dir, { recursive: true, force: true }); rmSync(target, { recursive: true, force: true }); }
 });
+
+// Multi-user beta P3 (2026-11-27): sign-up, entry links, user #1, admin, the kill switch. Each line
+// breaks one rule and must be caught by the named check.
+const p3Mutations = [
+  ['signup-rate-limited-and-capped', 'the per-IP sign-up limit is skipped', 'api/auth.js', (s) => s.replace("  const rate = SIGNUP_LIMIT.check(clientIp(req));\n  if (!rate.allowed) return tooMany(res, rate, `sign-ups (at most ${SIGNUP_LIMIT.limit} an hour)`);\n", '')],
+  ['signup-rate-limited-and-capped', 'the limit grows to 50 an hour', 'api/auth.js', (s) => s.replace('rateLimiter({ limit: 5, windowMs: 60 * 60 * 1000 })', 'rateLimiter({ limit: 50, windowMs: 60 * 60 * 1000 })')],
+  ['signup-rate-limited-and-capped', 'the user is created before the seat check', 'api/auth.js', (s) => s.replace("  const cap = maxUsers();\n  if ((await countSeats(cap + 1)) >= cap) return res.status(403).json({ error: 'beta full' });\n  const secret = newEntrySecret();\n  const me = await createUser({ label, entryHash: entryHash(secret) });\n", "  const secret = newEntrySecret();\n  const me = await createUser({ label, entryHash: entryHash(secret) });\n  const cap = maxUsers();\n  if ((await countSeats(cap + 1)) >= cap) return res.status(403).json({ error: 'beta full' });\n")],
+  ['signup-rate-limited-and-capped', 'there is no seat check', 'api/auth.js', (s) => s.replace("  if ((await countSeats(cap + 1)) >= cap) return res.status(403).json({ error: 'beta full' });\n", '')],
+  ['signup-rate-limited-and-capped', 'the sign-up token gets documents:publish:any', 'api/auth.js', (s) => s.replace("export const SIGNUP_SCOPES = ['documents:read', 'documents:write', 'documents:publish'];", "export const SIGNUP_SCOPES = ['documents:read', 'documents:write', 'documents:publish', 'documents:publish:any'];")],
+  ['signup-rate-limited-and-capped', 'the 429 loses Retry-After', 'api/auth.js', (s) => s.replace("function tooMany(res, rate, what) {\n  res.setHeader('Retry-After', String(rate.retryAfter));\n", 'function tooMany(res, rate, what) {\n')],
+  ['signup-rate-limited-and-capped', 'the default cap becomes 500', 'api/_lib/tenant.js', (s) => s.replace('export const DEFAULT_MAX_USERS = 50;', 'export const DEFAULT_MAX_USERS = 500;')],
+  ['signup-rate-limited-and-capped', 'the seat count includes user #1', 'api/_lib/tenant.js', (s) => s.replace('`id=neq.${encodeURIComponent(SITE_OWNER_UID)}&select=id&limit=', '`select=id&limit=')],
+  ['entry-secret-hashed', 'the plain secret is stored', 'api/auth.js', (s) => s.replace('const me = await createUser({ label, entryHash: entryHash(secret) });', 'const me = await createUser({ label, entryHash: secret });')],
+  ['entry-secret-hashed', 'createUser stops checking it got a hash', 'api/_lib/tenant.js', (s) => s.replace("export async function createUser({ label, entryHash }) {\n  assertEntryHash(entryHash);\n", 'export async function createUser({ label, entryHash }) {\n')],
+  ['entry-secret-hashed', 'the secret is logged', 'api/auth.js', (s) => s.replace("  if (!uid) return res.status(401).json({ error: ENTRY_FAILED });", "  console.log('entry attempt', secret);\n  if (!uid) return res.status(401).json({ error: ENTRY_FAILED });")],
+  ['entry-secret-hashed', 'the link puts the secret in the query string', 'api/auth.js', (s) => s.replace('const entryUrl = (req, secret) => `${siteOrigin(req)}/enter#${secret}`;', 'const entryUrl = (req, secret) => `${siteOrigin(req)}/enter?s=${secret}`;')],
+  ['entry-secret-hashed', 'the link is built from the Host header', 'api/auth.js', (s) => s.replace('const entryUrl = (req, secret) => `${siteOrigin(req)}/enter#${secret}`;', 'const entryUrl = (req, secret) => `https://${req.headers.host}/enter#${secret}`;')],
+  ['entry-secret-hashed', 'the lookup compares with ===', 'api/_lib/tenant.js', (s) => s.replace('!safeHexEqual(String(u.entry_hash), hash)', 'u.entry_hash !== hash')],
+  ['entry-secret-hashed', 'the stats select entry_hash', 'api/_lib/tenant.js', (s) => s.replace("const r = await request(STATS_RPC, '', jsonInit('POST', {})).catch(() => null);", "const r = await request(STATS_RPC, '', jsonInit('POST', { extra: 'entry_hash' })).catch(() => null);")],
+  ['entry-secret-hashed', '/enter reads the query string', 'public/enter.html', (s) => s.replace('var secret = location.hash.slice(1);', "var secret = location.hash.slice(1) || new URLSearchParams(location.search).get('s');")],
+  ['entry-secret-hashed', '/enter leaves the secret in the address bar', 'public/enter.html', (s) => s.replace("  history.replaceState(null, '', location.pathname);\n", '')],
+  ['entry-secret-hashed', '/enter keeps the secret in localStorage', 'public/enter.html', (s) => s.replace("  history.replaceState(null, '', location.pathname);\n", "  history.replaceState(null, '', location.pathname);\n  localStorage.setItem('mdshare-entry', secret);\n")],
+  ['entry-secret-hashed', 'the /enter rewrite is gone', 'vercel.json', (s) => { const v = JSON.parse(s); v.rewrites = v.rewrites.filter((r) => r.source !== '/enter'); return JSON.stringify(v); }],
+  ['user-one-protected', 'user #1 gets a quota', 'api/_lib/tenant.js', (s) => s.replace('async function enforceQuota(owner, row, { daily }) {\n  if (owner.uid === SITE_OWNER_UID) return;\n', 'async function enforceQuota(owner, row, { daily }) {\n')],
+  ['user-one-protected', 'user #1 can be disabled', 'api/_lib/tenant.js', (s) => s.replace("  if (uid === SITE_OWNER_UID) throw new Refused(400, 'User #1 (the owner) can never be disabled');\n", '')],
+  ['user-one-protected', 'user #1 is looked up like anyone else', 'api/_lib/tenant.js', (s) => s.replace('export async function userActive(uid) {\n  if (uid === SITE_OWNER_UID) return true;\n', 'export async function userActive(uid) {\n')],
+  ['user-one-protected', 'an entry link can sign in user #1', 'api/_lib/tenant.js', (s) => s.replace(' || u.id === SITE_OWNER_UID) return null;', ') return null;')],
+  ['user-one-protected', 'the password signs in whoever the body names', 'api/auth.js', (s) => s.replace("    res.setHeader('Set-Cookie', freshSessionCookie(OWNER_UID));", "    res.setHeader('Set-Cookie', freshSessionCookie(Number(body.user_id) || OWNER_UID));")],
+  ['user-one-protected', 'the route stops refusing user #1', 'api/auth.js', (s) => s.replace("  if (uid === OWNER_UID) return res.status(400).json({ error: 'User #1 (the owner) can never be disabled' });\n", '')],
+  ['user-one-protected', 'migration 014 stops making user #1 unlimited', 'migrations/014_signup_quotas_stats.sql', (s) => s.replace('UPDATE mdshare_users SET quota_docs_per_day = NULL, quota_bytes = NULL WHERE id = 1', 'UPDATE mdshare_users SET quota_docs_per_day = NULL WHERE id = 1')],
+  ['owner-only-admin', 'any user may read the stats', 'api/doc.js', (s) => s.replace("auth: 'admin|activity:read', httpMethod: 'GET'", "auth: 'owner|activity:read', httpMethod: 'GET'")],
+  ['owner-only-admin', "allowed() stops checking for user #1", 'api/_lib/activity.js', (s) => s.replace("  if (auth.startsWith('admin') && me.uid !== SITE_OWNER_UID) return false;\n", '')],
+  ['owner-only-admin', 'userStats() trusts its caller', 'api/_lib/tenant.js', (s) => s.replace("  if (!readable(me) || me.uid !== SITE_OWNER_UID) throw new Refused(403, 'Owner only');\n", '')],
+  ['owner-only-admin', 'setUserDisabled() trusts its caller', 'api/_lib/tenant.js', (s) => s.replace("export async function setUserDisabled(me, uid, disabled) {\n  if (!isAdmin(me)) throw new Refused(403, 'Owner only');\n", 'export async function setUserDisabled(me, uid, disabled) {\n')],
+  ['owner-only-admin', 'isAdmin accepts a token', 'api/_lib/tenant.js', (s) => s.replace("return readable(me) && me.via === 'cookie' && me.uid === SITE_OWNER_UID;", 'return readable(me) && me.uid === SITE_OWNER_UID;')],
+  ['owner-only-admin', 'the kill switch takes any session', 'api/auth.js', (s) => s.replace("  const me = sessionOwner(req, res);\n  if (!isAdmin(me)) return res.status(me ? 403 : 401).json({ error: 'Owner only' });\n", "  const me = sessionOwner(req, res);\n  if (!me) return res.status(401).json({ error: 'Owner only' });\n")],
+  ['disabled-user-gated', 'withErrors skips the session gate', 'api/_lib/events.js', (s) => s.replace('      await gateSession(req);\n', '')],
+  ['disabled-user-gated', 'sessionUid ignores a rejected session', 'api/_lib/session.js', (s) => s.replace('  if (sessionRejected(req)) return null; // a disabled or unknown user (gateSession)\n', '')],
+  ['disabled-user-gated', "a disabled user's public page stays up", 'api/_lib/tenant.js', (s) => s.replace("  if (found.row && found.row.owner_id !== SITE_OWNER_UID && !(await userActive(found.row.owner_id))) return { row: null };\n", '')],
+  ['disabled-user-gated', "a disabled user's token keeps working", 'api/_lib/agent-tokens.js', (s) => s.replace("    if (row.ownerDisabled) return { present: true, valid: false, reason: 'disabled' };\n", '')],
+  ['disabled-user-gated', 'a user with no row counts as active', 'api/_lib/tenant.js', (s) => s.replace('return rows.length === 1 && rows[0].disabled === false;', 'return rows.length === 0 || rows[0].disabled === false;')],
+  ['disabled-user-gated', 'a database error lets the user in', 'api/_lib/tenant.js', (s) => s.replace('    return rows.length === 1 && rows[0].disabled === false;\n  } catch {\n    return false;', '    return rows.length === 1 && rows[0].disabled === false;\n  } catch {\n    return true;')],
+  ['disabled-user-gated', "a disabled user's create is filed under user #1", 'api/_lib/tenant.js', (s) => s.replace("  if (sessionRejected(req)) throw new Refused(403, 'This account is disabled.');\n", '')],
+  ['tenant-scoped', 'a new accounts function reads a user table', 'api/_lib/tenant.js', (s) => s + "\nexport async function everyonesPastes() {\n  return rowsOf(await request('mdshare_pastes', 'select=id'));\n}\n"],
+  ['tenant-scoped', 'the users table is queried outside the Accounts section', 'api/_lib/tenant.js', (s) => s.replace('export async function pingDb() {\n', "export async function pingDb() {\n  await request(USERS, 'select=id');\n")],
+  ['tenant-scoped', 'ACCOUNTS grows without the invariant', 'api/_lib/tenant.js', (s) => s.replace("'setUserDisabled', 'userStats'];", "'setUserDisabled', 'userStats', 'listUsers'];")],
+];
+for (const [id, label, file, fn] of p3Mutations) {
+  test(`invariant "${id}" fails when ${label}`, () => {
+    const dir = copyRepo();
+    try {
+      const before = readFileSync(join(dir, file), 'utf8');
+      edit(dir, file, fn);
+      assert.notEqual(readFileSync(join(dir, file), 'utf8'), before, 'the mutation applied');
+      const r = run(dir);
+      assert.equal(r.code, 1, r.out);
+      assert.match(r.out, new RegExp(`✗ ${id.replace(/[-]/g, '\\-')} `), r.out);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+}

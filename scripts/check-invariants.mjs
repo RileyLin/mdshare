@@ -683,6 +683,174 @@ const checks = [
     },
   },
   {
+    id: 'signup-rate-limited-and-capped',
+    why: 'Multi-user beta P3 (2026-11-27): open sign-up (no invite codes) is guarded only by 5 sign-ups per IP an hour and a seat cap (MDSHARE_MAX_USERS, default 50, user #1 not counted); the sign-up token can publish its own documents, never documents:publish:any.',
+    run() {
+      const errs = [];
+      const src = read('api/auth.js');
+      if (!/export const SIGNUP_LIMIT = rateLimiter\(\{ limit: 5, windowMs: 60 \* 60 \* 1000 \}\);/.test(src)) errs.push('api/auth.js: keep `export const SIGNUP_LIMIT = rateLimiter({ limit: 5, windowMs: 60 * 60 * 1000 });` (5 sign-ups per IP an hour).');
+      if (!/export const SIGNUP_SCOPES = \['documents:read', 'documents:write', 'documents:publish'\];/.test(src)) errs.push("api/auth.js: SIGNUP_SCOPES is exactly ['documents:read', 'documents:write', 'documents:publish'] (documents:publish covers the skill's --public on its own documents; never documents:publish:any).");
+      if (!/function tooMany\(res, rate, what\) \{\n\s*res\.setHeader\('Retry-After', String\(rate\.retryAfter\)\);\n\s*return res\.status\(429\)/.test(src)) errs.push("api/auth.js: tooMany() answers 429 with Retry-After.");
+      const fn = (/async function signup\(req, res, body\) \{\n([\s\S]*?)\n\}/.exec(src) || [])[1];
+      if (!fn) errs.push('api/auth.js: keep `async function signup(req, res, body)`.');
+      else {
+        const at = (re) => fn.search(re);
+        const rate = at(/const rate = SIGNUP_LIMIT\.check\(clientIp\(req\)\);\n\s*if \(!rate\.allowed\) return tooMany\(res, rate, /);
+        const cap = at(/const cap = maxUsers\(\);\n\s*if \(\(await countSeats\(cap \+ 1\)\) >= cap\) return res\.status\(403\)\.json\(\{ error: 'beta full' \}\);/);
+        const create = at(/await createUser\(/);
+        if (rate < 0) errs.push('api/auth.js signup(): start with `const rate = SIGNUP_LIMIT.check(clientIp(req)); if (!rate.allowed) return tooMany(res, rate, ...)`.');
+        if (cap < 0) errs.push("api/auth.js signup(): check the seats with `const cap = maxUsers(); if ((await countSeats(cap + 1)) >= cap) return res.status(403).json({ error: 'beta full' });`.");
+        if (create < 0 || create < rate || create < cap) errs.push('api/auth.js signup(): createUser() only after the rate limit and the seat check.');
+        if (!/await createToken\(me, \{[^}\n]*scopes: SIGNUP_SCOPES \}\)/.test(fn)) errs.push('api/auth.js signup(): the new token gets scopes: SIGNUP_SCOPES.');
+        if (!/res\.status\(201\)\.json\(\{ user_id: me\.uid, token: created\.token, entry_url: entryUrl\(req, secret\), guide: guideUrl\(req\) \}\)/.test(fn)) errs.push('api/auth.js signup(): answer 201 { user_id: me.uid, token: created.token, entry_url: entryUrl(req, secret), guide: guideUrl(req) } (PLAN.md API contract).');
+      }
+      const t = read('api/_lib/tenant.js');
+      if (!/export const DEFAULT_MAX_USERS = 50;/.test(t) || !/export function maxUsers\(\) \{\n\s*const n = Number\.parseInt\(process\.env\.MDSHARE_MAX_USERS \?\? '', 10\);/.test(t)) errs.push('api/_lib/tenant.js: maxUsers() reads MDSHARE_MAX_USERS, default DEFAULT_MAX_USERS = 50.');
+      if (!/request\(USERS, `id=neq\.\$\{encodeURIComponent\(SITE_OWNER_UID\)\}&select=id&limit=/.test(t)) errs.push('api/_lib/tenant.js: countSeats() counts users other than #1 (id=neq.SITE_OWNER_UID).');
+      for (const f of apiFiles()) {
+        if (f === 'api/auth.js' || f === 'api/_lib/tenant.js') continue;
+        lines(f).forEach((l, i) => { if (!isCommentLine(l) && /\bcreateUser\(/.test(l)) errs.push(`${f}:${i + 1}: users are created only by signup() in api/auth.js.`); });
+      }
+      if ((src.match(/\bcreateUser\(/g) || []).length !== 1) errs.push('api/auth.js: createUser() is called exactly once, in signup().');
+      return errs;
+    },
+  },
+  {
+    id: 'entry-secret-hashed',
+    why: 'Multi-user beta P3: the entry link is a password. Its secret lives only in the URL fragment (never sent to a server, so never in a log) and in the one response that creates it; the database keeps sha256 hex only, compared in constant time; /enter reads nothing but the fragment and removes it.',
+    run() {
+      const errs = [];
+      const src = read('api/auth.js');
+      if (!/const newEntrySecret = \(\) => randomBytes\(32\)\.toString\('base64url'\);/.test(src)) errs.push("api/auth.js: the secret is `randomBytes(32).toString('base64url')` (newEntrySecret).");
+      if (!/export const entryHash = \(secret\) => sha256Hex\(`mdshare-entry-v1:\$\{secret\}`\);/.test(src)) errs.push('api/auth.js: keep `export const entryHash = (secret) => sha256Hex(`mdshare-entry-v1:${secret}`);`.');
+      if (!/const entryUrl = \(req, secret\) => `\$\{siteOrigin\(req\)\}\/enter#\$\{secret\}`;/.test(src)) errs.push('api/auth.js: entryUrl(req, secret) is `${siteOrigin(req)}/enter#${secret}`: canonical origin, secret in the fragment only.');
+      const OK_CALL = /createUser\(\{ label, entryHash: entryHash\(secret\) \}\)|rotateEntry\(me, entryHash\(secret\)\)|findUserByEntry\(entryHash\(secret\)\)/;
+      for (const f of apiFiles()) {
+        lines(f).forEach((l, i) => {
+          if (isCommentLine(l) || /^import /.test(l)) return;
+          if (f !== 'api/_lib/tenant.js' && /\b(createUser|rotateEntry|findUserByEntry)\(/.test(l) && !OK_CALL.test(l)) errs.push(`${f}:${i + 1}: pass the secret to the database only as entryHash(secret) ("${l.trim()}").`);
+          if (/console\.\w+\(|recordEvent\(/.test(l) && /secret|entry/i.test(l)) errs.push(`${f}:${i + 1}: never log the entry secret or link ("${l.trim()}").`);
+          if (/\/enter[?/]/.test(l)) errs.push(`${f}:${i + 1}: the entry secret goes only in the URL fragment (/enter#<secret>), never a path or query ("${l.trim()}").`);
+          if (f !== 'api/_lib/tenant.js' && /entry_hash/.test(l)) errs.push(`${f}:${i + 1}: entry_hash is read and written only by api/_lib/tenant.js ("${l.trim()}").`);
+        });
+      }
+      const t = read('api/_lib/tenant.js');
+      if (!/const ENTRY_HASH = \/\^\[0-9a-f\]\{64\}\$\/;/.test(t)) errs.push('api/_lib/tenant.js: keep `const ENTRY_HASH = /^[0-9a-f]{64}$/;`.');
+      for (const name of ['createUser', 'rotateEntry']) {
+        const body = (new RegExp(`export async function ${name}\\([^)]*\\) \\{\\n([\\s\\S]*?)\\n\\}`).exec(t) || [])[1] || '';
+        if (!/^\s*assertEntryHash\(/.test(body)) errs.push(`api/_lib/tenant.js: ${name}() starts with assertEntryHash(...) so a plain secret can never be stored.`);
+      }
+      if (!/function assertEntryHash\(hash\) \{\n\s*if \(typeof hash !== 'string' \|\| !ENTRY_HASH\.test\(hash\)\) throw/.test(t)) errs.push('api/_lib/tenant.js: assertEntryHash() throws for anything but 64 hex chars.');
+      const find = (/export async function findUserByEntry\(hash\) \{\n([\s\S]*?)\n\}/.exec(t) || [])[1] || '';
+      if (!/safeHexEqual\(String\(u\.entry_hash\), hash\)/.test(find) || /entry_hash ===|=== hash/.test(find)) errs.push('api/_lib/tenant.js: findUserByEntry() compares with safeHexEqual (constant time), never ===.');
+      // entry_hash only inside createUser (insert), rotateEntry (patch) and findUserByEntry (lookup).
+      const allowedSpans = ['createUser', 'rotateEntry', 'findUserByEntry'].map((n) => { const m = new RegExp(`export async function ${n}\\([^)]*\\) \\{\\n[\\s\\S]*?\\n\\}`).exec(t); return m ? [m.index, m.index + m[0].length] : [-1, -1]; });
+      let pos = 0;
+      for (const l of t.split('\n')) {
+        if (!isCommentLine(l) && /entry_hash/.test(l) && !allowedSpans.some(([a0, b0]) => pos >= a0 && pos < b0)) errs.push(`api/_lib/tenant.js: entry_hash is touched only by createUser, rotateEntry and findUserByEntry ("${l.trim()}").`);
+        pos += l.length + 1;
+      }
+      if (!exists('public/enter.html')) errs.push('public/enter.html is missing: /enter reads the secret from the URL fragment.');
+      else {
+        const html = read('public/enter.html');
+        const code = html.replace(/<!--[\s\S]*?-->/g, '');
+        if (!/var secret = location\.hash\.slice\(1\);\n\s*(\/\/[^\n]*\n\s*)?history\.replaceState\(null, '', location\.pathname\);/.test(code)) errs.push('public/enter.html: read `location.hash.slice(1)` and immediately `history.replaceState(null, \'\', location.pathname)`.');
+        if (/location\.(search|href)|document\.(URL|referrer|cookie)|localStorage|sessionStorage|console\.|<script[^>]+src=/.test(code)) errs.push('public/enter.html: reads only the fragment and stores or logs nothing (no location.search/href, storage, console or external scripts).');
+        if (!/fetch\('\/api\/auth\?action=enter', \{\n\s*method: 'POST',/.test(code) || code.indexOf('history.replaceState(') > code.indexOf("fetch('/api/auth?action=enter'")) errs.push("public/enter.html: POST the secret to '/api/auth?action=enter' after the fragment is cleared.");
+        if (!/<meta name="referrer" content="no-referrer">/.test(code)) errs.push('public/enter.html: <meta name="referrer" content="no-referrer">.');
+      }
+      const v = JSON.parse(read('vercel.json'));
+      if (!(v.rewrites || []).some((r) => r.source === '/enter' && r.destination === '/enter.html')) errs.push('vercel.json: rewrite /enter -> /enter.html.');
+      return errs;
+    },
+  },
+  {
+    id: 'user-one-protected',
+    why: 'COMPAT-CHECK G2 (accepted by Riley): the multi-user beta must not change how the owner uses mdshare. User #1 has no quotas, can never be disabled, never signs in by entry link, and is the only user the password signs in.',
+    run() {
+      const errs = [];
+      const t = read('api/_lib/tenant.js');
+      const body = (name) => (new RegExp(`export async function ${name}\\([^)]*\\) \\{\\n([\\s\\S]*?)\\n\\}`).exec(t) || [])[1] || '';
+      if (!/export const SITE_OWNER_UID = 1;/.test(t)) errs.push('api/_lib/tenant.js: SITE_OWNER_UID = 1.');
+      if (!/^\s*if \(uid === SITE_OWNER_UID\) return true;/.test(body('userActive'))) errs.push('api/_lib/tenant.js: userActive() starts with `if (uid === SITE_OWNER_UID) return true;` (never disabled, never looked up).');
+      const quota = (/async function enforceQuota\(owner, row, \{ daily \}\) \{\n([\s\S]*?)\n\}/.exec(t) || [])[1] || '';
+      if (!/^\s*if \(owner\.uid === SITE_OWNER_UID\) return;/.test(quota)) errs.push('api/_lib/tenant.js: enforceQuota() starts with `if (owner.uid === SITE_OWNER_UID) return;` (no quotas for user #1).');
+      if (!/if \(CONTENT_TABLES\.includes\(table\)\) await enforceQuota\(owner, row, \{ daily: true \}\);/.test(body('insertOwned'))) errs.push('api/_lib/tenant.js: insertOwned() enforces quotas for content rows (enforceQuota(owner, row, { daily: true })).');
+      if (!/if \(uid === SITE_OWNER_UID\) throw new Refused\(400, 'User #1 \(the owner\) can never be disabled'\);/.test(body('setUserDisabled'))) errs.push("api/_lib/tenant.js: setUserDisabled() refuses user #1: `if (uid === SITE_OWNER_UID) throw new Refused(400, 'User #1 (the owner) can never be disabled');`.");
+      if (!/\|\| u\.id === SITE_OWNER_UID\) return null;/.test(body('findUserByEntry'))) errs.push('api/_lib/tenant.js: findUserByEntry() never returns user #1.');
+      if (!/if \(uid === SITE_OWNER_UID\) throw new Refused\(403,/.test(body('rotateEntry'))) errs.push('api/_lib/tenant.js: rotateEntry() refuses user #1 (no entry link for the owner).');
+      const a = read('api/auth.js');
+      const cookies = [...a.matchAll(/freshSessionCookie\(([^)]*)\)/g)].map((m) => m[1]);
+      if (cookies.join() !== 'uid,OWNER_UID') errs.push(`api/auth.js: exactly two session cookies are issued: freshSessionCookie(uid) after an entry link, freshSessionCookie(OWNER_UID) after the password (found ${cookies.join(', ')}).`);
+      if (!/if \(!safeHexEqual\(computeToken\(password\), computeToken\(PASSWORD\)\)\) \{\n[^\n]*\n\s*\}\n\n[^\n]*\n\s*res\.setHeader\('Set-Cookie', freshSessionCookie\(OWNER_UID\)\);/.test(a)) errs.push('api/auth.js: the password signs in only user #1: freshSessionCookie(OWNER_UID) right after the password check.');
+      if (!/if \(!uid\) return res\.status\(401\)\.json\(\{ error: ENTRY_FAILED \}\);\n\s*res\.setHeader\('Set-Cookie', freshSessionCookie\(uid\)\);/.test(a)) errs.push('api/auth.js enter(): a cookie only for the uid findUserByEntry() returned.');
+      if (!/if \(uid === OWNER_UID\) return res\.status\(400\)\.json\(\{ error: 'User #1 \(the owner\) can never be disabled' \}\);/.test(a)) errs.push('api/auth.js disableUser(): refuse user #1 with a 400.');
+      if (!/if \(me\.uid === OWNER_UID\) return res\.status\(403\)/.test(a)) errs.push('api/auth.js rotateEntryLink(): user #1 has no entry link (403).');
+      const mig = exists('migrations/014_signup_quotas_stats.sql') ? read('migrations/014_signup_quotas_stats.sql') : '';
+      if (!/UPDATE mdshare_users SET quota_docs_per_day = NULL, quota_bytes = NULL WHERE id = 1\b/.test(mig) || !/ALTER COLUMN quota_docs_per_day DROP NOT NULL;/.test(mig) || !/ALTER COLUMN quota_bytes DROP NOT NULL;/.test(mig)) errs.push('migrations/014: quota columns nullable and user #1 NULL (unlimited).');
+      return errs;
+    },
+  },
+  {
+    id: 'owner-only-admin',
+    why: 'Multi-user beta P3: the stats (every user\'s activity) and the kill switch are the owner\'s, user #1. Checked twice: at the route and inside tenant.js.',
+    run() {
+      const errs = [];
+      const doc = read('api/doc.js');
+      const table = (/const ACTIONS = \{\n([\s\S]*?)\n\};/.exec(doc) || [])[1] || '';
+      const stats = (/\n? {2}stats: \{([\s\S]*?)\n {2}\},/.exec(table) || [])[1];
+      if (!stats) errs.push('api/doc.js: keep the plain `stats: { ... }` ACTIONS entry.');
+      else {
+        if (!/auth: 'admin\|activity:read'/.test(stats)) errs.push("api/doc.js: stats is auth: 'admin|activity:read' (user #1's session, or a user-#1 token with activity:read).");
+        if (!/await userStats\(me\)/.test(stats)) errs.push('api/doc.js: stats reads only through userStats(me) (tenant.js).');
+      }
+      for (const m of table.matchAll(/auth: (?:'([^']*)'|\{([^}]*)\})/g)) {
+        const rules = m[1] !== undefined ? [m[1]] : (m[2].match(/'[^']*'/g) || []).map((x) => x.slice(1, -1));
+        if (rules.some((r) => r.startsWith('admin')) && !/auth: 'admin\|activity:read', httpMethod: 'GET', rate: readLimiter\('stats lookups'\)/.test(m[0] + table.slice(m.index + m[0].length, m.index + m[0].length + 60))) errs.push("api/doc.js: only the stats action is 'admin'.");
+      }
+      const act = read('api/_lib/activity.js');
+      const allowedFn = (/export function allowed\(auth, req, res, agentAuth\) \{\n([\s\S]*?)\n\}/.exec(act) || [])[1] || '';
+      const adminAt = allowedFn.indexOf("if (auth.startsWith('admin') && me.uid !== SITE_OWNER_UID) return false;");
+      if (adminAt < 0 || adminAt > allowedFn.indexOf("if (me.via === 'cookie') return true;")) errs.push("api/_lib/activity.js allowed(): `if (auth.startsWith('admin') && me.uid !== SITE_OWNER_UID) return false;` before the cookie shortcut.");
+      const t = read('api/_lib/tenant.js');
+      if (!/export function isAdmin\(me\) \{\n\s*return readable\(me\) && me\.via === 'cookie' && me\.uid === SITE_OWNER_UID;\n\}/.test(t)) errs.push("api/_lib/tenant.js: isAdmin(me) is `readable(me) && me.via === 'cookie' && me.uid === SITE_OWNER_UID`.");
+      if (!/export async function setUserDisabled\(me, uid, disabled\) \{\n\s*if \(!isAdmin\(me\)\) throw new Refused\(403/.test(t)) errs.push('api/_lib/tenant.js: setUserDisabled() starts with `if (!isAdmin(me)) throw new Refused(403, ...)`.');
+      if (!/export async function userStats\(me\) \{\n\s*if \(!readable\(me\) \|\| me\.uid !== SITE_OWNER_UID\) throw new Refused\(403/.test(t)) errs.push('api/_lib/tenant.js: userStats() starts with `if (!readable(me) || me.uid !== SITE_OWNER_UID) throw new Refused(403, ...)`.');
+      const a = read('api/auth.js');
+      if (!/async function disableUser\(req, res, body\) \{\n\s*const me = sessionOwner\(req, res\);\n\s*if \(!isAdmin\(me\)\) return res\.status\(me \? 403 : 401\)/.test(a)) errs.push("api/auth.js: disableUser() starts with `const me = sessionOwner(req, res); if (!isAdmin(me)) return res.status(me ? 403 : 401)...` (the owner's session, not a token).");
+      for (const f of apiFiles()) {
+        lines(f).forEach((l, i) => {
+          if (isCommentLine(l) || /^import /.test(l) || f === 'api/_lib/tenant.js') return;
+          if (/\bsetUserDisabled\(/.test(l) && f !== 'api/auth.js') errs.push(`${f}:${i + 1}: setUserDisabled() only from api/auth.js disableUser().`);
+          if (/\buserStats\(/.test(l) && f !== 'api/doc.js') errs.push(`${f}:${i + 1}: userStats() only from the api/doc.js stats action.`);
+        });
+      }
+      return errs;
+    },
+  },
+  {
+    id: 'disabled-user-gated',
+    why: 'Multi-user beta P3, the kill switch: a disabled user\'s pages all answer like missing ones (public too), their tokens are 401 and their sessions count as signed out, on every request. Gated in tenant.js and run by withErrors() before every handler.',
+    run() {
+      const errs = [];
+      const ev = read('api/_lib/events.js');
+      if (!/return async function wrapped\(req, res\) \{\n\s*try \{\n\s*await gateSession\(req\);\n\s*return await handler\(req, res\);/.test(ev)) errs.push('api/_lib/events.js: withErrors() runs `await gateSession(req);` right before `return await handler(req, res);`.');
+      const se = read('api/_lib/session.js');
+      if (!/export function sessionUid\(req, res, now = new Date\(\)\) \{\n\s*if \(sessionRejected\(req\)\) return null;/.test(se)) errs.push('api/_lib/session.js: sessionUid() starts with `if (sessionRejected(req)) return null;`.');
+      const t = read('api/_lib/tenant.js');
+      const body = (name) => (new RegExp(`export (?:async )?function ${name}\\([^)]*\\) \\{\\n([\\s\\S]*?)\\n\\}`).exec(t) || [])[1] || '';
+      if (!/if \(!\(await userActive\(uid\)\)\) rejectSession\(req\);/.test(body('gateSession'))) errs.push('api/_lib/tenant.js: gateSession() rejects the session of a user who is not userActive().');
+      if (!/return rows\.length === 1 && rows\[0\]\.disabled === false;/.test(body('userActive')) || !/catch \{\n\s*return false;/.test(body('userActive'))) errs.push('api/_lib/tenant.js: userActive() is true only for an existing row with disabled === false, and false on any error.');
+      if (!/if \(found\.row && found\.row\.owner_id !== SITE_OWNER_UID && !\(await userActive\(found\.row\.owner_id\)\)\) return \{ row: null \};/.test(body('readForView'))) errs.push("api/_lib/tenant.js: readForView() answers { row: null } for a row whose owner isn't userActive() (public rows too).");
+      if (!/const ownerDisabled = isUid\(ownerId\) && ownerId !== SITE_OWNER_UID && !\(await userActive\(ownerId\)\);/.test(body('findTokenByHash'))) errs.push('api/_lib/tenant.js: findTokenByHash() reports ownerDisabled from userActive().');
+      if (!/if \(sessionRejected\(req\)\) throw new Refused\(403, 'This account is disabled\.'\);\n\s*return ANON_CREATE;/.test(body('creatorOf'))) errs.push("api/_lib/tenant.js: creatorOf() refuses a rejected session before falling back to the anonymous create.");
+      const at = read('api/_lib/agent-tokens.js');
+      const gate = at.indexOf("if (row.ownerDisabled) return { present: true, valid: false, reason: 'disabled' };");
+      if (gate < 0 || gate > at.indexOf('touchToken(row.id);')) errs.push("api/_lib/agent-tokens.js: resolveAgentToken() fails a token of a disabled user (`if (row.ownerDisabled) return { present: true, valid: false, reason: 'disabled' };`) before touchToken().");
+      return errs;
+    },
+  },
+  {
     id: 'mermaid-vendored',
     why: 'Diagrams must draw with one pinned library in production, e2e and the preview tool, and never with a script-capable security level: with securityLevel "loose" a click/call line in a diagram ran script on the owner\'s session (adversarial review 2026-11-25).',
     run() {
