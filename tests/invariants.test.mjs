@@ -424,6 +424,13 @@ const fix1Mutations = [
   ['client-ip-one-helper', 'clientIp() keys on the first hop', 'api/_lib/rate-limit.js', (s) => s.replace(".filter(Boolean).pop() || '';", ".filter(Boolean)[0] || '';")],
   ['client-ip-one-helper', 'clientIp() prefers x-forwarded-for', 'api/_lib/rate-limit.js', (s) => s.replace("lastHop(h['x-vercel-forwarded-for']) || lastHop(h['x-real-ip']) || lastHop(h['x-forwarded-for'])", "lastHop(h['x-forwarded-for']) || lastHop(h['x-vercel-forwarded-for']) || lastHop(h['x-real-ip'])")],
   ['client-ip-one-helper', 'the auth login limiter reads the socket itself', 'api/auth.js', (s) => s.replace('    const rateCheck = checkAuthRateLimit(clientIp(req));', "    const rateCheck = checkAuthRateLimit(req.socket?.remoteAddress || 'unknown');")],
+  ['migration-grants-locked', 'mdshare_events keeps the anon/authenticated grants again', 'migrations/016_atomic_signup_quota.sql', (s) => s.replace('\nREVOKE ALL ON mdshare_events FROM anon, authenticated;\n', '\n')],
+  ['migration-grants-locked', 'the quota table keeps its default grants', 'migrations/016_atomic_signup_quota.sql', (s) => s.replace('REVOKE ALL ON mdshare_quota_usage FROM anon, authenticated;\n', '')],
+  ['migration-grants-locked', 'the quota table has no RLS', 'migrations/016_atomic_signup_quota.sql', (s) => s.replace('ALTER TABLE mdshare_quota_usage ENABLE ROW LEVEL SECURITY;\n', '')],
+  ['migration-grants-locked', 'the sign-up function is callable by PUBLIC', 'migrations/016_atomic_signup_quota.sql', (s) => s.replace('REVOKE ALL ON FUNCTION public.mdshare_signup_user(text, text, integer) FROM PUBLIC, anon, authenticated;\n', '')],
+  ['migration-grants-locked', 'a function is granted to anon', 'migrations/016_atomic_signup_quota.sql', (s) => s.replace('GRANT EXECUTE ON FUNCTION public.mdshare_reserve_doc(bigint, integer) TO service_role;', 'GRANT EXECUTE ON FUNCTION public.mdshare_reserve_doc(bigint, integer) TO service_role, anon;')],
+  ['migration-grants-locked', 'a function becomes SECURITY DEFINER', 'migrations/016_atomic_signup_quota.sql', (s) => s.replace('      LANGUAGE plpgsql VOLATILE\n', '      LANGUAGE plpgsql VOLATILE SECURITY DEFINER\n')],
+  ['migration-grants-locked', 'a new migration creates a table without the revoke', 'migrations/014_signup_quotas_stats.sql', (s) => s + '\nCREATE TABLE IF NOT EXISTS mdshare_extra (id bigint PRIMARY KEY);\nALTER TABLE mdshare_extra ENABLE ROW LEVEL SECURITY;\n'],
   ['user-content-sandboxed', '/d/:id inserts the SVG without DOMPurify', 'public/assets/app.js', (s) => s.replace('frame.innerHTML = DOMPurify.sanitize(svg, {', 'frame.innerHTML = (svg, {'), true],
 ];
 for (const [id, label, file, fn, withPublic] of fix1Mutations) {

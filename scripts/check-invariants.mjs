@@ -950,6 +950,27 @@ const checks = [
     },
   },
   {
+    id: 'migration-grants-locked',
+    why: 'ADV-MU-A F2 (2026-11-27): 008 created mdshare_events with RLS on but never revoked the default anon/authenticated grants, unlike every sibling table; anyone with the public anon key would have been one RLS policy away from reading and writing every user\'s events. The app uses only the service key.',
+    run() {
+      const errs = [];
+      const files = walk('migrations', (p) => p.endsWith('.sql'));
+      const all = files.map(read).join('\n').replace(/--[^\n]*/g, '');
+      const tables = new Set([...all.matchAll(/\b(?:CREATE TABLE(?: IF NOT EXISTS)?|ALTER TABLE)\s+(mdshare_\w+)/gi)].map((m) => m[1]));
+      for (const t of tables) {
+        if (!new RegExp(`ALTER TABLE\\s+${t}\\s+ENABLE ROW LEVEL SECURITY`, 'i').test(all)) errs.push(`migrations: table ${t} needs \`ALTER TABLE ${t} ENABLE ROW LEVEL SECURITY;\`.`);
+        if (!new RegExp(`REVOKE ALL ON\\s+${t}\\s+FROM anon, authenticated`, 'i').test(all)) errs.push(`migrations: table ${t} needs \`REVOKE ALL ON ${t} FROM anon, authenticated;\` (Supabase grants both by default; the app uses only the service key).`);
+      }
+      for (const m of all.matchAll(/CREATE FUNCTION public\.(mdshare_\w+)\(/g)) {
+        const fn = m[1];
+        if (!new RegExp(`REVOKE ALL ON FUNCTION public\\.${fn}\\([^)]*\\) FROM PUBLIC, anon, authenticated`).test(all)) errs.push(`migrations: function ${fn} needs \`REVOKE ALL ON FUNCTION public.${fn}(<arg types>) FROM PUBLIC, anon, authenticated;\` and a GRANT EXECUTE to service_role only.`);
+      }
+      for (const m of all.matchAll(/GRANT\s+[^;]*\bTO\s+([^;]+);/gi)) if (/\b(anon|authenticated|PUBLIC)\b/i.test(m[1])) errs.push(`migrations: "${m[0].trim()}" grants to anon/authenticated/PUBLIC; grant to service_role only.`);
+      if (/SECURITY DEFINER/i.test(all)) errs.push('migrations: no SECURITY DEFINER functions; they run with their owner\'s rights whoever calls them.');
+      return errs;
+    },
+  },
+  {
     id: 'mermaid-vendored',
     why: 'Diagrams must draw with one pinned library in production, e2e and the preview tool, and never with a script-capable security level: with securityLevel "loose" a click/call line in a diagram ran script on the owner\'s session (adversarial review 2026-11-25).',
     run() {
