@@ -136,6 +136,15 @@ Answer feedback by revising the passage it quotes, not by rewriting the whole do
      R -- yes --> W[Write answer]
    ```
 8. Don't paste raw HTML; it is sanitised. Don't put the whole document in one code block.
+9. Explain jargon in a glossary: a section titled exactly "## 术语表" (or 术语, 名词解释, 关键术语,
+   Glossary, Terms, Key terms) whose bullets are all "- **TERM**：definition" (or "- **TERM**: ...").
+   It renders as a card, and the FIRST time each term appears in the text it gets a dotted
+   underline that shows the definition (hover, tap or keyboard). One bold label can hold several
+   names: "- **TTS, Text-to-Speech（文本转语音）**：..." matches TTS, Text-to-Speech or 文本转语音.
+10. End with a recap when the reader should keep something: make the LAST "##" section exactly
+   "## 要点回顾" (or 记住这几点, 记住这三点, 关键要点, Key takeaways, Takeaways, Recap, What to remember)
+   with 2-4 bullets. It renders as a recap card. "## 总结", "## Summary" and "## Conclusion" stay
+   ordinary sections, and so does a recap heading that isn't the last section.
 
 ## Extra blocks (optional; all degrade to readable text elsewhere)
 
@@ -162,6 +171,15 @@ Timeline ([x] = done):
 - [ ] **Phase 2**: what's next
 :::
 
+One step at a time (a procedure the reader follows): ":::steps reveal [caption]". Step 1 shows with
+"Next step (2/N)" / "下一步 (2/N)" and "Show all" / "全部展开"; printing shows every step. A numbered
+list whose items all start in bold becomes numbered step cards, any other list the timeline:
+:::steps reveal First deploy
+1. **Install** the CLI.
+2. **Sign in** with your token.
+3. **Publish** the file.
+:::
+
 Side-by-side comparison (each ### starts a column; the last is highlighted):
 :::compare
 ### Before
@@ -186,5 +204,59 @@ toc: false
 layout: wide
 tables: cards         (auto | table | cards | compact)
 ---
+
+## Charts (```mermaid; drawn in the page colours, readable on a phone)
+
+Pick the chart for the reader's question; put the numbers in the text too.
+- bar or line: a number over time, or across a few groups -> xychart-beta (quote the x-axis labels;
+  start the y-axis at 0 for bars; "bar" and "line" series can share one chart)
+- pie: one whole split into 2-6 parts (more parts or exact comparison: use bars)
+- quadrant: a few options placed on two scales (effort/impact) -> quadrantChart, coordinates 0-1;
+  quadrant-1 is top right, 2 top left, 3 bottom left, 4 bottom right
+- mindmap: a topic and its parts, 2-3 levels; indentation makes the levels
+- timeline: dates or phases with 1-2 short events each
+Chinese labels are fine (quote them in x-axis lists). Minimal correct examples:
+```mermaid
+xychart-beta
+  title "Weekly readers"
+  x-axis ["W1", "W2", "W3", "W4"]
+  y-axis "Readers" 0 --> 500
+  bar [120, 210, 340, 420]
+  line [100, 190, 300, 390]
+```
+```mermaid
+pie title Where the week went
+  "Reading" : 45
+  "Writing" : 30
+  "Review" : 25
+```
+```mermaid
+quadrantChart
+  title Effort and impact
+  x-axis Low effort --> High effort
+  y-axis Low impact --> High impact
+  quadrant-1 Plan it
+  quadrant-2 Do it first
+  quadrant-3 Skip it
+  quadrant-4 Hand it off
+  Glossary: [0.3, 0.8]
+  Charts: [0.7, 0.75]
+```
+```mermaid
+mindmap
+  root((Reading))
+    Formatting
+      Summary card
+    Charts
+      Bars
+```
+```mermaid
+timeline
+  title Release plan
+  section November
+    Beta : 50 readers
+  section December
+    Launch : Public site : Pricing page
+```
 
 Human-readable version with rendered examples: /guide

@@ -1308,7 +1308,7 @@ async function runGuideAndLlms(ctx, ok) {
     // diagram in the guide must actually draw.
     await page.waitForFunction(() => [...document.querySelectorAll('#content .mermaid')].every((n) => n.classList.contains('mermaid-drawn') || n.classList.contains('mermaid-failed')), null, { timeout: 15000 }).catch(() => {});
     const dg = await page.evaluate(() => ({ total: document.querySelectorAll('#content .mermaid').length, drawn: document.querySelectorAll('#content .mermaid.mermaid-drawn svg').length }));
-    ok(dg.total === 2 && dg.drawn === 2, `the guide's diagrams are drawn by the vendored mermaid (${dg.drawn}/${dg.total})`);
+    ok(dg.total === 7 && dg.drawn === 7, `the guide's diagrams and its five chart examples (bar/line, pie, quadrant, mindmap, timeline) are drawn by the vendored mermaid (${dg.drawn}/${dg.total})`);
     await page.screenshot({ path: ctx.proofPath });
   });
 }

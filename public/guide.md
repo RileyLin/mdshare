@@ -15,6 +15,8 @@ You don't need any special syntax for these. They apply to every document, inclu
 - **Tables**: numeric columns are right-aligned, and cells that start with ✅, ❌ or ⚠️ are tinted.
 - **Callouts**: a quote that starts with `Note:`, `Tip:`, `Warning:`, `注意：`, `提示：` or `警告：` becomes a callout box.
 - **Code**: code blocks get a language label and a copy button.
+- **Glossary**: a section called `## 术语表`, `## Glossary` or `## Terms` whose bullets are `- **Term**: definition` becomes a tidy card, and the first time each term appears in the text it gets a dotted underline that shows its definition. See [Glossary and recap](#glossary-and-recap).
+- **Recap card**: a last section called `## 要点回顾`, `## Key takeaways` or `## Recap` becomes a card at the end, answering the summary card at the top.
 
 **Step cards in action**
 
@@ -102,6 +104,24 @@ A list inside `:::steps` becomes a timeline. Checked items (`[x]`) are shown as 
 - [x] **Cleanup**: new header, share panel, keep on publish
 - [x] **Reading page**: typography, contents, automatic formatting
 - [ ] **Accounts**: sign-up for other people
+:::
+
+### One step at a time
+
+Add `reveal` to walk a reader through steps: the first step shows with a **Next step** button and a **Show all** link (in Chinese documents 下一步 and 全部展开). A numbered list whose items start in bold shows as numbered cards; any other list as the timeline. Printing shows every step. Use it for a procedure the reader follows, not for a list they scan. Any words after `reveal` become the caption.
+
+```markdown
+:::steps reveal First deploy
+1. **Install** the CLI with `npm i -g mdshare-cli`.
+2. **Sign in** with the token from Settings.
+3. **Publish** with `mdshare-cli create paste notes.md`.
+:::
+```
+
+:::steps reveal First deploy
+1. **Install** the CLI with `npm i -g mdshare-cli`.
+2. **Sign in** with the token from Settings.
+3. **Publish** with `mdshare-cli create paste notes.md`.
 :::
 
 ## Compare
@@ -231,6 +251,162 @@ sequenceDiagram
 ```
 
 Keep each diagram to one idea and about a dozen boxes, and keep labels short; put the explanation in the text around it. Labels with punctuation need quotes: `A["Score (0-1)"]`.
+
+## Charts
+
+Charts are mermaid blocks too. They are drawn in the page's colours (light, dark and paper) and at the width of the screen, so their labels stay readable on a phone; Chinese labels work. Pick the chart for the question the reader has:
+
+- **Bar or line** (`xychart-beta`): how a number changes over time, or compares across a few groups. Quote the axis labels and start the y-axis at 0 for bars.
+- **Pie**: how one whole splits into 2–6 parts. For more parts, or to compare them exactly, use bars.
+- **Quadrant** (`quadrantChart`): a handful of options placed on two scales, such as effort and impact.
+- **Mindmap**: a topic and its parts, two or three levels deep.
+- **Timeline**: what happens when: dates or phases, each with one or two short events.
+
+### Bar and line
+
+````markdown
+```mermaid
+xychart-beta
+  title "Weekly readers"
+  x-axis ["W1", "W2", "W3", "W4"]
+  y-axis "Readers" 0 --> 500
+  bar [120, 210, 340, 420]
+  line [100, 190, 300, 390]
+```
+````
+
+```mermaid
+xychart-beta
+  title "Weekly readers"
+  x-axis ["W1", "W2", "W3", "W4"]
+  y-axis "Readers" 0 --> 500
+  bar [120, 210, 340, 420]
+  line [100, 190, 300, 390]
+```
+
+### Pie
+
+````markdown
+```mermaid
+pie title Where the week went
+  "Reading" : 45
+  "Writing" : 30
+  "Review" : 25
+```
+````
+
+```mermaid
+pie title Where the week went
+  "Reading" : 45
+  "Writing" : 30
+  "Review" : 25
+```
+
+### Quadrant
+
+````markdown
+```mermaid
+quadrantChart
+  title Effort and impact
+  x-axis Low effort --> High effort
+  y-axis Low impact --> High impact
+  quadrant-1 Plan it
+  quadrant-2 Do it first
+  quadrant-3 Skip it
+  quadrant-4 Hand it off
+  Glossary: [0.3, 0.8]
+  Charts: [0.7, 0.75]
+  Dark mode: [0.25, 0.3]
+```
+````
+
+```mermaid
+quadrantChart
+  title Effort and impact
+  x-axis Low effort --> High effort
+  y-axis Low impact --> High impact
+  quadrant-1 Plan it
+  quadrant-2 Do it first
+  quadrant-3 Skip it
+  quadrant-4 Hand it off
+  Glossary: [0.3, 0.8]
+  Charts: [0.7, 0.75]
+  Dark mode: [0.25, 0.3]
+```
+
+`quadrant-1` is the top right, then counter-clockwise: 2 top left, 3 bottom left, 4 bottom right. Coordinates go from 0 to 1.
+
+### Mindmap
+
+````markdown
+```mermaid
+mindmap
+  root((Reading))
+    Formatting
+      Summary card
+      Step cards
+    Charts
+      Bars
+      Pie
+```
+````
+
+```mermaid
+mindmap
+  root((Reading))
+    Formatting
+      Summary card
+      Step cards
+    Charts
+      Bars
+      Pie
+```
+
+Indentation makes the levels.
+
+### Timeline
+
+````markdown
+```mermaid
+timeline
+  title Release plan
+  section November
+    Beta : 50 readers
+  section December
+    Launch : Public site : Pricing page
+```
+````
+
+```mermaid
+timeline
+  title Release plan
+  section November
+    Beta : 50 readers
+  section December
+    Launch : Public site : Pricing page
+```
+
+A wide mindmap or timeline keeps its size on a phone and scrolls sideways inside its frame; **⤢** shows it full screen.
+
+## Glossary and recap
+
+Two sections are formatted by their title, so a document that explains new words or ends with a summary needs no extra syntax.
+
+A **glossary** is a section titled exactly `术语`, `术语表`, `名词解释`, `关键术语`, `Glossary`, `Terms` or `Key terms`, holding a bullet list where every item is `- **Term**: definition` (or `：`). It renders as a card, and the first time each term appears in the text it gets a dotted underline: hover, tap or focus it to read the definition, with a link to the whole glossary. Names in one bold label are matched separately, so `**TTS, Text-to-Speech（文本转语音）**` underlines whichever of the three the text uses first.
+
+A **recap** is the last `##` section, titled exactly `要点回顾`, `记住这几点`, `记住这三点`, `关键要点`, `Key takeaways`, `Takeaways`, `Recap` or `What to remember`. Two to four short bullets work best. It renders as a card that answers the summary at the top. A last section called Summary, Conclusion or 总结 stays an ordinary section.
+
+```markdown
+## Glossary
+
+- **SLO**: service-level objective, the target the system must meet.
+- **p99**: the latency 99% of requests stay under.
+
+## Key takeaways
+
+- Measure p99, not the mean.
+- Change one thing at a time.
+```
 
 ## Tables
 
