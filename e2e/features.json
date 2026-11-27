@@ -612,6 +612,71 @@
     ]
   },
   {
+    "id": "glossary-terms",
+    "name": "Glossary: a \"## 术语表 / Glossary / Terms\" section explains the first use of each term",
+    "path": "/v/:id with a glossary section (e2e/fixtures/reading-features.md)",
+    "steps": [
+      "open a Chinese document with \"## 术语表\" of \"- **TERM**：definition\" items",
+      "hover a marked term; Tab to one, Enter, Tab, Tab, Escape; click one, click outside",
+      "tap a term on a 390px phone, tap outside",
+      "open an English glossary (\"**TERM:**\" and \"**TERM** —\" forms)",
+      "open reading-not.md, reading-not-zh.md, edge-cases.md and zh-explainer.md"
+    ],
+    "assertions": [
+      "the section renders as a glossary card (term | definition)",
+      "only the first body occurrence of each term is marked; headings, code, links, diagrams and the glossary are skipped; Latin terms need word boundaries (SM is not in SMS), all-caps terms match case-sensitively",
+      "the readable text is unchanged; the popover is built outside the document text",
+      "hover, keyboard (focus preview, Enter into the dialog, Tab out, Escape) and click/tap all work; tap outside closes; \"全部术语 / All terms\" links to the section",
+      "must-not-trigger: a Terms section of prose, plain bullets, an inexact title, ordinary documents"
+    ]
+  },
+  {
+    "id": "recap-card",
+    "name": "Recap card: the last \"## 要点回顾 / Key takeaways\" section",
+    "path": "/v/:id (e2e/fixtures/reading-features.md)",
+    "steps": [
+      "open a document whose last section is \"## 要点回顾\"",
+      "open one whose last section is \"## What to remember\"",
+      "open reading-not.md, reading-not-zh.md, edge-cases.md and en-report.md"
+    ],
+    "assertions": [
+      "the last section becomes a recap card at the end and stays in the contents",
+      "must-not-trigger: a recap title that isn't last; a last section called Conclusion, 总结 or Summary"
+    ]
+  },
+  {
+    "id": "steps-reveal",
+    "name": ":::steps reveal: one step at a time",
+    "path": "/v/:id with :::steps reveal",
+    "steps": [
+      "open a document with \":::steps reveal <caption>\" around a bold-led numbered list and \":::steps reveal\" around a checklist",
+      "click Next, Show all, Next until done",
+      "allow motion (html.motion-ok); print",
+      "open an English one on a phone; open reading-not.md"
+    ],
+    "assertions": [
+      "step 1 shows with \"下一步 (2/N)\" / \"Next step (2/N)\" and \"全部展开 / Show all\"; numbered step cards or the timeline",
+      "focus stays on Next and moves to a step when the controls go away",
+      "the new step fades in only when motion is allowed; printing shows every step",
+      "must-not-trigger: :::steps, :::steps <caption> and :::steps Reveal day are unchanged"
+    ]
+  },
+  {
+    "id": "chart-theming",
+    "name": "Charts in house colours: xychart, pie, quadrant, mindmap, timeline, sankey",
+    "path": "/v/:id with mermaid charts (light, dark, paper; 1280 and 390 px)",
+    "steps": [
+      "open a document with every chart type",
+      "switch to dark and paper",
+      "open it on a 390px phone"
+    ],
+    "assertions": [
+      "every chart draws in the house palette led by the page accent; mindmap/timeline sections are warm tints, no lime or yellow; sankey has no default colours",
+      "dark and paper redraw with their own palettes",
+      "on a phone bar/line, quadrant and sankey are drawn at the phone's width with labels of 11px or more; a wide mindmap/timeline scrolls inside its frame; no sideways page scroll"
+    ]
+  },
+  {
     "id": "library-search",
     "name": "Library full-text search (Chinese too) with highlighted snippets",
     "path": "/dashboard search box -> GET /api/doc?action=search",

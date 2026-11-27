@@ -1308,7 +1308,7 @@ async function runGuideAndLlms(ctx, ok) {
     // diagram in the guide must actually draw.
     await page.waitForFunction(() => [...document.querySelectorAll('#content .mermaid')].every((n) => n.classList.contains('mermaid-drawn') || n.classList.contains('mermaid-failed')), null, { timeout: 15000 }).catch(() => {});
     const dg = await page.evaluate(() => ({ total: document.querySelectorAll('#content .mermaid').length, drawn: document.querySelectorAll('#content .mermaid.mermaid-drawn svg').length }));
-    ok(dg.total === 7 && dg.drawn === 7, `the guide's diagrams and its five chart examples (bar/line, pie, quadrant, mindmap, timeline) are drawn by the vendored mermaid (${dg.drawn}/${dg.total})`);
+    ok(dg.total === 2 && dg.drawn === 2, `the guide's diagrams are drawn by the vendored mermaid (${dg.drawn}/${dg.total})`);
     await page.screenshot({ path: ctx.proofPath });
   });
 }
@@ -2159,6 +2159,262 @@ async function runSignupFlow(ctx, ok) {
   ok(stats.status === 200 && row && row.docs_this_week === 2 && !stats.text.includes(first), `the owner's stats count C's documents without titles (${JSON.stringify(row)})`);
 }
 
+// ===== Batch 1 render features (2026-11-27): glossary terms, recap card, :::steps reveal, chart colours =====
+// Every automatic rule here has must-not-trigger fixtures (reading-not.md, reading-not-zh.md,
+// edge-cases.md): ordinary documents must render exactly as before.
+// Seeds go through createAsClient (one client address each), like the translation features: the
+// suite as a whole creates more than the 50-an-hour limit one address gets.
+async function seedDoc(ctx, markdown) {
+  const r = await createAsClient(ctx, { markdown });
+  if (r.status !== 200 || !r.json || !r.json.id) throw new Error(`seedDoc failed: ${r.status}`);
+  return r.json;
+}
+const notTriggered = (page) => page.evaluate(() => {
+  const c = document.getElementById('content');
+  return { glossary: c.querySelectorAll('.md-glossary').length, terms: c.querySelectorAll('.md-term').length, recap: c.querySelectorAll('.md-recap').length, reveal: c.querySelectorAll('.md-reveal, .md-reveal-bar, .md-step-hidden').length };
+});
+
+async function runGlossaryTerms(ctx, ok) {
+  const { id } = await seedDoc(ctx, fixture('reading-features.md'));
+  const pop = (page) => page.evaluate(() => {
+    const p = document.querySelector('.md-term-pop'), open = document.querySelector('.md-term[aria-expanded="true"]');
+    if (!p) return { open: false, active: document.activeElement && document.activeElement.className, expanded: !!open };
+    const r = p.getBoundingClientRect();
+    return { open: true, inBody: p.parentElement === document.body, inContent: !!p.closest('#content'), term: open && open.textContent, title: p.querySelector('.md-term-pop-t').textContent, def: p.querySelector('.md-term-pop-d').textContent, href: (p.querySelector('a') || {}).getAttribute && p.querySelector('a').getAttribute('href'), link: (p.querySelector('a') || {}).textContent, role: p.getAttribute('role'), active: document.activeElement.className, box: [r.left, r.right, innerWidth] };
+  });
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${id}`);
+    await waitRendered(page);
+    const r = await page.evaluate(() => {
+      const c = document.getElementById('content');
+      const card = c.querySelector('.md-glossary'), h = card && card.querySelector('h2');
+      const terms = [...c.querySelectorAll('.md-term')];
+      return {
+        card: !!card, head: h && h.textContent.replace(/^#/, ''), headId: h && h.id, rows: c.querySelectorAll('.md-glossary .md-gl-row').length,
+        keys: c.querySelectorAll('.md-glossary .md-keys').length, sepHidden: card && getComputedStyle(card.querySelector('.md-gl-sep')).display,
+        terms: terms.map((t) => t.textContent), roles: terms.every((t) => t.getAttribute('role') === 'button' && t.tabIndex === 0 && t.getAttribute('aria-expanded') === 'false'),
+        skipped: terms.some((t) => t.closest('h1, h2, h3, h4, a, code, pre, .mermaid, .md-glossary')),
+        firstTts: terms[0] && terms[0].parentElement.textContent.startsWith('一个实时'),
+        text: c.textContent.includes('一个实时 TTS 系统先用 backbone 生成语音 token，再由 codec 把 token 还原成波形。'),
+        underline: terms[0] && getComputedStyle(terms[0]).textDecorationStyle,
+      };
+    });
+    ok(r.card && r.head === '术语表' && r.rows === 6 && r.keys === 0 && r.sepHidden === 'none', `a "## 术语表" section of "- **TERM**：definition" items becomes a glossary card (${JSON.stringify([r.head, r.rows, r.keys, r.sepHidden])})`);
+    ok(JSON.stringify(r.terms) === '["TTS","backbone","codec","flow matching","TTFA"]', `only the FIRST body occurrence of each term is marked, "SM" never (it only appears inside "SMS") (got ${JSON.stringify(r.terms)})`);
+    ok(!r.skipped && r.firstTts, 'headings, inline code, links, diagrams and the glossary itself are skipped: the first TTS marked is in running text');
+    ok(r.roles && r.underline === 'dotted', 'marked terms are focusable buttons (role, tabindex, aria-expanded) with a dotted underline');
+    ok(r.text, 'the readable text is unchanged (the marks wrap existing words)');
+    await page.hover('#content .md-term >> nth=0');
+    await page.waitForFunction(() => !!document.querySelector('.md-term-pop'), null, { timeout: 3000 });
+    const h = await pop(page);
+    ok(h.inBody && !h.inContent && h.role === 'dialog' && h.term === 'TTS' && h.title === 'TTS, Text-to-Speech（文本转语音）' && h.def.startsWith('把文字变成声音'), `hovering shows the definition in a popover outside the document text (${JSON.stringify([h.title, h.def.slice(0, 12)])})`);
+    ok(h.href === `#${r.headId}` && h.link === '全部术语 →', `the popover links to the whole glossary ("全部术语", ${h.href})`);
+    await page.screenshot({ path: ctx.proofPath });
+    await page.mouse.move(2, 2);
+    await page.waitForFunction(() => !document.querySelector('.md-term-pop'), null, { timeout: 3000 });
+    ok(true, 'moving the mouse away closes it');
+    await page.focus('#content .md-term >> nth=1');
+    await page.keyboard.press('Shift+Tab'); await page.keyboard.press('Tab');
+    const kb = await pop(page);
+    ok(kb.open && kb.term === 'backbone', `keyboard focus on a term previews its definition (${kb.term})`);
+    await page.keyboard.press('Enter');
+    const inside = await pop(page);
+    ok(inside.open && inside.active === 'md-term-pop', 'Enter moves focus into the popover');
+    await page.keyboard.press('Tab');
+    ok((await pop(page)).active === 'md-term-pop-all', 'Tab reaches the "全部术语" link');
+    await page.keyboard.press('Tab');
+    const out = await pop(page);
+    ok(!out.open && out.active === 'md-term' && !out.expanded, 'Tab out of the popover closes it and returns focus to the term');
+    await page.keyboard.press('Enter'); await page.keyboard.press('Escape');
+    const esc = await pop(page);
+    ok(!esc.open && esc.active === 'md-term', 'Escape closes it and keeps focus on the term');
+    await page.click('#content .md-term >> nth=2');
+    await page.mouse.move(2, 2); await page.waitForTimeout(400);
+    ok((await pop(page)).term === 'codec', 'a click pins the popover open');
+    await page.mouse.click(4, 400);
+    ok(!(await pop(page)).open, 'a click outside closes it');
+  }, { viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
+
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${id}`);
+    await waitRendered(page);
+    const t = page.locator('#content .md-term').last();
+    await t.scrollIntoViewIfNeeded(); await t.tap();
+    await page.waitForFunction(() => !!document.querySelector('.md-term-pop'), null, { timeout: 3000 });
+    const p = await pop(page);
+    ok(p.term === 'TTFA' && p.box[0] >= 0 && p.box[1] <= p.box[2], `on a phone a tap opens the definition fully on screen (${JSON.stringify(p.box)})`);
+    await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-phone.png') });
+    await page.touchscreen.tap(12, 120);
+    ok(!(await pop(page)).open, 'a tap outside closes it');
+    ok((await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)) <= 0, 'no sideways scroll on a phone');
+  }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' });
+
+  const en = await seedDoc(ctx, '# Latency notes\n\nA slo-mo replay is not an SLO, and the SLO matters more than the mean. The p99 is what users feel.\n\n## Glossary\n\n- **SLO:** service-level objective, the target the system must meet.\n- **p99** — the latency 99% of requests stay under.\n');
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${en.id}`);
+    await waitRendered(page);
+    const r = await page.evaluate(() => [...document.querySelectorAll('#content .md-term')].map((t) => t.textContent + '@' + t.parentElement.tagName));
+    ok(JSON.stringify(r) === '["SLO@P","p99@P"]', `English glossary: "**TERM:**" and "**TERM** —" forms; all-caps terms match case-sensitively (not "slo-mo") (${JSON.stringify(r)})`);
+    await page.click('#content .md-term >> nth=0');
+    ok((await pop(page)).link === 'All terms →', 'English documents say "All terms"');
+  });
+
+  for (const name of ['reading-not.md', 'reading-not-zh.md', 'edge-cases.md', 'zh-explainer.md']) {
+    const doc = await seedDoc(ctx, fixture(name));
+    await withContext(ctx, async (context) => {
+      const page = await openOwner(ctx, context, `/v/${doc.id}`);
+      await waitRendered(page);
+      const n = await notTriggered(page);
+      ok(n.glossary === 0 && n.terms === 0, `${name}: no glossary and no marked terms (a "Terms" section of prose, plain bullets, a title that isn't exact) (${JSON.stringify(n)})`);
+    });
+  }
+}
+
+async function runRecapCard(ctx, ok) {
+  const { id } = await seedDoc(ctx, fixture('reading-features.md'));
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${id}`);
+    await waitRendered(page);
+    const r = await page.evaluate(() => {
+      const c = document.getElementById('content'), card = c.querySelector('.md-recap');
+      return { last: c.lastElementChild === card, head: card && card.querySelector('h2').textContent.replace(/^#/, ''), items: card ? card.querySelectorAll('li').length : 0,
+        toc: [...document.querySelectorAll('#toc a')].map((a) => a.textContent).includes('要点回顾'), border: card && getComputedStyle(card).borderLeftWidth };
+    });
+    ok(r.last && r.head === '要点回顾' && r.items === 3 && r.border === '3px', `the last "## 要点回顾" section becomes a recap card at the end (${JSON.stringify(r)})`);
+    ok(r.toc, 'the recap keeps its place in the contents');
+    await page.evaluate(() => document.querySelector('#content .md-recap').scrollIntoView({ block: 'center' }));
+    await page.screenshot({ path: ctx.proofPath });
+  }, { viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
+  const en = await seedDoc(ctx, '# Notes\n\n## Context\n\nSome text.\n\n## Details\n\nMore text.\n\n## What to remember\n\n- One thing.\n- Another thing.\n');
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${en.id}`);
+    await waitRendered(page);
+    ok((await page.locator('#content .md-recap li').count()) === 2, '"## What to remember" as the last section is a recap card too');
+  });
+  for (const name of ['reading-not.md', 'reading-not-zh.md', 'edge-cases.md', 'en-report.md']) {
+    const doc = await seedDoc(ctx, fixture(name));
+    await withContext(ctx, async (context) => {
+      const page = await openOwner(ctx, context, `/v/${doc.id}`);
+      await waitRendered(page);
+      const n = await notTriggered(page);
+      ok(n.recap === 0, `${name}: no recap card (a recap title that isn't last; a last section called Conclusion, 总结 or Summary) (${JSON.stringify(n)})`);
+    });
+  }
+}
+
+async function runStepsReveal(ctx, ok) {
+  const { id } = await seedDoc(ctx, fixture('reading-features.md'));
+  const blocks = (page) => page.evaluate(() => [...document.querySelectorAll('#content .md-steps-block')].map((b) => {
+    const list = b.querySelector('ol'), items = [...list.children];
+    return { list: list.className, n: items.length, visible: items.filter((li) => getComputedStyle(li).display !== 'none').length, next: (b.querySelector('.md-reveal-next') || {}).textContent || null,
+      all: (b.querySelector('.md-reveal-all') || {}).textContent || null, title: b.previousElementSibling && b.previousElementSibling.classList.contains('md-block-title') ? b.previousElementSibling.textContent : null,
+      active: b.contains(document.activeElement) ? (document.activeElement.tagName + ':' + document.activeElement.textContent.trim().slice(0, 6)) : null };
+  }));
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${id}`);
+    await waitRendered(page);
+    let [cards, tl] = await blocks(page);
+    ok(cards.list.includes('md-steps') && cards.n === 4 && cards.visible === 1 && cards.next === '下一步 (2/4)' && cards.all === '全部展开' && cards.title === '优化步骤', `":::steps reveal 优化步骤" with a bold-led numbered list: numbered step cards, step 1 shown, "下一步 (2/4)" and "全部展开", caption kept (${JSON.stringify(cards)})`);
+    ok(tl.list === 'md-timeline' && tl.n === 3 && tl.visible === 1 && tl.next === '下一步 (2/3)' && tl.title === null, `":::steps reveal" with a checklist: the timeline, one step at a time (${JSON.stringify(tl)})`);
+    ok(!(await page.evaluate(() => /:::|reveal/.test(document.getElementById('content').textContent))), 'the word "reveal" and the ::: syntax never show');
+    await page.screenshot({ path: ctx.proofPath });
+    await page.click('#content .md-reveal-next >> nth=0');
+    [cards] = await blocks(page);
+    ok(cards.visible === 2 && cards.next === '下一步 (3/4)' && cards.active === 'BUTTON:下一步 (3', `Next shows one more step and keeps focus on the button (${JSON.stringify(cards)})`);
+    await page.click('#content .md-reveal-all >> nth=0');
+    [cards] = await blocks(page);
+    ok(cards.visible === 4 && cards.next === null && cards.all === null && cards.active === 'LI:改实现：先合', `Show all opens the rest, removes the controls and moves focus to the first new step (${JSON.stringify(cards)})`);
+    await page.click('#content .md-reveal-next >> nth=0'); await page.click('#content .md-reveal-next >> nth=0');
+    [, tl] = await blocks(page);
+    ok(tl.visible === 3 && tl.next === null && tl.active === 'LI:1 月：灰度', `the last Next removes the controls and focuses the last step (${JSON.stringify(tl)})`);
+  }, { viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
+
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${id}`);
+    await waitRendered(page);
+    await page.evaluate(() => document.documentElement.classList.add('motion-ok'));
+    await page.click('#content .md-reveal-next >> nth=0');
+    const anim = await page.evaluate(() => getComputedStyle(document.querySelector('#content .md-step-in')).animationName);
+    ok(anim === 'md-step-in', `with motion allowed (html.motion-ok) the new step fades in (${anim})`);
+    await page.emulateMedia({ media: 'print' });
+    const printed = await blocks(page);
+    ok(printed.every((b) => b.visible === b.n) && (await page.evaluate(() => [...document.querySelectorAll('.md-reveal-bar')].every((b) => getComputedStyle(b).display === 'none'))), 'printing shows every step and hides the buttons');
+  }, { viewport: { width: 1280, height: 900 } });
+
+  const en = await seedDoc(ctx, '# Setup\n\n:::steps reveal\n- **Install**: run the installer\n- **Sign in**: use your work account\n- **Done**: open the app\n:::\n');
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${en.id}`);
+    await waitRendered(page);
+    const [b] = await blocks(page);
+    ok(b.next === 'Next step (2/3)' && b.all === 'Show all' && b.visible === 1, `English documents say "Next step (2/3)" and "Show all" (${JSON.stringify(b)})`);
+    ok((await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)) <= 0, 'no sideways scroll on a phone');
+  }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' });
+
+  const not = await seedDoc(ctx, fixture('reading-not.md'));
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${not.id}`);
+    await waitRendered(page);
+    const bs = await blocks(page), n = await notTriggered(page);
+    ok(n.reveal === 0 && bs.length === 3 && bs.every((b) => b.list === 'md-timeline' && b.visible === b.n), `plain ":::steps", ":::steps Rollout plan" and ":::steps Reveal day" are unchanged timelines with every step shown (${JSON.stringify(bs.map((b) => [b.list, b.visible, b.title]))})`);
+    ok(JSON.stringify(bs.map((b) => b.title)) === '[null,"Rollout plan","Reveal day"]', 'their captions stay captions');
+  });
+}
+
+async function runChartTheming(ctx, ok) {
+  const { id } = await seedDoc(ctx, fixture('reading-features.md'));
+  const settle = (page) => page.waitForFunction(() => [...document.querySelectorAll('#content .mermaid')].every((n) => n.classList.contains('mermaid-drawn') || n.classList.contains('mermaid-failed')), null, { timeout: 20000 });
+  const facts = (page) => page.evaluate(() => {
+    const hsl = (rgb) => { const m = /(\d+),\s*(\d+),\s*(\d+)/.exec(rgb || ''); if (!m) return null; const [r, g, b] = [m[1], m[2], m[3]].map((x) => x / 255), mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, d = mx - mn; if (!d) return { h: 0, s: 0, l }; const s = d / (1 - Math.abs(2 * l - 1)); let h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; h = (h * 60 + 360) % 360; return { h, s, l }; };
+    const byType = {};
+    document.querySelectorAll('#content .mermaid').forEach((n) => { const svg = n.querySelector('svg'); if (svg) byType[svg.getAttribute('aria-roledescription')] = { n, svg }; });
+    const fill = (type, sel) => { const d = byType[type]; const e = d && d.svg.querySelector(sel); return e ? getComputedStyle(e).fill : null; };
+    const sections = ['mindmap', 'timeline'].flatMap((t) => byType[t] ? [...byType[t].svg.querySelectorAll('[class*="section-"] rect, [class*="section-"] path, [class*="section-"] circle')].map((e) => getComputedStyle(e).fill) : []);
+    const limeOrYellow = sections.filter((f) => { const c = hsl(f); return c && c.h >= 45 && c.h <= 110 && c.s >= 0.45; });
+    const scale = (type) => { const d = byType[type]; if (!d) return 0; const vb = d.svg.viewBox.baseVal; return d.svg.getBoundingClientRect().width / (vb.width || 1); };
+    const minFont = (type) => { const d = byType[type]; if (!d) return 0; const s = scale(type); return Math.min(...[...d.svg.querySelectorAll('text')].filter((t) => t.textContent.trim()).map((t) => parseFloat(getComputedStyle(t).fontSize) * s)); };
+    const tableau = ['#4e79a7', '#f28e2c', '#e15759', '#76b7b2', '#59a14f', '#edc949', '#af7aa1', '#ff9da7', '#9c755f', '#bab0ab'];
+    const sk = byType.sankey && [...byType.sankey.svg.querySelectorAll('[fill], [stroke], [stop-color]')].some((e) => ['fill', 'stroke', 'stop-color'].some((a) => tableau.includes((e.getAttribute(a) || '').toLowerCase())));
+    return {
+      types: Object.keys(byType).sort(), drawn: document.querySelectorAll('#content .mermaid-drawn').length, theme: document.documentElement.getAttribute('data-theme'),
+      bar: fill('xychart', '.bar-plot-0 rect'), pie: fill('pie', 'path.pieCircle'), quadrant: fill('quadrantChart', '.data-point circle'), sections: sections.length, limeOrYellow,
+      tableauLeft: sk, line: byType.timeline && getComputedStyle(byType.timeline.svg.querySelector('.lineWrapper line')).stroke,
+      scale: Object.fromEntries(['xychart', 'pie', 'quadrantChart', 'sankey', 'mindmap', 'timeline'].map((t) => [t, +scale(t).toFixed(2)])),
+      minFont: Object.fromEntries(['xychart', 'pie', 'quadrantChart', 'sankey'].map((t) => [t, +minFont(t).toFixed(1)])),
+      wide: ['mindmap', 'timeline'].map((t) => byType[t] && byType[t].n.classList.contains('diagram-wide')),
+      overflow: document.documentElement.scrollWidth - innerWidth,
+    };
+  });
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${id}`);
+    await waitRendered(page); await settle(page);
+    const f = await facts(page);
+    ok(f.drawn === 6 && JSON.stringify(f.types) === '["mindmap","pie","quadrantChart","sankey","timeline","xychart"]', `bar/line, pie, quadrant, mindmap, timeline and sankey all draw (${JSON.stringify(f.types)})`);
+    ok(f.bar === 'rgb(180, 83, 42)' && f.pie === 'rgb(231, 174, 146)' && f.quadrant === 'rgb(180, 83, 42)', `charts use the house palette led by the page accent (bar ${f.bar}, pie ${f.pie}, point ${f.quadrant})`);
+    ok(f.sections >= 6 && f.limeOrYellow.length === 0, `mindmap and timeline sections are warm tints, no lime or yellow (${f.sections} shapes, offenders ${JSON.stringify(f.limeOrYellow)})`);
+    ok(f.tableauLeft === false && f.line === 'rgb(179, 169, 153)', `sankey nodes use the house colours; timeline lines are quiet (${f.line})`);
+    await page.evaluate(() => document.querySelector('#content .mermaid').scrollIntoView({ block: 'start' }));
+    await page.screenshot({ path: ctx.proofPath });
+    for (const [theme, pie] of [['dark', 'rgb(164, 92, 57)'], ['paper', 'rgb(224, 162, 131)']]) {
+      await page.evaluate((t) => localStorage.setItem('mdshare-theme', t), theme);
+      await gotoResilient(page, `${ctx.serverUrl}/v/${id}`, { waitUntil: 'load' });
+      await waitRendered(page); await settle(page);
+      const d = await facts(page);
+      ok(d.theme === theme && d.pie === pie && d.limeOrYellow.length === 0 && d.drawn === 6, `${theme} theme: charts redraw with the ${theme} palette (pie ${d.pie})`);
+    }
+  }, { viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${id}`);
+    await waitRendered(page); await settle(page);
+    const f = await facts(page);
+    ok(f.overflow <= 0, `no sideways scroll on a phone (${f.overflow}px)`);
+    ok(f.scale.xychart >= 0.95 && f.scale.quadrantChart >= 0.95 && f.scale.sankey >= 0.95, `bar/line, quadrant and sankey are drawn for the phone's width, not shrunk (${JSON.stringify(f.scale)})`);
+    ok(Object.values(f.minFont).every((px) => px >= 11), `chart labels stay legible at 390px, Chinese too (smallest label in px: ${JSON.stringify(f.minFont)})`);
+    ok(f.wide.every(Boolean) && f.scale.mindmap >= 0.99 && f.scale.timeline >= 0.99, 'a mindmap or timeline too wide for a phone keeps its size and scrolls inside its frame');
+    await page.evaluate(() => document.querySelectorAll('#content .mermaid')[1].scrollIntoView({ block: 'start' }));
+    await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-phone.png') });
+  }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' });
+}
+
 const RUNNERS = {
   'home-page': runHomePage,
   'create-paste-ui': runCreatePasteUi,
@@ -2208,6 +2464,10 @@ const RUNNERS = {
   'agent-read-v': runAgentReadV,
   'translation-switch': runTranslationSwitch,
   'collection-page': runCollectionPage,
+  'glossary-terms': runGlossaryTerms,
+  'recap-card': runRecapCard,
+  'steps-reveal': runStepsReveal,
+  'chart-theming': runChartTheming,
 };
 
 async function main() {

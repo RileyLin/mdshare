@@ -63,6 +63,7 @@ try {
           summary: c.querySelectorAll('.md-summary').length, subheads: c.querySelectorAll('h4.md-sub').length, steps: c.querySelectorAll('ol.md-steps').length,
           keys: c.querySelectorAll('ul.md-keys').length, callouts: c.querySelectorAll('.md-callout').length, numCells: c.querySelectorAll('td.num').length,
           tinted: c.querySelectorAll('td.t-ok, td.t-bad, td.t-warn').length, toc: document.querySelectorAll('#toc a').length,
+          glossary: c.querySelectorAll('.md-glossary').length, terms: c.querySelectorAll('.md-term').length, recap: c.querySelectorAll('.md-recap').length, reveal: c.querySelectorAll('.md-reveal').length,
         } : null,
       };
     }, fresh);
