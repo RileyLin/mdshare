@@ -4,7 +4,9 @@
 --      defaults from 013 (200 documents a day, 512 KB per document).
 --   2. User #1 (the owner) gets NULL quotas: the owner is never limited (COMPAT-CHECK G2). The code
 --      also treats user #1 as unlimited whatever these cells say (api/_lib/tenant.js).
---   3. mdshare_user_stats(): one row per user with counts only (no content, no titles), for the
+--   3. sessions_valid_after (nullable): rotating the entry link sets it, so browsers signed in with
+--      an older link are signed out too (a leaked link can't leave a session behind).
+--   4. mdshare_user_stats(): one row per user with counts only (no content, no titles), for the
 --      owner's GET /api/doc?action=stats. Created only if absent; service_role only.
 -- Applied with the Supabase management API by the agent (additive, per CLAUDE.md).
 
@@ -12,6 +14,8 @@ ALTER TABLE mdshare_users ALTER COLUMN quota_docs_per_day DROP NOT NULL;
 ALTER TABLE mdshare_users ALTER COLUMN quota_bytes DROP NOT NULL;
 
 UPDATE mdshare_users SET quota_docs_per_day = NULL, quota_bytes = NULL WHERE id = 1 AND (quota_docs_per_day IS NOT NULL OR quota_bytes IS NOT NULL); -- invariant-allow: G2 (accepted by Riley): only row id 1, only towards unlimited; a rerun changes nothing
+
+ALTER TABLE mdshare_users ADD COLUMN IF NOT EXISTS sessions_valid_after timestamptz;
 
 DO $mig$
 BEGIN

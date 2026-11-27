@@ -182,8 +182,10 @@ test('entry-link: Bearer with documents:write or the user\'s cookie; never a rea
   const viaCookie = await call(auth, { method: 'POST', query: { action: 'entry-link' }, headers: { cookie } });
   assert.equal(viaCookie.statusCode, 200);
   assert.match(viaCookie.body.entry_url, /\/enter#[A-Za-z0-9_-]{43}$/);
+  const renewed = cookieFrom(viaCookie);
+  assert.equal((await call(pastes, { headers: { cookie: renewed } })).statusCode, 200, 'the browser that rotated stays signed in (re-issued cookie)');
   // A read-only token of C (created from C's own Settings).
-  const ro = await call(auth, { method: 'POST', body: { action: 'create_token', name: 'reader', scopes: ['documents:read'] }, headers: { cookie } });
+  const ro = await call(auth, { method: 'POST', body: { action: 'create_token', name: 'reader', scopes: ['documents:read'] }, headers: { cookie: renewed } });
   assert.equal(ro.statusCode, 200);
   assert.equal((await call(auth, { method: 'POST', query: { action: 'entry-link' }, headers: { authorization: bearer(ro.body.token) } })).statusCode, 403);
   assert.equal((await call(auth, { method: 'POST', query: { action: 'entry-link' }, headers: { authorization: bearer('mds_' + 'x'.repeat(43)) } })).statusCode, 401);
@@ -191,6 +193,25 @@ test('entry-link: Bearer with documents:write or the user\'s cookie; never a rea
   const owner = await call(auth, { method: 'POST', query: { action: 'entry-link' }, headers: { cookie: OWNER } });
   assert.equal(owner.statusCode, 403);
   assert.equal(db.sb.tables.mdshare_users.find((u) => u.id === 1).entry_hash, null, 'user #1 never gets an entry link');
+});
+
+test('rotating the link signs out every browser that signed in before (a leaked link leaves no session behind)', async () => {
+  reset();
+  const c = await signup({ label: 'C' });
+  const tok = { authorization: bearer(c.body.token) };
+  const before = cookieFrom(await enter(secretOf(c.body.entry_url)));
+  assert.equal((await call(pastes, { headers: { cookie: before } })).statusCode, 200);
+  // Sessions carry whole seconds; make the earlier one visibly older than the rotation.
+  db.sb.tables.mdshare_users.find((u) => u.id === 2).sessions_valid_after = null;
+  await new Promise((r) => setTimeout(r, 1100));
+  const rot = await call(auth, { method: 'POST', query: { action: 'entry-link' }, headers: tok });
+  assert.equal(rot.statusCode, 200);
+  assert.equal(rot.headers['set-cookie'], undefined, 'a token rotation sets no cookie');
+  assert.equal((await call(pastes, { headers: { cookie: before } })).statusCode, 401, 'the old session is signed out');
+  assert.equal((await call(dashboard, { headers: { cookie: before } })).statusCode, 401);
+  const after = cookieFrom(await enter(secretOf(rot.body.entry_url)));
+  assert.equal((await call(pastes, { headers: { cookie: after } })).statusCode, 200, 'the new link signs in');
+  assert.equal((await call(auth, { query: { action: 'whoami' }, headers: tok })).statusCode, 200, 'tokens are not affected');
 });
 
 test('password login stays user #1 only', async () => {

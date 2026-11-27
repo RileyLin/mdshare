@@ -32,7 +32,7 @@ const OWNER_TABLES = ['mdshare_pastes', 'mdshare_diagrams', 'mdshare_archify', '
 // mdshare_users (013) is the accounts table itself: no owner_id, ids from an identity.
 const KNOWN_TABLES = [...OWNER_TABLES, 'mdshare_users'];
 // User #1, the owner, as migrations 013 + 014 leave it (quotas NULL = unlimited, G2).
-const OWNER_USER = () => ({ id: 1, created_at: '2026-11-27T07:58:07.865Z', label: 'owner', entry_hash: null, disabled: false, quota_docs_per_day: null, quota_bytes: null });
+const OWNER_USER = () => ({ id: 1, created_at: '2026-11-27T07:58:07.865Z', label: 'owner', entry_hash: null, disabled: false, quota_docs_per_day: null, quota_bytes: null, sessions_valid_after: null });
 
 // Column defaults mirroring migrations/001-009 *.sql. Only applied to a field the insert body did
 // not already set (the app always sets most of these explicitly on create; this only covers what
@@ -45,7 +45,7 @@ const TABLE_DEFAULTS = {
   mdshare_events: () => ({ owner_id: 1, created_at: new Date().toISOString(), detail: null, commit: null }),
   mdshare_reads: () => ({ owner_id: 1, first_opened_at: new Date().toISOString(), last_opened_at: new Date().toISOString(), open_count: 0, max_scroll: 0, active_seconds: 0 }),
   mdshare_feedback: () => ({ owner_id: 1, created_at: new Date().toISOString(), status: 'open', resolved_in: null, resolved_at: null, quote: null, note: null, context: null }),
-  mdshare_users: () => ({ created_at: new Date().toISOString(), label: null, entry_hash: null, disabled: false, quota_docs_per_day: 200, quota_bytes: 524288 }),
+  mdshare_users: () => ({ created_at: new Date().toISOString(), label: null, entry_hash: null, disabled: false, quota_docs_per_day: 200, quota_bytes: 524288, sessions_valid_after: null }),
 };
 
 class UnsupportedQueryError extends Error {}

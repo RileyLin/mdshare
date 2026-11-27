@@ -132,6 +132,14 @@ export function rejectSession(req) {
 }
 export const sessionRejected = (req) => !!req && typeof req === 'object' && REJECTED.has(req);
 
+// When this request's v3 session was issued (epoch seconds: its expiry minus COOKIE_MAX_AGE), or null.
+// tenant.js gateSession compares it with the user's sessions_valid_after (set by rotating the entry link).
+export function sessionIssuedAt(req, now = new Date()) {
+  const token = parseCookies(req && req.headers && req.headers.cookie)[COOKIE_NAME];
+  if (!verifyUserSession(token, Math.floor(now.getTime() / 1000))) return null;
+  return Number(token.split('.')[2]) - COOKIE_MAX_AGE;
+}
+
 // The signed-in user's id, or null. A legacy cookie (before the cutoff) is user #1 and, when `res`
 // is given, is silently re-issued as a fresh v2 cookie (also user #1) on this same response.
 export function sessionUid(req, res, now = new Date()) {

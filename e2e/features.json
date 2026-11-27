@@ -707,7 +707,7 @@
       "the secret is POSTed in the body after the fragment is gone from the address bar; never in a URL",
       "the Library shows only the new user's documents, including one published with the token after sign-in",
       "Settings lists only the user's own token and shows the entry-link card",
-      "the old link fails with no session; the new one works",
+      "the old link fails with no session; the new one works; the browser that used the old link is signed out",
       "disabled: the public page is a 404 for a signed-in reader and exactly a missing link for anyone else; the token is a 401; the user's session is signed out",
       "re-enabling restores the page; user #1 can't be disabled; the stats count documents without titles"
     ]

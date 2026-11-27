@@ -7,7 +7,8 @@
 //                 hour (429 + Retry-After); MDSHARE_MAX_USERS seats besides user #1 (403 "beta full").
 //   enter         {secret} -> sets the v3 session cookie for the link's user. Called only by
 //                 /enter (public/enter.html), which reads the secret from the URL fragment.
-//   entry-link    Bearer (documents:write) or the user's cookie -> 200 {entry_url}; the old link stops.
+//   entry-link    Bearer (documents:write) or the user's cookie -> 200 {entry_url}; the old link stops,
+//                 and browsers signed in before now are signed out (the asking browser is re-issued).
 //   disable-user  {user_id, disabled} -> the kill switch. User #1's session only; never user #1.
 // The entry secret exists only in the link (a URL fragment never reaches a server log) and in the
 // one response that creates it; the database keeps entryHash(secret) (invariant "entry-secret-hashed").
@@ -129,6 +130,8 @@ async function rotateEntryLink(req, res) {
   if (me.uid === OWNER_UID) return res.status(403).json({ error: 'The owner signs in with the password; user #1 has no entry link.' });
   const secret = newEntrySecret();
   if (!(await rotateEntry(me, entryHash(secret)))) return res.status(401).json({ error: 'Unauthorized' });
+  // Rotation signs out every browser signed in before now; the one asking (Settings) stays in.
+  if (me.via === 'cookie') res.setHeader('Set-Cookie', freshSessionCookie(me.uid));
   return res.status(200).json({ entry_url: entryUrl(req, secret) });
 }
 

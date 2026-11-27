@@ -23,7 +23,7 @@
 // gateSession (their cookie), findTokenByHash (their tokens), readForView (their pages, public ones
 // too). User #1 is never limited and never disabled (COMPAT-CHECK G2), and is never looked up.
 // Quotas (users other than #1) are enforced inside insertOwned/patchOwned, so no create path skips them.
-import { sessionUid, rejectSession, sessionRejected, safeHexEqual } from './session.js';
+import { sessionUid, sessionIssuedAt, rejectSession, sessionRejected, safeHexEqual } from './session.js';
 
 export const USER_TABLES = ['mdshare_pastes', 'mdshare_diagrams', 'mdshare_archify', 'mdshare_agent_tokens', 'mdshare_events', 'mdshare_reads', 'mdshare_feedback'];
 export const CONTENT_TABLES = ['mdshare_pastes', 'mdshare_diagrams', 'mdshare_archify'];
@@ -322,27 +322,43 @@ function assertEntryHash(hash) {
 }
 const jsonInit = (method, body) => ({ method, headers: { 'Content-Type': 'application/json', Prefer: 'return=representation' }, body: JSON.stringify(body) });
 
+// The gate's view of user `uid`: { id, disabled, sessions_valid_after } or null (no such user, or a
+// database error: fail closed).
+async function accountRow(uid) {
+  try {
+    const r = await request(USERS, `id=eq.${encodeURIComponent(uid)}&select=id,disabled,sessions_valid_after`);
+    if (!r.ok) return null;
+    const rows = await rowsOf(r);
+    return rows.length === 1 ? rows[0] : null;
+  } catch {
+    return null;
+  }
+}
+
 // May user `uid` in? User #1 always, without a query (G2: never disabled). Anyone else: an existing,
 // not disabled row. A database error is a no (fail closed).
 export async function userActive(uid) {
   if (uid === SITE_OWNER_UID) return true;
   if (!isUid(uid)) return false;
-  try {
-    const r = await request(USERS, `id=eq.${encodeURIComponent(uid)}&select=id,disabled`);
-    if (!r.ok) return false;
-    const rows = await rowsOf(r);
-    return rows.length === 1 && rows[0].disabled === false;
-  } catch {
-    return false;
-  }
+  const u = await accountRow(uid);
+  return !!u && u.disabled === false;
 }
 
-// Run by withErrors() before every handler: the cookie of a disabled or unknown user is rejected for
-// this request, so every sessionOwner()/sessionUid() after it sees nobody (the kill switch).
+// A session issued before the user's last entry-link rotation (it may have come from the old link).
+function signedInBefore(req, validAfter) {
+  if (!validAfter) return false;
+  const issued = sessionIssuedAt(req);
+  return issued === null || issued * 1000 < Date.parse(validAfter);
+}
+
+// Run by withErrors() before every handler: the cookie of a disabled or unknown user, or one issued
+// before their last entry-link rotation, is rejected for this request, so every sessionOwner() /
+// sessionUid() after it sees nobody (the kill switch; a rotated link leaves no session behind).
 export async function gateSession(req) {
   const uid = sessionUid(req);
   if (!isUid(uid) || uid === SITE_OWNER_UID) return;
-  if (!(await userActive(uid))) rejectSession(req);
+  const u = await accountRow(uid);
+  if (!u || u.disabled !== false || signedInBefore(req, u.sessions_valid_after)) rejectSession(req);
 }
 
 // A user's quota row for enforceQuota(): { disabled, quota_docs_per_day, quota_bytes } | null (error).
@@ -392,13 +408,14 @@ export async function findUserByEntry(hash) {
   return u.id;
 }
 
-// A new entry link for `me`: the old hash is overwritten, so the old link stops working at once.
-// true when it changed. User #1 has no entry link.
+// A new entry link for `me`: the old hash is overwritten, so the old link stops working at once, and
+// every session issued before now is signed out (gateSession). true when it changed. User #1 has none.
 export async function rotateEntry(me, hash) {
   assertEntryHash(hash);
   const uid = uidOf(me);
   if (uid === SITE_OWNER_UID) throw new Refused(403, 'The owner signs in with the password; user #1 has no entry link.');
-  const r = await request(USERS, `id=eq.${encodeURIComponent(uid)}&disabled=is.false&select=id`, jsonInit('PATCH', { entry_hash: hash }));
+  const now = new Date(Math.floor(Date.now() / 1000) * 1000).toISOString(); // whole seconds, like the cookie
+  const r = await request(USERS, `id=eq.${encodeURIComponent(uid)}&disabled=is.false&select=id`, jsonInit('PATCH', { entry_hash: hash, sessions_valid_after: now }));
   if (!r.ok) throw new Error(`rotating the entry link failed: ${r.status}`);
   return (await rowsOf(r)).length === 1;
 }

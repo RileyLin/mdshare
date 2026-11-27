@@ -2071,6 +2071,8 @@ async function runSignupFlow(ctx, ok) {
     cCookie = (await context.cookies()).find((x) => x.name === 'mdshare_auth');
   });
   ok(!!cCookie && /^v3\./.test(decodeURIComponent(cCookie.value)), 'the browser holds a v3 session cookie');
+  const firstCookie = cCookie;
+  await new Promise((r) => setTimeout(r, 1100)); // sessions carry whole seconds
 
   const rot = await fetch(`${ctx.serverUrl}/api/auth?action=entry-link`, { method: 'POST', headers: tok });
   const fresh = await rot.json();
@@ -2084,7 +2086,9 @@ async function runSignupFlow(ctx, ok) {
     await gotoResilient(page, fresh.entry_url, { waitUntil: 'load' });
     await page.waitForURL('**/dashboard', { timeout: 5000 });
     ok(true, 'the new link opens the Library');
+    cCookie = (await context.cookies()).find((x) => x.name === 'mdshare_auth');
   });
+  ok((await fetch(`${ctx.serverUrl}/api/pastes`, { headers: { cookie: `mdshare_auth=${firstCookie.value}` } })).status === 401, 'rotating signed out the browser that used the old link');
 
   // The kill switch, on a public page of C's.
   const pub = await fetch(`${ctx.serverUrl}/api/pin`, { method: 'PATCH', headers: tok, body: JSON.stringify({ id: p1.id, kind: 'paste', is_public: true, keep: true }) });
