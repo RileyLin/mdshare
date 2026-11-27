@@ -15,7 +15,7 @@
 
 import { randomBytes } from 'crypto';
 import { wantsKeep, expiryFields, baseUrl, FORMAT_GUIDE_PATH } from './_lib/content.js';
-import { isVisible, setPrivacyHeaders, tokenCanRead } from './_lib/access.js';
+import { isVisible, setPrivacyHeaders, setUserContentHeaders, tokenCanRead } from './_lib/access.js';
 import { creatorOf, sessionOwner, readForView, insertOwned, deleteOwned } from './_lib/tenant.js';
 import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
@@ -106,6 +106,7 @@ async function handler(req, res) {
     }
 
     setPrivacyHeaders(res);
+    setUserContentHeaders(res);
     const { row, dbError } = await readForView('mdshare_archify', id, 'ir,kind,title,expires_at,is_public,created_by_token');
     if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
     const agentOwns = tokenCanRead(agentAuth, row);

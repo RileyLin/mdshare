@@ -49,7 +49,11 @@ async function handler(req, res) {
   // allow-list is tighter than the previous default-src 'self': there is no mdshare origin left to
   // implicitly trust from inside this document. frame-ancestors 'self' means only mdshare's own
   // /a/:id wrapper may embed it.
-  res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'none'; frame-ancestors 'self'");
+  // `sandbox allow-scripts` (never allow-same-origin): opened directly as a top-level page, the
+  // document still gets an opaque origin, so its scripts can't use the reader's mdshare cookie or
+  // call /api/* (ADV-MU-A F1). Inside the /a/:id iframe this matches the iframe's own sandbox.
+  res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src * data:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'; sandbox allow-scripts");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   return res.send(applyWarmPaperDefault(row.html));
 }
 

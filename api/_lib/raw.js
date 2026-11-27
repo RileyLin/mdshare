@@ -13,7 +13,7 @@
 // nothing reveals that an id exists.
 // Underscore directory: not a Vercel function.
 import { checkAuthAndRefresh } from './session.js';
-import { isVisible, setPrivacyHeaders, tokenCanRead } from './access.js';
+import { isVisible, setPrivacyHeaders, setUserContentHeaders, tokenCanRead } from './access.js';
 import { parseBearer, resolveAgentToken } from './agent-tokens.js';
 import { readForView } from './tenant.js';
 import { guideUrl } from './content.js';
@@ -76,6 +76,7 @@ export function wantsMarkdown(req, res) {
 
 export async function sendRawMarkdown(req, res, { contentType = 'text/plain; charset=utf-8' } = {}) {
   setPrivacyHeaders(res);
+  setUserContentHeaders(res);
   res.setHeader('Vary', 'Accept, Authorization, Cookie');
   const id = req.query && req.query.id;
   if (!id) return res.status(400).json({ error: 'Missing id' });

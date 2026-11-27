@@ -60,6 +60,16 @@ export function setPrivacyHeaders(res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
 }
 
+// Raw user content on the main origin (GET /api/diagram SVG, raw Markdown, archify IR JSON): even
+// if a browser opens it as a top-level document, it runs no script and gets an opaque origin, so it
+// can't use the reader's mdshare cookie (ADV-MU-A F1: a stored SVG <script> read the victim's library).
+// The archify HTML route has its own sandboxed policy that keeps its scripts (api/archify-html.js).
+export const USER_CONTENT_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox";
+export function setUserContentHeaders(res) {
+  res.setHeader('Content-Security-Policy', USER_CONTENT_CSP);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+}
+
 // Shown instead of content when an item exists but is private and the requester is not the
 // owner. Reloads the exact same URL after a successful login — same-origin by construction,
 // since it never takes a redirect target from the client. No title/content is ever included.

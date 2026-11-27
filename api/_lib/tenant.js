@@ -24,6 +24,7 @@
 // too). User #1 is never limited and never disabled (COMPAT-CHECK G2), and is never looked up.
 // Quotas (users other than #1) are enforced inside insertOwned/patchOwned, so no create path skips them.
 import { sessionUid, sessionIssuedAt, rejectSession, sessionRejected, safeHexEqual } from './session.js';
+import { sanitizeSvg, SvgRejected } from './svg-sanitize.js';
 
 export const USER_TABLES = ['mdshare_pastes', 'mdshare_diagrams', 'mdshare_archify', 'mdshare_agent_tokens', 'mdshare_events', 'mdshare_reads', 'mdshare_feedback'];
 export const CONTENT_TABLES = ['mdshare_pastes', 'mdshare_diagrams', 'mdshare_archify'];
@@ -181,6 +182,7 @@ export async function patchOwned(table, me, filter, patch) {
   if (!filter) throw new Error('patchOwned: a filter is required');
   assertNoOwner(patch, 'patchOwned');
   if (me === null) return { ok: true, rows: [] };
+  patch = cleanStored(table, patch);
   if (CONTENT_TABLES.includes(table) && Object.keys(patch).some((k) => BODY_FIELDS.includes(k))) await enforceQuota(me, patch, { daily: false });
   const res = await request(table, `${ownerFilter(me)}&${filter}`, {
     method: 'PATCH',
@@ -200,6 +202,22 @@ export async function deleteOwned(table, me, id) {
   return rowsOf(res);
 }
 
+// Stored user markup that a browser could run: a diagram's SVG is sanitised on every insert and
+// patch (api/_lib/svg-sanitize.js; invariant "user-content-sandboxed"), so no write path skips it.
+// Archify HTML is not: it runs only in its sandbox (api/archify-render.js, api/archify-html.js).
+function cleanStored(table, row) {
+  if (table !== 'mdshare_diagrams' || !row || !Object.prototype.hasOwnProperty.call(row, 'svg')) return row;
+  let svg;
+  try {
+    svg = sanitizeSvg(row.svg);
+  } catch (e) {
+    if (e instanceof SvgRejected) throw new Refused(400, `svg rejected: ${e.message}`);
+    throw e;
+  }
+  if (!/^\s*<svg[\s>/]/i.test(svg)) throw new Refused(400, 'svg field must be valid SVG markup (an <svg> root element)');
+  return { ...row, svg };
+}
+
 // Insert one row owned by `owner` (a principal from ownerOf()/creatorOf()/sessionOwner(); null only
 // for an event with no signed-in user). owner_id never comes from the row itself.
 export async function insertOwned(table, owner, row, { returning = false } = {}) {
@@ -211,6 +229,7 @@ export async function insertOwned(table, owner, row, { returning = false } = {})
     if (!PRINCIPALS.has(owner) || !isUid(owner.uid)) throw new Error('insertOwned: the owner must be a principal from ownerOf()/creatorOf()/sessionOwner()');
     uid = owner.uid;
   }
+  row = cleanStored(table, row);
   if (CONTENT_TABLES.includes(table)) await enforceQuota(owner, row, { daily: true });
   const res = await request(table, '', {
     method: 'POST',

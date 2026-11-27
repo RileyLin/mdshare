@@ -855,6 +855,47 @@ const checks = [
     },
   },
   {
+    id: 'user-content-sandboxed',
+    why: 'ADV-MU-A F1 (2026-11-27): GET /api/diagram served a stored SVG raw on the main origin with no CSP, so its <script> ran with the reader\'s cookie and could read their whole library. Raw user content always carries a sandbox CSP, diagram SVG is sanitised on every write, and /d/:id inserts SVG only through DOMPurify.',
+    run() {
+      const errs = [];
+      const access = read('api/_lib/access.js');
+      if (!access.includes(`export const USER_CONTENT_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox";`)) errs.push(`api/_lib/access.js: keep \`export const USER_CONTENT_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox";\` (no script, opaque origin).`);
+      const fn = (/export function setUserContentHeaders\(res\) \{\n([\s\S]*?)\n\}/.exec(access) || [])[1] || '';
+      if (!/res\.setHeader\('Content-Security-Policy', USER_CONTENT_CSP\);/.test(fn) || !/res\.setHeader\('X-Content-Type-Options', 'nosniff'\);/.test(fn)) errs.push("api/_lib/access.js: setUserContentHeaders(res) sets Content-Security-Policy: USER_CONTENT_CSP and X-Content-Type-Options: nosniff.");
+      // Every raw user-content route (and any file that answers image/svg+xml) sends it.
+      const RAW = ['api/diagram.js', 'api/_lib/raw.js', 'api/archify.js'];
+      for (const f of apiFiles()) {
+        const code = read(f).split('\n').filter((l) => !isCommentLine(l)).join('\n');
+        if ((RAW.includes(f) || /'Content-Type', 'image\/svg\+xml/.test(code)) && !/\bsetUserContentHeaders\(res\);/.test(code)) errs.push(`${f}: serves raw user content; call setUserContentHeaders(res) (api/_lib/access.js) before answering.`);
+      }
+      const ah = read('api/archify-html.js');
+      const csp = (/res\.setHeader\('Content-Security-Policy', "([^"]*)"\);/.exec(ah) || [])[1] || '';
+      if (!/(^|;)\s*sandbox allow-scripts\s*(;|$)/.test(csp) || /allow-same-origin/.test(csp)) errs.push("api/archify-html.js: the archify HTML CSP ends with `sandbox allow-scripts` (never allow-same-origin), so opened directly it still has an opaque origin.");
+      if (!/res\.setHeader\('X-Content-Type-Options', 'nosniff'\);/.test(ah)) errs.push("api/archify-html.js: also send X-Content-Type-Options: nosniff.");
+      // Writes: the tenant layer sanitises a diagram's svg on insert and on patch.
+      const t = read('api/_lib/tenant.js');
+      const clean = (/function cleanStored\(table, row\) \{\n([\s\S]*?)\n\}/.exec(t) || [])[1] || '';
+      if (!/svg = sanitizeSvg\(row\.svg\);/.test(clean) || !/if \(table !== 'mdshare_diagrams' \|\| /.test(clean)) errs.push("api/_lib/tenant.js: cleanStored(table, row) runs `svg = sanitizeSvg(row.svg);` for mdshare_diagrams (api/_lib/svg-sanitize.js).");
+      const ins = (/export async function insertOwned\([^)]*\) \{\n([\s\S]*?)\n\}/.exec(t) || [])[1] || '';
+      const pat = (/export async function patchOwned\([^)]*\) \{\n([\s\S]*?)\n\}/.exec(t) || [])[1] || '';
+      if (!/\n\s*row = cleanStored\(table, row\);\n\s*if \(CONTENT_TABLES\.includes\(table\)\) await enforceQuota/.test(ins)) errs.push('api/_lib/tenant.js: insertOwned() runs `row = cleanStored(table, row);` before the quota check and the insert.');
+      if (!/\n\s*patch = cleanStored\(table, patch\);\n/.test(pat)) errs.push('api/_lib/tenant.js: patchOwned() runs `patch = cleanStored(table, patch);` before the update.');
+      const san = exists('api/_lib/svg-sanitize.js') ? read('api/_lib/svg-sanitize.js') : '';
+      const drop = ((/const DROP_SUBTREE = new Set\(\[([^\]]*)\]\);/.exec(san) || [])[1] || '');
+      for (const tag of ['script', 'foreignobject', 'iframe', 'set']) if (!drop.includes(`'${tag}'`)) errs.push(`api/_lib/svg-sanitize.js: DROP_SUBTREE must include '${tag}'.`);
+      if (!/if \(local\.startsWith\('on'\)\) continue;/.test(san)) errs.push("api/_lib/svg-sanitize.js: cleanAttrs() drops every on* attribute (`if (local.startsWith('on')) continue;`).");
+      // /d/:id: the SVG reaches the page only as JSON, and the browser inserts it through DOMPurify.
+      const page = read('api/_lib/diagram-page.js');
+      if (/\$\{\s*(row\.)?svg\b/.test(page)) errs.push('api/_lib/diagram-page.js: never interpolate the SVG into the HTML; pass it in dataBlock() and let app.js sanitise it.');
+      if (exists('public/assets/app.js')) {
+        const app = read('public/assets/app.js');
+        if (!/frame\.innerHTML = DOMPurify\.sanitize\(svg, \{ USE_PROFILES: \{ svg: true, svgFilters: true \}, FORBID_TAGS: \['script', 'foreignObject'\]/.test(app)) errs.push("public/assets/app.js: the diagram SVG goes into the page only via `frame.innerHTML = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true }, FORBID_TAGS: ['script', 'foreignObject'], ...})`.");
+      }
+      return errs;
+    },
+  },
+  {
     id: 'mermaid-vendored',
     why: 'Diagrams must draw with one pinned library in production, e2e and the preview tool, and never with a script-capable security level: with securityLevel "loose" a click/call line in a diagram ran script on the owner\'s session (adversarial review 2026-11-25).',
     run() {

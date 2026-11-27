@@ -1,12 +1,13 @@
 // POST /api/diagram — accepts SVG (+ optional markdown), returns a shareable URL. Always creates
 //   a PRIVATE row (is_public: false) — visibility can only be changed via the auth-gated
 //   PATCH /api/visibility endpoint, never from this request body.
-// GET  /api/diagram?id=xxx — returns raw SVG. Private unless the signed-in user owns it, a token of
+// GET  /api/diagram?id=xxx — returns raw SVG with USER_CONTENT_CSP (sandbox, no script; sanitised on
+//   write by api/_lib/tenant.js too). Private unless the signed-in user owns it, a token of
 //   that user may read it (tokenCanRead), or the row has is_public: true. DELETE: own rows only.
 
 import { randomBytes } from 'crypto';
 import { wantsKeep, expiryFields, baseUrl, FORMAT_GUIDE_PATH } from './_lib/content.js';
-import { isVisible, setPrivacyHeaders, tokenCanRead } from './_lib/access.js';
+import { isVisible, setPrivacyHeaders, setUserContentHeaders, tokenCanRead } from './_lib/access.js';
 import { creatorOf, sessionOwner, readForView, insertOwned, deleteOwned } from './_lib/tenant.js';
 import { parseJsonBody } from './_lib/body.js';
 import { resolveAgentToken, hasScope, isLegacyToken } from './_lib/agent-tokens.js';
@@ -89,6 +90,8 @@ async function handler(req, res) {
     }
 
     setPrivacyHeaders(res);
+    // Raw SVG opened as a page must not run script on this origin (ADV-MU-A F1): sandbox CSP.
+    setUserContentHeaders(res);
     const { row, dbError } = await readForView('mdshare_diagrams', id, 'svg,expires_at,is_public,created_by_token');
     if (dbError) return res.status(503).json({ error: 'Temporarily unavailable' });
     const agentOwns = tokenCanRead(agentAuth, row);

@@ -391,3 +391,36 @@ for (const [id, label, file, fn] of p3Mutations) {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 }
+
+// Security fixes batch 1 (ADV-MU-A/B, 2026-11-27). Each line breaks one rule and must be caught by
+// the named check. [id, label, file, mutate, needs public/]
+const fix1Mutations = [
+  ['user-content-sandboxed', 'GET /api/diagram drops the sandbox headers', 'api/diagram.js', (s) => s.replace('    setUserContentHeaders(res);\n', '')],
+  ['user-content-sandboxed', 'the CSP loses sandbox', 'api/_lib/access.js', (s) => s.replace("style-src 'unsafe-inline'; sandbox\";", "style-src 'unsafe-inline'\";")],
+  ['user-content-sandboxed', 'the CSP allows inline script', 'api/_lib/access.js', (s) => s.replace("\"default-src 'none'; img-src data:;", "\"default-src 'none'; script-src 'unsafe-inline'; img-src data:;")],
+  ['user-content-sandboxed', 'setUserContentHeaders forgets nosniff', 'api/_lib/access.js', (s) => s.replace("  res.setHeader('Content-Security-Policy', USER_CONTENT_CSP);\n  res.setHeader('X-Content-Type-Options', 'nosniff');\n", "  res.setHeader('Content-Security-Policy', USER_CONTENT_CSP);\n")],
+  ['user-content-sandboxed', 'raw Markdown drops the sandbox headers', 'api/_lib/raw.js', (s) => s.replace('  setUserContentHeaders(res);\n', '')],
+  ['user-content-sandboxed', 'a new route answers image/svg+xml without them', 'api/pin.js', (s) => s + "\nexport function svgOut(res, svg) { res.setHeader('Content-Type', 'image/svg+xml'); return res.send(svg); }\n"],
+  ['user-content-sandboxed', 'archify HTML loses its CSP sandbox', 'api/archify-html.js', (s) => s.replace("; sandbox allow-scripts\");", '");')],
+  ['user-content-sandboxed', 'archify HTML gets allow-same-origin', 'api/archify-html.js', (s) => s.replace('; sandbox allow-scripts");', '; sandbox allow-scripts allow-same-origin");')],
+  ['user-content-sandboxed', 'diagram inserts skip the sanitiser', 'api/_lib/tenant.js', (s) => s.replace('  row = cleanStored(table, row);\n', '')],
+  ['user-content-sandboxed', 'diagram patches skip the sanitiser', 'api/_lib/tenant.js', (s) => s.replace('  patch = cleanStored(table, patch);\n', '')],
+  ['user-content-sandboxed', 'cleanStored stops sanitising', 'api/_lib/tenant.js', (s) => s.replace('    svg = sanitizeSvg(row.svg);', '    svg = String(row.svg);')],
+  ['user-content-sandboxed', 'the sanitiser keeps foreignObject', 'api/_lib/svg-sanitize.js', (s) => s.replace("'script', 'foreignobject', ", "'script', ")],
+  ['user-content-sandboxed', 'the sanitiser keeps on* handlers', 'api/_lib/svg-sanitize.js', (s) => s.replace("    if (local.startsWith('on')) continue;\n", '')],
+  ['user-content-sandboxed', '/d/:id inlines the raw SVG', 'api/_lib/diagram-page.js', (s) => s.replace('<div class="svg-frame" id="svg-frame" role="img" aria-label="${esc(title)}"></div>', '<div class="svg-frame" id="svg-frame" role="img" aria-label="${esc(title)}">${row.svg}</div>')],
+  ['user-content-sandboxed', '/d/:id inserts the SVG without DOMPurify', 'public/assets/app.js', (s) => s.replace('frame.innerHTML = DOMPurify.sanitize(svg, {', 'frame.innerHTML = (svg, {'), true],
+];
+for (const [id, label, file, fn, withPublic] of fix1Mutations) {
+  test(`invariant "${id}" fails when ${label}`, () => {
+    const dir = withPublic ? copyWithPublic() : copyRepo();
+    try {
+      const before = readFileSync(join(dir, file), 'utf8');
+      edit(dir, file, fn);
+      assert.notEqual(readFileSync(join(dir, file), 'utf8'), before, 'the mutation applied');
+      const r = run(dir);
+      assert.equal(r.code, 1, r.out);
+      assert.match(r.out, new RegExp(`✗ ${id.replace(/[-]/g, '\\-')} `), r.out);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+}
