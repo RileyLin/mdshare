@@ -716,31 +716,145 @@
   // diagram matches the warm paper theme in light and dark. Drawn diagrams get an icon-only Expand
   // button (no text, so the readable text of the page is unchanged).
   var MERMAID_SRC = '/vendor/mermaid-11.17.2.min.js';
+  var MERMAID_FONT = 'DM Sans, PingFang SC, Hiragino Sans GB, Noto Sans SC, sans-serif';
   var mermaidLoading = null;
   function cssVar(name, fallback) {
     var v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     return /^#[0-9a-f]{3,8}$/i.test(v) ? v : fallback;
   }
-  function mermaidConfig() {
-    var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  // House palettes for charts (pie, xychart, quadrant, sankey) and for mindmap/timeline sections.
+  // One per theme family: light, dark, and paper (warm sepia, a light-family theme). `strong` is for
+  // bars, lines and sankey nodes (the page accent leads), `soft` for pie slices (dark text on them),
+  // `tint`/`edge` for mindmap and timeline sections: warm tints, never mermaid's lime or yellow.
+  var CHART = {
+    light: {
+      strong: { terracotta: '#b4532a', teal: '#2f7d79', amber: '#b7791f', indigo: '#4f5bb5', plum: '#8a4f7d', sage: '#5f7f4f', slate: '#3d6b9a', brick: '#a8382f' },
+      soft: ['#e7ae92', '#9ccbc6', '#e6c58c', '#b2b8e8', '#d4adc9', '#b6caa4', '#a7c0dd', '#e3a9a2'],
+      tint: ['#f5dfd1', '#efdcc6', '#f1dada', '#e8dfd0', '#e9dbe6', '#d9ebe7', '#f3e2cf', '#e3e0f0'],
+      edge: ['#cf8d6b', '#c39a6e', '#c98f8f', '#b09c7b', '#ad8aa5', '#7fada6', '#c99b6c', '#9891c4'],
+      sliceText: '#1f1b16',
+    },
+    dark: {
+      strong: { terracotta: '#e08a5a', teal: '#6cc0ba', amber: '#e3ae55', indigo: '#9aa4ec', plum: '#c98fbd', sage: '#9cbf8a', slate: '#8fb4dc', brick: '#e6877c' },
+      soft: ['#a45c39', '#3e7d78', '#9c7633', '#5c66ad', '#87597e', '#5f7c50', '#4f7299', '#9d4d45'],
+      tint: ['#4a2f1f', '#46351f', '#472b2c', '#3d3322', '#412d40', '#233a36', '#47351f', '#322f45'],
+      edge: ['#b06c44', '#a47b4f', '#a65f5f', '#8f7a56', '#93708c', '#4f8b83', '#a97a49', '#7c76ab'],
+      sliceText: '#fbf6ee',
+    },
+    paper: {
+      strong: { terracotta: '#a54b25', teal: '#2b716d', amber: '#a66d1a', indigo: '#475199', plum: '#7d466f', sage: '#566f44', slate: '#375f8a', brick: '#973128' },
+      soft: ['#e0a283', '#92bdb8', '#dcb87b', '#a8aedc', '#c9a1bf', '#abbf98', '#9db4d1', '#d99b94'],
+      tint: ['#efd6c3', '#e8cfb6', '#ebd2cf', '#e3d5bf', '#e2d0db', '#d2e2db', '#edd6bb', '#dcd6e8'],
+      edge: ['#c07f5c', '#b48a5d', '#bb8080', '#a38e6c', '#a07e98', '#6f9f98', '#bb8c5c', '#8a83b8'],
+      sliceText: '#2a2118',
+    },
+  };
+  var TABLEAU10 = ['#4e79a7', '#f28e2c', '#e15759', '#76b7b2', '#59a14f', '#edc949', '#af7aa1', '#ff9da7', '#9c755f', '#bab0ab'];
+  function themeFamily() {
+    var t = document.documentElement.getAttribute('data-theme');
+    return t === 'dark' ? 'dark' : t === 'paper' ? 'paper' : 'light';
+  }
+  function chartColors(fam) {
+    var p = CHART[fam] || CHART.light, accent = document.documentElement.getAttribute('data-accent');
+    var lead = p.strong[accent] ? accent : 'terracotta';
+    var strong = [p.strong[lead]].concat(Object.keys(p.strong).filter(function (k) { return k !== lead; }).map(function (k) { return p.strong[k]; }));
+    return { strong: strong, soft: p.soft, tint: p.tint, edge: p.edge, sliceText: p.sliceText };
+  }
+  // avail: the drawing width inside a diagram frame (px). Charts drawn at a fixed size by mermaid
+  // (xychart, quadrant, sankey) are drawn at that width, so their labels keep their real size on a
+  // phone instead of being scaled down to ~50%; a narrow pie puts its legend underneath.
+  function mermaidConfig(avail) {
+    var fam = themeFamily(), dark = fam === 'dark', c = chartColors(fam);
     var card = cssVar('--card', dark ? '#221d17' : '#fffdf9'), ink = cssVar('--ink', dark ? '#efe8dc' : '#1f1b16');
     var line = cssVar('--line-2', dark ? '#463d31' : '#d9d0c0'), muted = cssVar('--ink-3', dark ? '#988d7c' : '#857b6c');
     var soft = cssVar('--accent-soft', dark ? '#3a2619' : '#f6e6dc'), accent = cssVar('--accent', dark ? '#e08a5a' : '#b4532a');
-    var paper2 = cssVar('--paper-2', dark ? '#1f1b15' : '#f1ece2');
+    var paper2 = cssVar('--paper-2', dark ? '#1f1b15' : '#f1ece2'), ink2 = cssVar('--ink-2', dark ? '#cfc5b4' : '#4a4339');
+    var card2 = cssVar('--card-2', dark ? '#1d1913' : '#fbf8f2'), accentInk = cssVar('--accent-ink', dark ? '#f0a77c' : '#8f3d1b');
+    var w = Math.max(280, Math.min(720, Math.round(avail > 0 ? avail : 640))), narrow = w < 520;
+    var tv = {
+      background: card, mainBkg: card, primaryColor: card, primaryTextColor: ink, primaryBorderColor: line,
+      secondaryColor: soft, secondaryBorderColor: accent, secondaryTextColor: ink,
+      tertiaryColor: paper2, tertiaryBorderColor: line, tertiaryTextColor: ink,
+      lineColor: muted, textColor: ink, nodeTextColor: ink, edgeLabelBackground: card, clusterBkg: paper2, clusterBorder: line,
+      noteBkgColor: cssVar('--warn-soft', dark ? '#2e2414' : '#fbefd9'), noteBorderColor: cssVar('--warn-line', dark ? '#4d3b1d' : '#efd5a6'), noteTextColor: ink,
+      actorBkg: card, actorBorder: line, actorTextColor: ink, signalColor: muted, signalTextColor: ink,
+      fontSize: '15px',
+      // pie
+      pieStrokeColor: card, pieStrokeWidth: '2px', pieOuterStrokeColor: line, pieOuterStrokeWidth: '1px', pieOpacity: '1',
+      pieTitleTextColor: ink, pieTitleTextSize: narrow ? '23px' : '20px', pieSectionTextColor: c.sliceText, pieSectionTextSize: narrow ? '19px' : '15px',
+      pieLegendTextColor: ink2, pieLegendTextSize: narrow ? '20px' : '15px',
+      // quadrantChart: the top-right quadrant (quadrant-1) is the one people look for first.
+      quadrant1Fill: soft, quadrant2Fill: paper2, quadrant3Fill: card2, quadrant4Fill: paper2,
+      quadrant1TextFill: accentInk, quadrant2TextFill: ink2, quadrant3TextFill: muted, quadrant4TextFill: ink2,
+      quadrantPointFill: accent, quadrantPointTextFill: ink, quadrantXAxisTextFill: muted, quadrantYAxisTextFill: muted,
+      quadrantInternalBorderStrokeFill: line, quadrantExternalBorderStrokeFill: line, quadrantTitleFill: ink,
+      xyChart: {
+        backgroundColor: card, titleColor: ink, dataLabelColor: ink, legendTextColor: ink2,
+        xAxisTitleColor: muted, xAxisLabelColor: ink2, xAxisTickColor: line, xAxisLineColor: line,
+        yAxisTitleColor: muted, yAxisLabelColor: ink2, yAxisTickColor: line, yAxisLineColor: line,
+        plotColorPalette: c.strong.join(','),
+      },
+      // mindmap root and gitGraph main branch
+      git0: accent, gitBranchLabel0: card, gitInv0: card,
+    };
+    for (var i = 0; i < 12; i++) {
+      tv['pie' + (i + 1)] = c.soft[i % c.soft.length];
+      // cScale0 is the mindmap root / first timeline section; sections cycle through warm tints.
+      tv['cScale' + i] = c.tint[i % c.tint.length];
+      tv['cScaleLabel' + i] = ink;
+      tv['cScaleInv' + i] = c.edge[i % c.edge.length];
+      tv['cScalePeer' + i] = c.edge[i % c.edge.length];
+    }
     return {
       startOnLoad: false, securityLevel: 'strict', theme: 'base', darkMode: dark,
-      fontFamily: 'DM Sans, PingFang SC, Hiragino Sans GB, Noto Sans SC, sans-serif',
-      themeVariables: {
-        background: card, mainBkg: card, primaryColor: card, primaryTextColor: ink, primaryBorderColor: line,
-        secondaryColor: soft, secondaryBorderColor: accent, secondaryTextColor: ink,
-        tertiaryColor: paper2, tertiaryBorderColor: line, tertiaryTextColor: ink,
-        lineColor: muted, textColor: ink, nodeTextColor: ink, edgeLabelBackground: card, clusterBkg: paper2, clusterBorder: line,
-        noteBkgColor: cssVar('--warn-soft', dark ? '#2e2414' : '#fbefd9'), noteBorderColor: cssVar('--warn-line', dark ? '#4d3b1d' : '#efd5a6'), noteTextColor: ink,
-        actorBkg: card, actorBorder: line, actorTextColor: ink, signalColor: muted, signalTextColor: ink,
-        fontSize: '15px',
-      },
+      fontFamily: MERMAID_FONT,
+      themeVariables: tv,
       flowchart: { curve: 'basis', padding: 14, useMaxWidth: false }, sequence: { useMaxWidth: false }, gantt: { useMaxWidth: false },
+      xyChart: {
+        width: w, height: Math.round(Math.max(280, Math.min(400, w * 0.62))), titleFontSize: 17, titlePadding: 12,
+        xAxis: { labelFontSize: 13, titleFontSize: 13, tickWidth: 1, axisLineWidth: 1 }, yAxis: { labelFontSize: 12, titleFontSize: 13, tickWidth: 1, axisLineWidth: 1 },
+      },
+      quadrantChart: {
+        chartWidth: Math.min(500, w), chartHeight: Math.min(500, w), titleFontSize: 17, quadrantLabelFontSize: narrow ? 13 : 15,
+        pointLabelFontSize: 13, pointRadius: 6, xAxisLabelFontSize: 13, yAxisLabelFontSize: 13, quadrantExternalBorderStrokeWidth: 1,
+      },
+      pie: { textPosition: 0.72, legendPosition: narrow ? 'bottom' : 'right' },
+      sankey: { width: Math.min(640, w), height: Math.round(Math.max(260, Math.min(420, w * 0.62))), linkColor: 'gradient', nodeAlignment: 'justify', showValues: true },
+      timeline: { taskFontFamily: MERMAID_FONT, taskFontSize: 14, leftMargin: 40, taskMargin: 30 },
+      mindmap: { padding: 12, maxNodeWidth: narrow ? 150 : 200 },
     };
+  }
+  // Sankey takes its node colours from d3's Tableau 10, not from the theme: map them to the house
+  // palette after drawing (attributes of our own freshly drawn svg; no markup is parsed).
+  function recolorSankey(svg) {
+    var fam = themeFamily(), strong = chartColors(fam).strong, map = {};
+    TABLEAU10.forEach(function (hex, i) { map[hex] = strong[i % strong.length]; });
+    Array.prototype.forEach.call(svg.querySelectorAll('[fill], [stroke], [stop-color]'), function (e) {
+      ['fill', 'stroke', 'stop-color'].forEach(function (a) {
+        var v = (e.getAttribute(a) || '').toLowerCase();
+        if (map[v]) e.setAttribute(a, map[v]);
+      });
+    });
+    // Links are blended with "multiply", which turns them black on a dark page.
+    if (fam === 'dark') Array.prototype.forEach.call(svg.querySelectorAll('g.link'), function (g) { g.style.mixBlendMode = 'normal'; });
+  }
+  // Timeline: mermaid draws its axis, guide lines and arrow in the label colour (near-black) and
+  // brightens event boxes with a filter (pale yellow). Quiet lines; events a lighter shade of their
+  // section (solid, so the guide line behind them doesn't show through the text).
+  function mixRgb(rgb, hex, t) {
+    var a = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(rgb || ''), b = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '');
+    if (!a || !b) return '';
+    var out = [1, 2, 3].map(function (i) { return Math.round(+a[i] * (1 - t) + parseInt(b[i], 16) * t); });
+    return 'rgb(' + out.join(', ') + ')';
+  }
+  function tuneTimeline(svg) {
+    var dark = themeFamily() === 'dark', quiet = cssVar('--ink-4', dark ? '#6c6253' : '#b3a999'), card = cssVar('--card', dark ? '#221d17' : '#fffdf9');
+    Array.prototype.forEach.call(svg.querySelectorAll('.lineWrapper line'), function (l) { l.style.stroke = quiet; });
+    Array.prototype.forEach.call(svg.querySelectorAll('marker path'), function (p) { p.style.fill = quiet; p.style.stroke = quiet; });
+    Array.prototype.forEach.call(svg.querySelectorAll('.eventWrapper'), function (g) {
+      g.style.filter = 'none';
+      Array.prototype.forEach.call(g.querySelectorAll('.node-bkg'), function (b) { var f = mixRgb(getComputedStyle(b).fill, card, 0.5); if (f) b.style.fill = f; });
+    });
   }
   function mermaidFail(n) {
     n.classList.remove('mermaid-drawn');
@@ -771,12 +885,27 @@
     n.appendChild(b);
   }
   function turnFlow(src) { return src.replace(/^(\s*(?:%%[^\n]*\n\s*)*(?:flowchart|graph))[ \t]+(LR|RL)\b/, '$1 TD'); }
+  // Width of the drawing area inside a diagram frame (the frame minus its padding).
+  function frameWidth(n) {
+    var cs = getComputedStyle(n);
+    return (n.clientWidth || 0) - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+  }
+  // The size mermaid drew a diagram at. Charts with useMaxWidth have width="100%" and their real
+  // width in max-width / the viewBox; reading parseFloat("100%") as 100px hid every wide chart.
+  function naturalWidth(svg) {
+    if (!svg) return 0;
+    var wa = svg.getAttribute('width') || '';
+    var w = /%\s*$/.test(wa) ? 0 : parseFloat(wa);
+    if (!w) { var mw = /max-width:\s*([\d.]+)px/.exec(svg.getAttribute('style') || ''); w = mw ? parseFloat(mw[1]) : 0; }
+    if (!w && svg.viewBox && svg.viewBox.baseVal) w = svg.viewBox.baseVal.width || 0;
+    return w;
+  }
   function mermaidRun(root) {
     var nodes = Array.prototype.slice.call(root.querySelectorAll('.mermaid:not([data-done])'));
     if (!nodes.length) return;
     var go = function () {
       var m = window.mermaid;
-      try { m.initialize(mermaidConfig()); } catch (e) { nodes.forEach(mermaidFail); return; }
+      try { var avail = 0; nodes.forEach(function (n) { avail = Math.max(avail, frameWidth(n)); }); m.initialize(mermaidConfig(avail)); } catch (e) { nodes.forEach(mermaidFail); return; }
       nodes.forEach(function (n) { n.setAttribute('data-done', '1'); });
       // On a phone a left-to-right flowchart is drawn top-to-bottom instead, so it fits the
       // screen. View time only: data-src (what's stored, and what a failure shows) is unchanged.
@@ -793,7 +922,7 @@
         var good = parsed.filter(Boolean);
         if (!good.length) return;
         var draw = function (list) { return Promise.resolve(m.run({ nodes: list, suppressErrors: true })).catch(function () { /* checked below */ }); };
-        var natural = function (n) { var svg = n.querySelector('svg'); return svg ? (parseFloat(svg.getAttribute('width')) || (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width) || 0) : 0; };
+        var natural = function (n) { return naturalWidth(n.querySelector('svg')); };
         return draw(good).then(function () {
           // A left-to-right flowchart that doesn't fit the column (it would shrink below 80%) is
           // redrawn top-to-bottom, at any screen width. View time only; data-src is unchanged.
@@ -813,9 +942,17 @@
             // The svg sits in its own scroller so the Expand button stays put. A diagram that would
             // still shrink below ~65% of its drawn size keeps its size and scrolls sideways inside
             // its frame (the page never does); Expand shows it whole.
-            var svg = n.querySelector('svg'), w = natural(n);
+            var svg = n.querySelector('svg'), w = natural(n), kind = svg.getAttribute('aria-roledescription') || '';
+            if (kind === 'sankey') recolorSankey(svg);
+            if (kind === 'timeline') tuneTimeline(svg);
             var sc = el('div', 'diagram-scroll'); n.insertBefore(sc, svg); sc.appendChild(svg);
-            if (w && n.clientWidth && w > n.clientWidth / 0.65) n.classList.add('diagram-wide');
+            if (w && n.clientWidth && w > n.clientWidth / 0.65) {
+              n.classList.add('diagram-wide');
+              // A chart drawn with width="100%" would still shrink to the frame: pin its drawn size.
+              if (/%\s*$/.test(svg.getAttribute('width') || '')) svg.style.width = Math.ceil(w) + 'px';
+              // A mindmap grows from its centre: start the frame there, not at the left edge.
+              if (kind === 'mindmap') sc.scrollLeft = Math.max(0, (sc.scrollWidth - sc.clientWidth) / 2);
+            }
             diagramExpand(n);
           });
         });
