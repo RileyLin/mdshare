@@ -25,26 +25,38 @@
 </div></main>
 <script>
 (function () {
-  var secret = location.hash.slice(1);
-  // Out of the address bar and the history entry before anything else happens.
-  history.replaceState(null, '', location.pathname);
+  var title = document.getElementById('enter-title');
+  var status = document.getElementById('enter-status');
+  var error = document.getElementById('enter-error');
   function fail(message) {
-    document.getElementById('enter-title').textContent = 'This link does not work';
-    document.getElementById('enter-status').textContent = 'Entry links are private and only the newest one works. Ask your agent for a fresh link.';
-    document.getElementById('enter-error').textContent = message || '';
+    title.textContent = 'This link does not work';
+    status.textContent = 'Entry links are private and only the newest one works. Ask your agent for a fresh link.';
+    error.textContent = message || '';
   }
-  if (!/^[A-Za-z0-9_-]{43}$/.test(secret)) { fail(''); return; }
-  fetch('/api/auth?action=enter', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ secret: secret }),
-  }).then(function (res) {
-    return res.json().catch(function () { return {}; }).then(function (data) {
-      if (res.ok && data.redirect === '/dashboard') { location.replace('/dashboard'); return; }
-      fail(res.status === 429 ? 'Too many attempts. Try again later.' : '');
-    });
-  }, function () { fail('Network error. Open the link again.'); });
+  function enter() {
+    var secret = location.hash.slice(1);
+    // Out of the address bar and the history entry before anything else happens.
+    history.replaceState(null, '', location.pathname);
+    if (!secret) return;
+    title.textContent = 'Opening your library…';
+    status.textContent = 'Checking your private link.';
+    error.textContent = '';
+    if (!/^[A-Za-z0-9_-]{43}$/.test(secret)) { fail(''); return; }
+    fetch('/api/auth?action=enter', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret: secret }),
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        if (res.ok && data.redirect === '/dashboard') { location.replace('/dashboard'); return; }
+        fail(res.status === 429 ? 'Too many attempts. Try again later.' : '');
+      });
+    }, function () { fail('Network error. Open the link again.'); });
+  }
+  // A second link opened in this same tab changes only the fragment (no reload).
+  window.addEventListener('hashchange', enter);
+  if (location.hash.length > 1) enter(); else fail('');
 })();
 </script>
 </body>
