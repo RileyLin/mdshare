@@ -418,6 +418,10 @@ const fix1Mutations = [
   ['creates-limited', 'creatorOf ignores MDSHARE_ANON_CREATE', 'api/_lib/tenant.js', (s) => s.replace("  if (!anonCreateAllowed()) throw new Refused(401, 'Sign up or sign in to create documents.', { extra: ANON_CREATE_OFF });\n", '')],
   ['creates-limited', 'the anonymous-create switch defaults to off', 'api/_lib/tenant.js', (s) => s.replace("process.env.MDSHARE_ANON_CREATE ?? 'on'", "process.env.MDSHARE_ANON_CREATE ?? 'off'")],
   ['creates-limited', 'a Refused answer drops the hint', 'api/_lib/events.js', (s) => s.replace('json({ ...(err.extra || {}), error: err.message,', 'json({ error: err.message,')],
+  ['client-ip-one-helper', 'share.js parses x-forwarded-for inline again', 'api/share.js', (s) => s.replace('    const rateCheck = checkRateLimit(clientIp(req));', "    const rateCheck = checkRateLimit(req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 'unknown');")],
+  ['client-ip-one-helper', 'clientIp() keys on the first hop', 'api/_lib/rate-limit.js', (s) => s.replace(".filter(Boolean).pop() || '';", ".filter(Boolean)[0] || '';")],
+  ['client-ip-one-helper', 'clientIp() prefers x-forwarded-for', 'api/_lib/rate-limit.js', (s) => s.replace("lastHop(h['x-vercel-forwarded-for']) || lastHop(h['x-real-ip']) || lastHop(h['x-forwarded-for'])", "lastHop(h['x-forwarded-for']) || lastHop(h['x-vercel-forwarded-for']) || lastHop(h['x-real-ip'])")],
+  ['client-ip-one-helper', 'the auth login limiter reads the socket itself', 'api/auth.js', (s) => s.replace('    const rateCheck = checkAuthRateLimit(clientIp(req));', "    const rateCheck = checkAuthRateLimit(req.socket?.remoteAddress || 'unknown');")],
   ['user-content-sandboxed', '/d/:id inserts the SVG without DOMPurify', 'public/assets/app.js', (s) => s.replace('frame.innerHTML = DOMPurify.sanitize(svg, {', 'frame.innerHTML = (svg, {'), true],
 ];
 for (const [id, label, file, fn, withPublic] of fix1Mutations) {

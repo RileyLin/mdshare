@@ -247,8 +247,7 @@ async function handler(req, res) {
     }
 
     // --- existing password login flow (unchanged) ---
-    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
-    const rateCheck = checkAuthRateLimit(ip);
+    const rateCheck = checkAuthRateLimit(clientIp(req));
     if (!rateCheck.allowed) {
       res.setHeader('Retry-After', String(rateCheck.retryAfter));
       return res.status(429).json({ error: 'Too many login attempts. Try again later.', retry_after: rateCheck.retryAfter });

@@ -12,6 +12,7 @@ import { timingSafeEqual } from 'crypto';
 import { parseJsonBody } from './_lib/body.js';
 import { recordEvent, withErrors, COMMIT } from './_lib/events.js';
 import { pingDb, recentEventsAllUsers, ownerlessTables, sessionOwner } from './_lib/tenant.js';
+import { clientIp } from './_lib/rate-limit.js';
 
 const hits = new Map(); // ip -> { n, reset }
 const sweep = setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (now > v.reset) hits.delete(k); }, 10 * 60 * 1000);
@@ -67,7 +68,7 @@ async function handler(req, res) {
   }
 
   if (req.method === 'POST') {
-    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
+    const ip = clientIp(req);
     if (!allow(ip)) return res.status(429).end();
     const raw = typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {});
     if (raw.length > 4096) return res.status(413).end();

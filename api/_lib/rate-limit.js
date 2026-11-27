@@ -25,6 +25,20 @@ export function rateLimiter({ limit, windowMs }) {
   };
 }
 
+// The client address every per-IP limit is keyed on (sign-up, entry links, password login, creates,
+// client errors, doc reads). The one place that reads these headers (invariant "client-ip-one-helper").
+//
+// Trust boundary: a header is only as good as the proxy that set it. On Vercel (this app's only
+// deployment) the edge sets x-vercel-forwarded-for and x-real-ip to the connecting client and
+// overwrites any value the client sent; it also overwrites x-forwarded-for (no trusted-proxy add-on).
+// A proxy chain APPENDS to x-forwarded-for, so its first hop is whatever the client wrote and only
+// the last hop was added by the proxy nearest to us: never key on the first hop (ADV-MU-B 1). Order:
+// x-vercel-forwarded-for, x-real-ip, the last x-forwarded-for hop, the socket address.
+// Self-hosting or putting another CDN in front of Vercel moves the boundary: that proxy must set
+// x-real-ip itself (overwriting the client's), or a client can pick its own rate-limit key.
+const lastHop = (v) => String(v || '').split(',').map((s) => s.trim()).filter(Boolean).pop() || '';
 export function clientIp(req) {
-  return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
+  const h = (req && req.headers) || {};
+  const ip = lastHop(h['x-vercel-forwarded-for']) || lastHop(h['x-real-ip']) || lastHop(h['x-forwarded-for']) || req?.socket?.remoteAddress || 'unknown';
+  return String(ip).slice(0, 64);
 }

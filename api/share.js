@@ -16,6 +16,7 @@ import { lintMarkdown } from './_lib/lint.js';
 import { canUseParent, canLinkTranslation, versionFields, translationFields, parseLang, detectLang } from './_lib/activity.js';
 import { parseCollection, SLUG_HINT } from './_lib/collections.js';
 import { creatorOf, ownerOf, sessionOwner, insertOwned, patchOwned, deleteOwned } from './_lib/tenant.js';
+import { clientIp } from './_lib/rate-limit.js';
 
 // --- Rate Limiting (in-memory, per Vercel serverless instance) ---
 // Vercel functions can be cold-started, so this is "best effort" rate limiting.
@@ -129,8 +130,7 @@ async function handler(req, res) {
     }
 
     // Rate limit by IP
-    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
-    const rateCheck = checkRateLimit(ip);
+    const rateCheck = checkRateLimit(clientIp(req));
     
     res.setHeader('X-RateLimit-Limit', String(RATE_LIMIT));
     res.setHeader('X-RateLimit-Remaining', String(rateCheck.remaining));

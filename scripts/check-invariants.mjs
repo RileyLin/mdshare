@@ -903,7 +903,7 @@ const checks = [
       const c = read('api/_lib/content.js');
       if (!/export const CREATES_PER_HOUR = 50;/.test(c) || !/export const MAX_PASTE_SIZE = 100000;/.test(c)) errs.push('api/_lib/content.js: keep `export const CREATES_PER_HOUR = 50;` and `export const MAX_PASTE_SIZE = 100000;`.');
       const share = read('api/share.js');
-      if (!/const RATE_LIMIT = CREATES_PER_HOUR;/.test(share) || !/const rateCheck = checkRateLimit\(ip\);\n[\s\S]*?if \(!rateCheck\.allowed\) \{/.test(share)) errs.push('api/share.js: the POST checks checkRateLimit(ip) with RATE_LIMIT = CREATES_PER_HOUR.');
+      if (!/const RATE_LIMIT = CREATES_PER_HOUR;/.test(share) || !/const rateCheck = checkRateLimit\(clientIp\(req\)\);\n[\s\S]*?if \(!rateCheck\.allowed\) \{/.test(share)) errs.push('api/share.js: the POST checks checkRateLimit(clientIp(req)) with RATE_LIMIT = CREATES_PER_HOUR.');
       if (!/if \(markdown\.length > MAX_PASTE_SIZE\) \{/.test(share)) errs.push('api/share.js: refuse markdown longer than MAX_PASTE_SIZE (413).');
       for (const f of ['api/diagram.js', 'api/archify.js']) {
         const code = read(f);
@@ -921,6 +921,25 @@ const checks = [
       if (!/if \(!anonCreateAllowed\(\)\) throw new Refused\(401, [^\n]*\{ extra: ANON_CREATE_OFF \}\);\n\s*return ANON_CREATE;/.test(cr)) errs.push("api/_lib/tenant.js: creatorOf() throws `new Refused(401, ..., { extra: ANON_CREATE_OFF })` when !anonCreateAllowed(), right before `return ANON_CREATE;`.");
       if (!/return String\(process\.env\.MDSHARE_ANON_CREATE \?\? 'on'\)\.trim\(\)\.toLowerCase\(\) !== 'off';/.test(t)) errs.push("api/_lib/tenant.js: anonCreateAllowed() is false only for MDSHARE_ANON_CREATE=off (default on).");
       if (!/res\.status\(err\.status\)\.json\(\{ \.\.\.\(err\.extra \|\| \{\}\), error: err\.message/.test(read('api/_lib/events.js'))) errs.push('api/_lib/events.js: a Refused answer includes err.extra (the sign-up hint).');
+      return errs;
+    },
+  },
+  {
+    id: 'client-ip-one-helper',
+    why: 'ADV-MU-B 1 (2026-11-27): the per-IP limits (sign-up, entry links, password login, creates) keyed on the first x-forwarded-for hop, which the client writes, and four routes parsed the header inline. One helper, api/_lib/rate-limit.js clientIp(): x-vercel-forwarded-for, x-real-ip, the LAST x-forwarded-for hop, the socket.',
+    run() {
+      const errs = [];
+      const R = 'api/_lib/rate-limit.js';
+      for (const f of apiFiles()) {
+        if (f === R) continue;
+        lines(f).forEach((l, i) => {
+          if (!isCommentLine(l) && /x-forwarded-for|x-real-ip|x-vercel-forwarded-for|remoteAddress/i.test(l)) errs.push(`${f}:${i + 1}: read the client address only through clientIp(req) (${R}); it documents which headers are trusted ("${l.trim()}").`);
+        });
+      }
+      const src = read(R);
+      if (!/const lastHop = \(v\) => String\(v \|\| ''\)\.split\(','\)\.map\(\(s\) => s\.trim\(\)\)\.filter\(Boolean\)\.pop\(\) \|\| '';/.test(src)) errs.push(`${R}: keep lastHop(v): the LAST comma-separated hop (a proxy appends; the first hop is the client's own text).`);
+      if (!/const ip = lastHop\(h\['x-vercel-forwarded-for'\]\) \|\| lastHop\(h\['x-real-ip'\]\) \|\| lastHop\(h\['x-forwarded-for'\]\) \|\| req\?\.socket\?\.remoteAddress \|\| 'unknown';/.test(src)) errs.push(`${R}: clientIp() prefers x-vercel-forwarded-for, then x-real-ip, then lastHop(x-forwarded-for), then the socket.`);
+      if (!/Trust boundary:/.test(src)) errs.push(`${R}: keep the "Trust boundary:" comment above clientIp() (which proxy sets which header).`);
       return errs;
     },
   },
