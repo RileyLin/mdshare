@@ -435,6 +435,46 @@
     loadTokens();
   }
 
+  // ===================== Settings → Reading =====================
+  // The Reading card that api/dashboard.js renders is rebuilt here with every reading preference, a
+  // live sample and Reset. The controls carry the Aa menu's ids, so app.js binds and stores them the
+  // same way (localStorage on this device) and every page follows. Static markup only; this block
+  // calls no API and leaves the rest of Settings alone.
+  var READING_PANEL = '<div class="set-head"><div><h2>Reading<span class="h-zh" lang="zh">阅读设置</span></h2>' +
+    '<p>Applies on this device to every document you open. The Aa menu on a document changes the same settings.</p></div>' +
+    '<button class="btn sm" type="button" id="reading-reset">Reset to defaults</button></div>' +
+    '<div class="reading-grid"><div class="reading-controls">' +
+    '<div class="set-row stack"><span class="lbl">Theme</span><div class="seg" id="theme-seg" role="group" aria-label="Theme"><button type="button" data-v="light">Light</button><button type="button" data-v="paper">Paper</button><button type="button" data-v="dark">Dark</button><button type="button" data-v="system">System</button></div></div>' +
+    '<div class="set-row stack"><span class="lbl">Text size</span><div class="aa-size"><button type="button" id="zoom-out" aria-label="Smaller text">A−</button><output id="zoom-val">100%</output><button type="button" id="zoom-in" aria-label="Larger text">A+</button><button class="btn sm ghost" type="button" id="zoom-reset">Reset</button></div></div>' +
+    '<div class="set-row stack"><span class="lbl">Font</span><div class="seg" id="font-seg" role="group" aria-label="Font"><button type="button" data-v="sans">Sans</button><button type="button" data-v="serif">Serif</button></div></div>' +
+    '<div class="set-row stack"><span class="lbl">Line spacing</span><div class="seg" id="leading-seg" role="group" aria-label="Line spacing"><button type="button" data-v="compact">Compact</button><button type="button" data-v="comfortable">Comfortable</button><button type="button" data-v="loose">Loose</button></div></div>' +
+    '<div class="set-row stack"><span class="lbl">Width<small>Wide gives tables and diagrams more room; text keeps a readable line length.</small></span><div class="seg" id="width-seg" role="group" aria-label="Width"><button type="button" data-v="standard">Standard</button><button type="button" data-v="wide">Wide</button></div></div>' +
+    '<div class="set-row stack"><span class="lbl">Tables<small>Auto picks a table or cards for each table and screen.</small></span><div class="seg" id="tables-seg" role="group" aria-label="Tables"><button type="button" data-v="auto">Auto</button><button type="button" data-v="table">Table</button><button type="button" data-v="cards">Cards</button></div></div>' +
+    '<div class="set-row"><label class="lbl" for="motion-toggle">Motion<small id="motion-note">Gentle fade-ins and count-ups</small></label><label class="switch"><input type="checkbox" id="motion-toggle" checked><span></span></label></div>' +
+    '<div class="set-row"><label class="lbl" for="gloss-toggle">Term hints<small>Show 术语（解释） as a dotted term with a hover hint instead of inline text.</small></label><label class="switch"><input type="checkbox" id="gloss-toggle"><span></span></label></div>' +
+    '</div><figure class="reading-sample" id="reading-sample"><figcaption>Preview</figcaption>' +
+    '<div class="prose" lang="en"><h3>A calm page for long answers</h3><p>Good reading type is mostly space: a comfortable size, room between the lines, and lines that are not too long. Change a setting and this text follows.</p></div>' +
+    '<div class="prose cjk" lang="zh"><p>好的排版让长文更好读：字号合适，行距舒展，一行不要太长。改一项设置，这段文字马上跟着变。</p></div>' +
+    '</figure></div>';
+  function readingPanel() {
+    var page = $('settings'); if (!page) return;
+    var seg = page.querySelector('#theme-seg'), card = seg && seg.closest('.set-card');
+    if (!card) {
+      var list = page.querySelector('.settings'); if (!list) return;
+      card = document.createElement('section'); card.className = 'set-card';
+      list.insertBefore(card, list.children[1] || null);
+    }
+    card.id = 'reading'; card.classList.add('reading-card');
+    card.innerHTML = READING_PANEL;
+    $('reading-reset').addEventListener('click', function () {
+      if (!window.MDSharePrefs) return;
+      window.MDSharePrefs.reset();
+      toast('Reading settings are back to the defaults');
+    });
+    if (window.MDSharePrefs) window.MDSharePrefs.bind();
+  }
+
   initLibrary();
+  readingPanel();
   initSettings();
 })();

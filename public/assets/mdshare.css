@@ -686,6 +686,26 @@ body.editing .doc-layout, body.editing .doc-footer-wrap { display: none; }
 .tag.scope { font-family: var(--mono); font-size: 11px; }
 .usage { margin: 14px 0 0; font-size: 12.5px; color: var(--ink-3); }
 .usage code { font: 12px var(--mono); background: var(--paper-2); padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line); }
+/* Settings → Reading (library.js readingPanel): the Aa preferences, a live sample and Reset. */
+.reading-card .set-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px 18px; flex-wrap: wrap; margin: 0 0 6px; }
+.reading-card .set-head p { margin: 0; font-size: 13.5px; color: var(--ink-3); line-height: 1.55; max-width: 560px; }
+.reading-card h2 .h-zh { margin-left: 6px; font-weight: 500; color: var(--ink-3); }
+.reading-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 8px 32px; align-items: start; }
+.reading-card .set-row { flex-wrap: wrap; gap: 10px 18px; }
+.reading-card .set-row > .lbl { flex: 1 1 160px; min-width: 0; }
+.reading-card .set-row .seg { flex-wrap: wrap; }
+.reading-card .aa-size .btn { margin-left: 8px; }
+@media (max-width: 560px) { .reading-card .set-row.stack { flex-direction: column; align-items: flex-start; gap: 8px; } .reading-card .set-row.stack > .lbl { flex: none; } }
+.reading-sample { position: sticky; top: 72px; margin: 14px 0 0; padding: 16px 18px 6px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); }
+.reading-sample figcaption { margin: 0 0 10px; font: 600 11px var(--sans); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); }
+.reading-sample .prose { padding: 0; }
+.reading-sample .prose h3 { margin: 0 0 .4em; }
+.reading-sample .prose + .prose { margin-top: 2px; }
+@media (max-width: 760px) {
+  .reading-grid { grid-template-columns: minmax(0, 1fr); }
+  .reading-sample { position: static; order: -1; margin-top: 10px; }
+}
+@media (max-width: 480px) { .set-card.reading-card { padding: 18px 16px; } }
 
 /* ---------- Diagram + archify shells ---------- */
 .canvas { margin: 28px auto 0; max-width: 1240px; padding: 0 clamp(16px, 4vw, 40px); }
