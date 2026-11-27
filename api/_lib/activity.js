@@ -8,7 +8,7 @@
 // Multi-user (2026-11-27): every query goes through api/_lib/tenant.js scoped to `me`, the
 // request's principal (ownerOf): a user's reads, feedback, versions and translations are their own.
 import { hasScope } from './agent-tokens.js';
-import { isValidId, ownerOf, rowOwner, readOwned, selectOwned, patchOwned, insertOwned } from './tenant.js';
+import { isValidId, ownerOf, rowOwner, readOwned, selectOwned, patchOwned, insertOwned, SITE_OWNER_UID } from './tenant.js';
 import { randomBytes } from 'crypto';
 
 export const ACTIVITY_TABLES = ['mdshare_reads', 'mdshare_feedback'];
@@ -35,12 +35,13 @@ const inList = (ids) => encodeURIComponent(`(${ids.join(',')})`);
 // Who may call an activity action. 'owner' = a signed-in user's session cookie (acting on their own
 // documents). 'owner|<scope>' = that, or a valid scoped agent token holding <scope> (acting for its
 // own user); 'owner|<a>,<b>' = holding either. A present Bearer decides (ownerOf). Never anonymous,
-// never a legacy token.
+// never a legacy token. 'admin|<scope>' (P3, the owner's stats) is the same, but only for user #1.
 export function allowed(auth, req, res, agentAuth) {
   const me = ownerOf(req, res, agentAuth || null);
   if (!me) return false;
+  if (auth.startsWith('admin') && me.uid !== SITE_OWNER_UID) return false;
   if (me.via === 'cookie') return true;
-  if (auth === 'owner') return false;
+  if (auth === 'owner' || auth === 'admin') return false;
   const scopes = (auth.split('|')[1] || '').split(',').filter(Boolean);
   return !!(scopes.length && agentAuth && agentAuth.valid && scopes.some((s) => hasScope(agentAuth, s)));
 }

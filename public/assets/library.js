@@ -428,6 +428,18 @@
       try { await api('/api/auth', json('DELETE', { action: 'revoke_token', id: b.getAttribute('data-revoke') })); toast('Token revoked'); loadTokens(); }
       catch (err) { toast('Failed: ' + err.message, true); b.disabled = false; b.textContent = 'Revoke'; }
     });
+    // Users other than the owner (P3): a fresh private entry link; the old one stops working at once.
+    if ($('btn-entry-link')) $('btn-entry-link').addEventListener('click', async function () {
+      if (!window.confirm('Get a new entry link? Your current link stops working right away.')) return;
+      var btn = $('btn-entry-link'); btn.disabled = true;
+      try {
+        var d = await api('/api/auth?action=entry-link', json('POST', {}));
+        $('entry-link-value').textContent = d.entry_url; $('entry-link-reveal').hidden = false;
+        toast('New entry link ready. The old one no longer works');
+      } catch (err) { toast('Couldn’t make a new link: ' + err.message, true); }
+      btn.disabled = false;
+    });
+    if ($('btn-copy-entry')) $('btn-copy-entry').addEventListener('click', function () { var v = $('entry-link-value').textContent; if (v) navigator.clipboard.writeText(v).then(function () { toast('Copied'); }, function () { toast('Copy failed: select it manually', true); }); });
     $('btn-signout').addEventListener('click', async function () {
       try { await api('/api/auth', json('POST', { action: 'logout' })); } catch (e) { /* cookie may already be gone */ }
       location.href = '/';

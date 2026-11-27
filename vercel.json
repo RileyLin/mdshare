@@ -36,6 +36,10 @@
     {
       "source": "/guide",
       "destination": "/guide.html"
+    },
+    {
+      "source": "/enter",
+      "destination": "/enter.html"
     }
   ]
 }

@@ -13,6 +13,9 @@
 //                          {id, collection: <slug>|null} for the document's whole version family
 //   POST ?action=translation  same auth. {id, translation_of: <id>|null, lang?: zh|en}; a token links
 //                          only documents it created, target and group too (canLinkTranslation)
+//   GET  ?action=stats     the owner (user #1) only: cookie, or a user-#1 token with activity:read.
+//                          Per user: label, created_at, disabled, documents this/last week and total,
+//                          documents the user opened, last active; seats. Counts only, no titles.
 // Every action is declared in ACTIONS with its `auth`, and every GET action with its own `rate`
 // limiter (READ_RATE_LIMIT a minute per token, or per IP for the owner session -> 429, checked in
 // handler() after the auth check and before run()); scripts/check-invariants.mjs fails if one
@@ -23,7 +26,7 @@
 // documents; every action runs with `me` (tenant.js ownerOf: the token's user or the cookie's), and
 // every query below is scoped to it, so another user's id answers exactly like a missing one.
 import { isValidId, setPrivacyHeaders } from './_lib/access.js';
-import { ownerOf, readOwned } from './_lib/tenant.js';
+import { ownerOf, readOwned, userStats, maxUsers } from './_lib/tenant.js';
 import { resolveAgentToken } from './_lib/agent-tokens.js';
 import { parseJsonBody } from './_lib/body.js';
 import { withErrors } from './_lib/events.js';
@@ -43,6 +46,29 @@ export const READ_RATE_LIMIT = 60;
 const readLimiter = (what) => ({ what, ...rateLimiter({ limit: READ_RATE_LIMIT, windowMs: 60 * 1000 }) });
 
 const ACTIONS = {
+  stats: {
+    auth: 'admin|activity:read', httpMethod: 'GET', rate: readLimiter('stats lookups'),
+    async run({ me }) {
+      const r = await userStats(me);
+      if (r.dbError) return [503, { error: 'Temporarily unavailable' }];
+      const users = r.rows.map((u) => ({
+        user_id: u.user_id, label: u.label ?? null, created_at: u.created_at, disabled: u.disabled === true,
+        docs_this_week: Number(u.docs_this_week) || 0, docs_last_week: Number(u.docs_last_week) || 0, docs_total: Number(u.docs_total) || 0,
+        opened_by_owner: Number(u.opened_by_owner) || 0, opened_this_week: Number(u.opened_this_week) || 0, last_active: u.last_active ?? null,
+      }));
+      const others = users.filter((u) => u.user_id !== 1);
+      return [200, {
+        seats: { used: others.length, max: maxUsers() },
+        totals: {
+          users: others.length,
+          publishing_this_week: others.filter((u) => u.docs_this_week > 0).length,
+          publishing_both_weeks: others.filter((u) => u.docs_this_week > 0 && u.docs_last_week > 0).length,
+          opening_their_pages_this_week: others.filter((u) => u.opened_this_week > 0).length,
+        },
+        users,
+      }];
+    },
+  },
   read: {
     auth: 'owner', httpMethod: 'POST', silent: true,
     async run({ body, me }) {

@@ -179,9 +179,10 @@ const checks = [
         for (const rule of auth[1].match(/'[^']*'/g) || []) {
           const r = rule.slice(1, -1);
           if (['POST', 'GET'].includes(r)) continue;
-          // 'owner|a,b' (since 2026-11-26): the owner, or a token holding either scope.
+          // 'owner|a,b' (since 2026-11-26): the owner, or a token holding either scope. 'admin|<scope>'
+          // (P3): the same, for user #1 only (invariant "owner-only-admin").
           const [who, scope] = r.split('|');
-          if (who !== 'owner' || (scope !== undefined && !scope.split(',').every((x) => scopes.includes(x)))) errs.push(`api/doc.js: action "${name}" auth '${r}' must be 'owner' or 'owner|<one or more of ${scopes.join(', ')}, comma-separated>'.`);
+          if (!['owner', 'admin'].includes(who) || (scope !== undefined && !scope.split(',').every((x) => scopes.includes(x)))) errs.push(`api/doc.js: action "${name}" auth '${r}' must be 'owner', 'owner|<one or more of ${scopes.join(', ')}, comma-separated>' or 'admin|<scope>'.`);
         }
       }
       if (!entries.some((e) => /^\s*[a-z]+: \{/.test(e))) errs.push('api/doc.js: ACTIONS table is empty or unparseable.');

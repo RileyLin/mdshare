@@ -3,6 +3,7 @@
 // reloads in place after login. Data comes from /api/pastes, /api/pin, /api/auth (see
 // /assets/library.js); this handler only renders the shell.
 import { checkAuthAndRefresh } from './auth.js';
+import { sessionOwner, SITE_OWNER_UID } from './_lib/tenant.js';
 import { head, header, libraryNav, toast, scripts, loginPage, CSP_PAGE } from './_lib/ui.js';
 import { withErrors } from './_lib/events.js';
 
@@ -48,7 +49,15 @@ const LIBRARY = `<main class="page" id="library">
   <button class="btn sm" type="button" id="b-clear" aria-label="Clear selection">✕</button>
 </div>`;
 
-const SETTINGS = `<main class="page" id="settings">
+// Users other than the owner sign in with a private entry link (P3); the owner uses the password.
+const ENTRY_LINK = `<section class="set-card" id="entry-link">
+      <h2>Private entry link</h2>
+      <p>Your link into this library, from sign-up. Only the newest link works: getting a new one turns the old one off at once. Keep it private. Your agent can also send you a fresh one.</p>
+      <div class="set-row"><span class="lbl">New entry link<small>Use it if the old link leaked or got lost.</small></span><button class="btn" type="button" id="btn-entry-link">Get a new link</button></div>
+      <div class="token-reveal" id="entry-link-reveal" hidden><div class="h">Your new link. The old one no longer works.</div><div class="row"><code id="entry-link-value"></code><button class="btn sm" type="button" id="btn-copy-entry">Copy</button></div></div>
+    </section>`;
+
+const SETTINGS = (owner) => `<main class="page" id="settings">
   <div class="page-head"><div><h1>Settings</h1><p>Publishing defaults, reading preferences and API access.</p></div></div>
   <div class="settings">
     <section class="set-card">
@@ -92,9 +101,10 @@ const SETTINGS = `<main class="page" id="settings">
       <div class="token-list" id="tokens-list"><div class="lib-empty">Loading…</div></div>
       <p class="usage">Use it as <code>Authorization: Bearer &lt;token&gt;</code> against <code id="api-base-example">/api/…</code>. Agents: see <a href="/llms.txt">/llms.txt</a>.</p>
     </section>
+    ${owner ? '' : ENTRY_LINK}
     <section class="set-card">
       <h2>Session</h2>
-      <div class="set-row"><span class="lbl">Signed in as the owner<small>Signing out only affects this browser.</small></span><button class="btn" type="button" id="btn-signout">Sign out</button></div>
+      <div class="set-row"><span class="lbl">Signed in${owner ? ' as the owner' : ''}<small>Signing out only affects this browser.</small></span><button class="btn" type="button" id="btn-signout">Sign out</button></div>
     </section>
   </div>
 </main>`;
@@ -107,8 +117,9 @@ async function handler(req, res) {
   }
   res.setHeader('Content-Security-Policy', CSP_PAGE);
   const settings = req.query && req.query.view === 'settings';
+  const me = sessionOwner(req, res);
   return res.status(200).send(settings
-    ? shell({ current: 'settings', title: 'Settings', body: SETTINGS })
+    ? shell({ current: 'settings', title: 'Settings', body: SETTINGS(!!me && me.uid === SITE_OWNER_UID) })
     : shell({ current: 'library', title: 'Library', body: LIBRARY }));
 }
 

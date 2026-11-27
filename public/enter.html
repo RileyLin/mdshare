@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>Opening your library — mdshare</title>
+<link rel="stylesheet" href="/assets/mdshare.css">
+</head>
+<!--
+  /enter#<secret> — the private entry link from sign-up (api/auth.js). The secret lives only in the
+  URL fragment, which browsers never send to a server, so it can't reach a request log. This page
+  reads it, removes it from the address bar and history first, then trades it for a session cookie
+  with POST /api/auth?action=enter and opens the Library. It reads nothing else from the URL and
+  stores nothing (invariant "entry-secret-hashed").
+-->
+<body>
+<header class="app-header"><a class="wordmark" href="/" aria-label="mdshare home"><i></i>mdshare</a><span class="hdr-spacer"></span></header>
+<main class="center-page"><div class="auth-card" id="enter-card">
+  <div class="lock" aria-hidden="true">🔑</div>
+  <h1 id="enter-title">Opening your library…</h1>
+  <p id="enter-status" role="status">Checking your private link.</p>
+  <p class="error-msg" id="enter-error" role="alert"></p>
+</div></main>
+<script>
+(function () {
+  var secret = location.hash.slice(1);
+  // Out of the address bar and the history entry before anything else happens.
+  history.replaceState(null, '', location.pathname);
+  function fail(message) {
+    document.getElementById('enter-title').textContent = 'This link does not work';
+    document.getElementById('enter-status').textContent = 'Entry links are private and only the newest one works. Ask your agent for a fresh link.';
+    document.getElementById('enter-error').textContent = message || '';
+  }
+  if (!/^[A-Za-z0-9_-]{43}$/.test(secret)) { fail(''); return; }
+  fetch('/api/auth?action=enter', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ secret: secret }),
+  }).then(function (res) {
+    return res.json().catch(function () { return {}; }).then(function (data) {
+      if (res.ok && data.redirect === '/dashboard') { location.replace('/dashboard'); return; }
+      fail(res.status === 429 ? 'Too many attempts. Try again later.' : '');
+    });
+  }, function () { fail('Network error. Open the link again.'); });
+})();
+</script>
+</body>
+</html>
