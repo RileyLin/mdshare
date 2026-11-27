@@ -37,10 +37,13 @@ export const UNSCOPED = ['readForView', 'findTokenByHash', 'touchToken', 'pingDb
 // with no signed-in user (an anonymous browser error, a crash before auth) is ownerless by design.
 export const OWNED_TABLES = USER_TABLES.filter((t) => t !== 'mdshare_events');
 // The accounts table (013) and the owner's stats rpc (014): no owner_id; only ACCOUNTS touch them.
+// The sign-up and quota rpcs (016) make the seat cap and the daily count atomic in SQL.
 const USERS = 'mdshare_users';
 const STATS_RPC = 'rpc/mdshare_user_stats';
-const ACCOUNT_PATHS = [USERS, STATS_RPC];
-export const ACCOUNTS = ['userActive', 'gateSession', 'countSeats', 'createUser', 'findUserByEntry', 'rotateEntry', 'setUserDisabled', 'userStats'];
+const SIGNUP_RPC = 'rpc/mdshare_signup_user';
+const QUOTA_RPC = 'rpc/mdshare_reserve_doc';
+const ACCOUNT_PATHS = [USERS, STATS_RPC, SIGNUP_RPC, QUOTA_RPC];
+export const ACCOUNTS = ['userActive', 'gateSession', 'createUser', 'reserveDoc', 'findUserByEntry', 'rotateEntry', 'setUserDisabled', 'userStats'];
 
 // A request refused for a reason the caller should see (a quota, a disabled account, owner-only):
 // withErrors() (api/_lib/events.js) answers it with `status` and `message`, never a 500.
@@ -286,10 +289,20 @@ async function enforceQuota(owner, row, { daily }) {
     return rowsOf(res);
   }));
   const times = lists.flat().map((x) => Date.parse(x.created_at)).filter(Number.isFinite).sort((a, b) => a - b);
-  if (times.length < max) return;
-  // The count drops below the limit when the (count - max + 1)-th oldest document leaves the window.
-  const retryAfter = Math.max(1, Math.ceil(((times[times.length - max] ?? Date.now()) + DAY_MS - Date.now()) / 1000));
-  throw new Refused(429, `Daily limit reached: at most ${max} documents in 24 hours during the beta. Retry in ${Math.ceil(retryAfter / 60)} min.`, { retryAfter });
+  if (times.length >= max) {
+    // The count drops below the limit when the (count - max + 1)-th oldest document leaves the window.
+    const retryAfter = Math.max(1, Math.ceil(((times[times.length - max] ?? Date.now()) + DAY_MS - Date.now()) / 1000));
+    throw new Refused(429, `Daily limit reached: at most ${max} documents in 24 hours during the beta. Retry in ${Math.ceil(retryAfter / 60)} min.`, { retryAfter });
+  }
+  // The count above is check-then-act: concurrent creates all pass it (ADV-MU-B 3). The hard limit is
+  // this atomic reservation (one row per user and UTC day, incremented only while below max).
+  const n = await reserveDoc(owner.uid, max);
+  if (n === null) {
+    const midnight = new Date();
+    midnight.setUTCHours(24, 0, 0, 0);
+    const retryAfter = Math.max(1, Math.ceil((midnight.getTime() - Date.now()) / 1000));
+    throw new Refused(429, `Daily limit reached: at most ${max} documents per day (UTC) during the beta. Retry in ${Math.ceil(retryAfter / 60)} min.`, { retryAfter });
+  }
 }
 
 // ---------- Unscoped by nature (UNSCOPED) ----------
@@ -409,22 +422,32 @@ export function maxUsers() {
   return Number.isSafeInteger(n) && n >= 0 ? n : DEFAULT_MAX_USERS;
 }
 
-// Seats taken: users other than #1 (disabled ones too), counted up to `upTo`.
-export async function countSeats(upTo) {
-  const r = await request(USERS, `id=neq.${encodeURIComponent(SITE_OWNER_UID)}&select=id&limit=${Math.max(1, Number(upTo) || 1)}`);
-  if (!r.ok) throw new Error(`seat count failed: ${r.status}`);
-  return (await rowsOf(r)).length;
+// Sign-up: a new user with this entry hash, only while fewer than `max` users besides #1 exist
+// (disabled ones count). mdshare_signup_user (016) takes an advisory lock, counts and inserts in one
+// transaction, so concurrent sign-ups can't overshoot the cap (ADV-MU-B 2). Label, quotas and
+// disabled come only from here and the column defaults. Returns the new user's principal (it may
+// mint the user's first token), or null when the beta is full.
+export async function createUser({ label, entryHash, max }) {
+  assertEntryHash(entryHash);
+  if (!Number.isSafeInteger(max) || max < 0) throw new Error('createUser: max must be the seat cap (maxUsers())');
+  const r = await request(SIGNUP_RPC, '', jsonInit('POST', { p_label: typeof label === 'string' ? label : null, p_entry_hash: entryHash, p_max: max }));
+  if (!r.ok) throw new Error(`creating a user failed: ${r.status}`);
+  const id = await r.json().catch(() => undefined);
+  if (id === null) return null;
+  if (!isUid(id) || id === SITE_OWNER_UID) throw new Error('createUser: no new user id');
+  return principal(id, 'signup');
 }
 
-// Sign-up: a new user with this entry hash; label, quotas and disabled come only from here and the
-// column defaults. Returns the new user's principal (it may mint the user's first token).
-export async function createUser({ label, entryHash }) {
-  assertEntryHash(entryHash);
-  const r = await request(USERS, 'select=id', jsonInit('POST', { label: typeof label === 'string' ? label : null, entry_hash: entryHash }));
-  if (!r.ok) throw new Error(`creating a user failed: ${r.status}`);
-  const [row] = await rowsOf(r);
-  if (!row || !isUid(row.id) || row.id === SITE_OWNER_UID) throw new Error('createUser: no new user id');
-  return principal(row.id, 'signup');
+// The daily-count reservation for user `uid` (never user #1, G2): the user's count for today (UTC)
+// after this create, or null when `max` was already reached. A database error refuses (503).
+export async function reserveDoc(uid, max) {
+  if (!isUid(uid) || uid === SITE_OWNER_UID) throw new Error('reserveDoc: only for users other than #1');
+  const r = await request(QUOTA_RPC, '', jsonInit('POST', { p_owner: uid, p_max: max })).catch(() => null);
+  if (!r || !r.ok) throw new Refused(503, 'Temporarily unavailable');
+  const n = await r.json().catch(() => undefined);
+  if (n === null) return null;
+  if (!Number.isSafeInteger(n)) throw new Refused(503, 'Temporarily unavailable');
+  return n;
 }
 
 // Entry link sign-in: the id of the user whose entry_hash is `hash` (compared in constant time), or

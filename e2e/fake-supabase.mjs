@@ -19,6 +19,12 @@
 //   GET    ...&or=(id.in.(a,b),root_id.in.(a,b),translation_of.eq.x)  &collection=not.is.null  (migration 012)
 //   mdshare_users (migrations 013/014): GET/PATCH by id or entry_hash, POST with a generated id
 //            (identity starting at 2; user #1 is seeded on every reset), POST rpc/mdshare_user_stats
+//   POST   /rest/v1/rpc/mdshare_signup_user {p_label, p_entry_hash, p_max}  (migration 016: count users
+//            with id > 1 and insert in one step -> the new id, or null when full)
+//   POST   /rest/v1/rpc/mdshare_reserve_doc {p_owner, p_max}  (migration 016: mdshare_quota_usage
+//            (owner_id, day) n + 1 while n < p_max -> n, or null when full)
+// Each rpc reads its body and then runs synchronously, so like the SQL (an advisory lock / one
+// INSERT ... ON CONFLICT statement) concurrent calls can't interleave between the check and the write.
 //
 // Anything that doesn't match one of the above shapes gets a 501 naming the unmatched
 // method+path+query, so a harness gap is loud (visible in report.json / terminal) instead of a
@@ -227,6 +233,8 @@ export async function startFakeSupabase({ port = 0 } = {}) {
   /** @type {Record<string, any[]>} */
   const tables = Object.fromEntries(KNOWN_TABLES.map((t) => [t, []]));
   tables.mdshare_users.push(OWNER_USER());
+  // Migration 016; reached only through rpc/mdshare_reserve_doc, never as a REST table.
+  tables.mdshare_quota_usage = [];
 
   function handleGet(table, searchParams, res) {
     const filterFn = buildFilterFn(searchParams);
@@ -342,6 +350,35 @@ export async function startFakeSupabase({ port = 0 } = {}) {
   }
 
   async function handleRpc(name, req, res) {
+    if (name === 'mdshare_signup_user' || name === 'mdshare_reserve_doc') {
+      let args;
+      try { args = JSON.parse((await readBody(req)) || '{}'); } catch { throw new UnsupportedQueryError('rpc body was not valid JSON'); }
+      // From here to the response: no await, so this is atomic like the SQL.
+      let out = null;
+      if (name === 'mdshare_signup_user') {
+        const taken = tables.mdshare_users.filter((u) => u.id > 1).length;
+        if (Number.isInteger(args.p_max) && taken < args.p_max) {
+          if (args.p_entry_hash != null && tables.mdshare_users.some((u) => u.entry_hash === args.p_entry_hash)) {
+            res.writeHead(409, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ code: '23505', message: 'duplicate key value violates unique constraint "mdshare_users_entry_hash_key"' }));
+            return;
+          }
+          const row = { ...TABLE_DEFAULTS.mdshare_users(), id: Math.max(1, ...tables.mdshare_users.map((u) => u.id)) + 1, label: args.p_label ?? null, entry_hash: args.p_entry_hash ?? null };
+          tables.mdshare_users.push(row);
+          out = row.id;
+        }
+      } else {
+        const day = new Date().toISOString().slice(0, 10);
+        if (Number.isInteger(args.p_max) && args.p_max > 0 && Number.isInteger(args.p_owner)) {
+          let q = tables.mdshare_quota_usage.find((r) => r.owner_id === args.p_owner && r.day === day);
+          if (!q) { q = { owner_id: args.p_owner, day, n: 1 }; tables.mdshare_quota_usage.push(q); out = 1; }
+          else if (q.n < args.p_max) { q.n += 1; out = q.n; }
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out));
+      return;
+    }
     if (name === 'mdshare_user_stats') {
       await readBody(req);
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -429,6 +466,7 @@ export async function startFakeSupabase({ port = 0 } = {}) {
     reset() {
       for (const t of KNOWN_TABLES) tables[t] = [];
       tables.mdshare_users.push(OWNER_USER());
+      tables.mdshare_quota_usage = [];
     },
     seed(table, row) {
       const defaults = TABLE_DEFAULTS[table] ? TABLE_DEFAULTS[table]() : {};

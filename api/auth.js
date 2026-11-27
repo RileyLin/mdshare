@@ -22,7 +22,7 @@ import {
   COOKIE_NAME, OWNER_UID, computeToken, safeHexEqual, freshSessionCookie, checkAuthAndRefresh,
 } from './_lib/session.js';
 import { createToken, listTokens, revokeToken, resolveAgentToken, hasScope, sha256Hex, ALLOWED_SCOPES } from './_lib/agent-tokens.js';
-import { sessionOwner, ownerOf, isAdmin, maxUsers, countSeats, createUser, findUserByEntry, rotateEntry, setUserDisabled } from './_lib/tenant.js';
+import { sessionOwner, ownerOf, isAdmin, maxUsers, createUser, findUserByEntry, rotateEntry, setUserDisabled } from './_lib/tenant.js';
 import { parseJsonBody } from './_lib/body.js';
 import { withErrors } from './_lib/events.js';
 import { rateLimiter, clientIp } from './_lib/rate-limit.js';
@@ -97,10 +97,11 @@ async function signup(req, res, body) {
   if (!rate.allowed) return tooMany(res, rate, `sign-ups (at most ${SIGNUP_LIMIT.limit} an hour)`);
   const label = cleanLabel(body.label);
   if (label === undefined) return res.status(400).json({ error: 'label must be a string of at most 100 characters' });
+  // The seat check and the insert are one atomic SQL call (createUser -> mdshare_signup_user).
   const cap = maxUsers();
-  if ((await countSeats(cap + 1)) >= cap) return res.status(403).json({ error: 'beta full' });
   const secret = newEntrySecret();
-  const me = await createUser({ label, entryHash: entryHash(secret) });
+  const me = await createUser({ label, entryHash: entryHash(secret), max: cap });
+  if (!me) return res.status(403).json({ error: 'beta full' });
   const name = (label ? `mdshare skill (${label})` : 'mdshare skill').slice(0, 100);
   const created = await createToken(me, { name, expiresInDays: 365, scopes: SIGNUP_SCOPES });
   // token and entry_url: returned exactly once, here; never logged or stored in plain text.

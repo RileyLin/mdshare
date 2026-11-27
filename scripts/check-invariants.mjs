@@ -570,15 +570,15 @@ const checks = [
       if (listed.join() !== UNSCOPED.join()) errs.push(`${T}: UNSCOPED must be exactly [${UNSCOPED.join(', ')}] (got [${listed.join(', ')}]). A new unscoped read is a cross-user leak until proven otherwise: scope it with ownerFilter(me) instead.`);
       if ((src.match(/\bfetch\(/g) || []).length !== 1 || !/function request\(table, query, init = \{\}\) \{\n\s*if \(!USER_TABLES\.includes\(table\) && !ACCOUNT_PATHS\.includes\(table\)\) throw/.test(src)) errs.push(`${T}: exactly one fetch(), inside request(table, query, init), which throws for a table outside USER_TABLES and ACCOUNT_PATHS.`);
       // Accounts (P3): the users table and the stats rpc, only in the Accounts section, which touches nothing else.
-      if (!/const USERS = 'mdshare_users';\nconst STATS_RPC = 'rpc\/mdshare_user_stats';\nconst ACCOUNT_PATHS = \[USERS, STATS_RPC\];/.test(src)) errs.push(`${T}: keep \`const USERS = 'mdshare_users'; const STATS_RPC = 'rpc/mdshare_user_stats'; const ACCOUNT_PATHS = [USERS, STATS_RPC];\`.`);
-      const ACCOUNTS = ['userActive', 'gateSession', 'countSeats', 'createUser', 'findUserByEntry', 'rotateEntry', 'setUserDisabled', 'userStats'];
+      if (!/const USERS = 'mdshare_users';\nconst STATS_RPC = 'rpc\/mdshare_user_stats';\nconst SIGNUP_RPC = 'rpc\/mdshare_signup_user';\nconst QUOTA_RPC = 'rpc\/mdshare_reserve_doc';\nconst ACCOUNT_PATHS = \[USERS, STATS_RPC, SIGNUP_RPC, QUOTA_RPC\];/.test(src)) errs.push(`${T}: keep \`const USERS = 'mdshare_users'; const STATS_RPC = 'rpc/mdshare_user_stats'; const SIGNUP_RPC = 'rpc/mdshare_signup_user'; const QUOTA_RPC = 'rpc/mdshare_reserve_doc'; const ACCOUNT_PATHS = [USERS, STATS_RPC, SIGNUP_RPC, QUOTA_RPC];\`.`);
+      const ACCOUNTS = ['userActive', 'gateSession', 'createUser', 'reserveDoc', 'findUserByEntry', 'rotateEntry', 'setUserDisabled', 'userStats'];
       const accList = ((/export const ACCOUNTS = \[([^\]]*)\];/.exec(src) || [])[1] || '').match(/'[^']+'/g)?.map((x) => x.slice(1, -1)) || [];
       if (accList.join() !== ACCOUNTS.join()) errs.push(`${T}: ACCOUNTS must be exactly [${ACCOUNTS.join(', ')}] (got [${accList.join(', ')}]).`);
       const accAt = src.indexOf('\n// ---------- Accounts (');
       const accounts = accAt < 0 ? '' : src.slice(accAt);
       if (accAt < 0) errs.push(`${T}: keep the users-table code in a final "// ---------- Accounts (...) ----------" section.`);
-      for (const m of accounts.matchAll(/\brequest\((\w+)/g)) if (!['USERS', 'STATS_RPC'].includes(m[1])) errs.push(`${T}: the Accounts section queries only USERS / STATS_RPC (found request(${m[1]}, ...)); user tables go through the scoped helpers above.`);
-      for (const m of src.slice(0, accAt < 0 ? src.length : accAt).matchAll(/\brequest\((USERS|STATS_RPC)\b/g)) errs.push(`${T}: request(${m[1]}, ...) outside the Accounts section; add an ACCOUNTS function instead.`);
+      for (const m of accounts.matchAll(/\brequest\((\w+)/g)) if (!['USERS', 'STATS_RPC', 'SIGNUP_RPC', 'QUOTA_RPC'].includes(m[1])) errs.push(`${T}: the Accounts section queries only USERS / STATS_RPC / SIGNUP_RPC / QUOTA_RPC (found request(${m[1]}, ...)); user tables go through the scoped helpers above.`);
+      for (const m of src.slice(0, accAt < 0 ? src.length : accAt).matchAll(/\brequest\((USERS|STATS_RPC|SIGNUP_RPC|QUOTA_RPC)\b/g)) errs.push(`${T}: request(${m[1]}, ...) outside the Accounts section; add an ACCOUNTS function instead.`);
       for (const m of accounts.matchAll(/\nexport (?:async )?function (\w+)\(/g)) if (!ACCOUNTS.includes(m[1]) && m[1] !== 'isAdmin' && m[1] !== 'maxUsers') errs.push(`${T}: ${m[1]}() is exported from the Accounts section but not listed in ACCOUNTS.`);
       if (/export (async )?function request\b/.test(src)) errs.push(`${T}: request() stays private; export scoped helpers instead.`);
       if (!/function ownerFilter\(me\) \{\n\s*return `owner_id=eq\.\$\{encodeURIComponent\(uidOf\(me\)\)\}`;\n\}/.test(src)) errs.push(`${T}: ownerFilter(me) returns \`owner_id=eq.\${encodeURIComponent(uidOf(me))}\`.`);
@@ -636,8 +636,8 @@ const checks = [
         if (!/if \(!PRINCIPALS\.has\(owner\) \|\| !isUid\(owner\.uid\)\) throw/.test(ins)) errs.push(`${T}: insertOwned() accepts only a principal minted by tenant.js (PRINCIPALS) as the owner.`);
         if (!/body: JSON\.stringify\(\{ \.\.\.row, owner_id: uid \}\)/.test(ins)) errs.push(`${T}: insertOwned() writes \`{ ...row, owner_id: uid }\` (the principal's uid last, so nothing in row overrides it).`);
       }
-      if ((src.match(/method: 'POST'/g) || []).length !== 1) errs.push(`${T}: insertOwned() is the only POST (insert) in this file; the Accounts section POSTs only with request(USERS|STATS_RPC, ..., jsonInit('POST', ...)).`);
-      src.split('\n').forEach((l, i) => { if (/jsonInit\('POST'/.test(l) && !/request\((USERS|STATS_RPC), /.test(l)) errs.push(`${T}:${i + 1}: jsonInit('POST', ...) only for request(USERS|STATS_RPC, ...) ("${l.trim()}").`); });
+      if ((src.match(/method: 'POST'/g) || []).length !== 1) errs.push(`${T}: insertOwned() is the only POST (insert) in this file; the Accounts section POSTs only with request(USERS|STATS_RPC|SIGNUP_RPC|QUOTA_RPC, ..., jsonInit('POST', ...)).`);
+      src.split('\n').forEach((l, i) => { if (/jsonInit\('POST'/.test(l) && !/request\((USERS|STATS_RPC|SIGNUP_RPC|QUOTA_RPC), /.test(l)) errs.push(`${T}:${i + 1}: jsonInit('POST', ...) only for request(USERS|STATS_RPC|SIGNUP_RPC|QUOTA_RPC, ...) ("${l.trim()}").`); });
       if (!/function assertNoOwner|const assertNoOwner = /.test(src) || !/assertNoOwner\(patch, 'patchOwned'\);/.test(src)) errs.push(`${T}: patchOwned() refuses a patch that sets owner_id (assertNoOwner(patch, 'patchOwned')).`);
       // Creates: the owner is creatorOf(req, res, agentAuth) (the token's user, the cookie's, or the site owner for anonymous).
       for (const f of CREATE_ROUTES) {
@@ -696,17 +696,23 @@ const checks = [
       else {
         const at = (re) => fn.search(re);
         const rate = at(/const rate = SIGNUP_LIMIT\.check\(clientIp\(req\)\);\n\s*if \(!rate\.allowed\) return tooMany\(res, rate, /);
-        const cap = at(/const cap = maxUsers\(\);\n\s*if \(\(await countSeats\(cap \+ 1\)\) >= cap\) return res\.status\(403\)\.json\(\{ error: 'beta full' \}\);/);
-        const create = at(/await createUser\(/);
+        const cap = at(/const cap = maxUsers\(\);\n/);
+        const create = at(/const me = await createUser\(\{ label, entryHash: entryHash\(secret\), max: cap \}\);\n\s*if \(!me\) return res\.status\(403\)\.json\(\{ error: 'beta full' \}\);/);
         if (rate < 0) errs.push('api/auth.js signup(): start with `const rate = SIGNUP_LIMIT.check(clientIp(req)); if (!rate.allowed) return tooMany(res, rate, ...)`.');
-        if (cap < 0) errs.push("api/auth.js signup(): check the seats with `const cap = maxUsers(); if ((await countSeats(cap + 1)) >= cap) return res.status(403).json({ error: 'beta full' });`.");
-        if (create < 0 || create < rate || create < cap) errs.push('api/auth.js signup(): createUser() only after the rate limit and the seat check.');
+        if (cap < 0) errs.push('api/auth.js signup(): read the seat cap with `const cap = maxUsers();`.');
+        if (create < 0) errs.push("api/auth.js signup(): create with `const me = await createUser({ label, entryHash: entryHash(secret), max: cap }); if (!me) return res.status(403).json({ error: 'beta full' });` (the seat check and the insert are one atomic SQL call).");
+        if (create < rate || create < cap) errs.push('api/auth.js signup(): createUser() only after the rate limit and maxUsers().');
         if (!/await createToken\(me, \{[^}\n]*scopes: SIGNUP_SCOPES \}\)/.test(fn)) errs.push('api/auth.js signup(): the new token gets scopes: SIGNUP_SCOPES.');
         if (!/res\.status\(201\)\.json\(\{ user_id: me\.uid, token: created\.token, entry_url: entryUrl\(req, secret\), guide: guideUrl\(req\) \}\)/.test(fn)) errs.push('api/auth.js signup(): answer 201 { user_id: me.uid, token: created.token, entry_url: entryUrl(req, secret), guide: guideUrl(req) } (PLAN.md API contract).');
       }
       const t = read('api/_lib/tenant.js');
       if (!/export const DEFAULT_MAX_USERS = 50;/.test(t) || !/export function maxUsers\(\) \{\n\s*const n = Number\.parseInt\(process\.env\.MDSHARE_MAX_USERS \?\? '', 10\);/.test(t)) errs.push('api/_lib/tenant.js: maxUsers() reads MDSHARE_MAX_USERS, default DEFAULT_MAX_USERS = 50.');
-      if (!/request\(USERS, `id=neq\.\$\{encodeURIComponent\(SITE_OWNER_UID\)\}&select=id&limit=/.test(t)) errs.push('api/_lib/tenant.js: countSeats() counts users other than #1 (id=neq.SITE_OWNER_UID).');
+      const cu = (/export async function createUser\(\{ label, entryHash, max \}\) \{\n([\s\S]*?)\n\}/.exec(t) || [])[1] || '';
+      if (!/request\(SIGNUP_RPC, '', jsonInit\('POST', \{ p_label: [^\n]*p_entry_hash: entryHash, p_max: max \}\)\)/.test(cu) || !/if \(id === null\) return null;/.test(cu)) errs.push('api/_lib/tenant.js: createUser({ label, entryHash, max }) inserts only through rpc/mdshare_signup_user with p_max: max, and answers null (beta full) when it returns null.');
+      if (/request\(USERS, [^\n]*jsonInit\('POST'/.test(t)) errs.push('api/_lib/tenant.js: no direct POST to mdshare_users; a check-then-insert can overshoot the seat cap (ADV-MU-B 2). Use rpc/mdshare_signup_user.');
+      const mig = walk('migrations', (p) => p.endsWith('.sql')).map(read).join('\n');
+      const fnSql = (/CREATE FUNCTION public\.mdshare_signup_user\(p_label text, p_entry_hash text, p_max integer\)([\s\S]*?)\$body\$\n\s*\$fn\$/.exec(mig) || [])[1] || '';
+      if (!/PERFORM pg_advisory_xact_lock\(/.test(fnSql) || !/SELECT count\(\*\) INTO taken FROM mdshare_users WHERE id > 1;/.test(fnSql) || !/IF p_max IS NULL OR taken >= p_max THEN\n\s*RETURN NULL;/.test(fnSql) || /SECURITY DEFINER/i.test(fnSql)) errs.push('migrations: mdshare_signup_user (016) takes pg_advisory_xact_lock, counts users with id > 1, returns NULL when taken >= p_max, and is not SECURITY DEFINER.');
       for (const f of apiFiles()) {
         if (f === 'api/auth.js' || f === 'api/_lib/tenant.js') continue;
         lines(f).forEach((l, i) => { if (!isCommentLine(l) && /\bcreateUser\(/.test(l)) errs.push(`${f}:${i + 1}: users are created only by signup() in api/auth.js.`); });
@@ -724,7 +730,7 @@ const checks = [
       if (!/const newEntrySecret = \(\) => randomBytes\(32\)\.toString\('base64url'\);/.test(src)) errs.push("api/auth.js: the secret is `randomBytes(32).toString('base64url')` (newEntrySecret).");
       if (!/export const entryHash = \(secret\) => sha256Hex\(`mdshare-entry-v1:\$\{secret\}`\);/.test(src)) errs.push('api/auth.js: keep `export const entryHash = (secret) => sha256Hex(`mdshare-entry-v1:${secret}`);`.');
       if (!/const entryUrl = \(req, secret\) => `\$\{siteOrigin\(req\)\}\/enter#\$\{secret\}`;/.test(src)) errs.push('api/auth.js: entryUrl(req, secret) is `${siteOrigin(req)}/enter#${secret}`: canonical origin, secret in the fragment only.');
-      const OK_CALL = /createUser\(\{ label, entryHash: entryHash\(secret\) \}\)|rotateEntry\(me, entryHash\(secret\)\)|findUserByEntry\(entryHash\(secret\)\)/;
+      const OK_CALL = /createUser\(\{ label, entryHash: entryHash\(secret\), max: cap \}\)|rotateEntry\(me, entryHash\(secret\)\)|findUserByEntry\(entryHash\(secret\)\)/;
       for (const f of apiFiles()) {
         lines(f).forEach((l, i) => {
           if (isCommentLine(l) || /^import /.test(l)) return;
