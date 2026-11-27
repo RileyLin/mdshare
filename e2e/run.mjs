@@ -714,6 +714,359 @@ async function runReadingSettings(ctx, ok) {
   });
 }
 
+// ===== Reading chrome (front-end batch 1, 2026-11-27): Paper theme, line spacing, motion, resume,
+// Settings → Reading. Preferences are localStorage keys on this device (public/assets/app.js). =====
+
+// These features seed from their own client address so they don't use up the suite's shared
+// create budget (api/share.js allows 50 creates per hour per IP; tests/health.test.mjs isolates
+// rate-limit buckets the same way).
+async function seedChrome(ctx, markdown) {
+  const r = await fetch(`${ctx.serverUrl}/api/share`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-forwarded-for': '10.20.11.27' }, body: JSON.stringify({ markdown }) });
+  if (!r.ok) throw new Error(`seedChrome failed: ${r.status} ${await r.text()}`);
+  return r.json();
+}
+const ZH_P = '读长文的时候，人常常会被打断：一条消息、一个电话，或者只是到站该下车了。再打开时，最省事的是直接回到刚才那一节，而不是从头翻找。';
+const EN_P = 'Long reads get interrupted: a message, a call, or simply your stop on the train. When you come back, the easiest thing is to land on the section you were in instead of scrolling to find it again.';
+function longDoc(zh, extra = '', tail = '') {
+  const p = zh ? ZH_P : EN_P;
+  const secs = Array.from({ length: 10 }, (_, i) => `## ${zh ? `第${i + 1}节` : `Section ${i + 1}`}\n\n${[p, p, p, p].join('\n\n')}`);
+  return `# ${zh ? '长文阅读测试' : 'A long read'}\n\n${p}\n\n${extra}${secs.join('\n\n')}\n\n${tail}`;
+}
+const lineRatio = (page, sel) => page.evaluate((s) => { const cs = getComputedStyle(document.querySelector(s)); return Math.round(parseFloat(cs.lineHeight) / parseFloat(cs.fontSize) * 100) / 100; }, sel);
+const htmlState = (page) => page.evaluate(() => { const h = document.documentElement; return { theme: h.getAttribute('data-theme'), leading: h.getAttribute('data-leading'), font: h.getAttribute('data-font'), width: h.getAttribute('data-width'), motion: h.getAttribute('data-motion'), motionOk: h.classList.contains('motion-ok'), zoom: h.style.getPropertyValue('--zoom') }; });
+// WCAG contrast of the theme's text colours on the surfaces they're used on, computed in the page
+// from the live CSS variables (a canvas parses any CSS colour), plus the rendered body text.
+const themeContrast = (page) => page.evaluate(() => {
+  const cs = getComputedStyle(document.documentElement), v = (n) => cs.getPropertyValue('--' + n).trim();
+  const g = document.createElement('canvas').getContext('2d');
+  const lum = (c) => { g.clearRect(0, 0, 1, 1); g.fillStyle = '#000'; g.fillStyle = c; g.fillRect(0, 0, 1, 1); const d = g.getImageData(0, 0, 1, 1).data; const f = (u) => { u /= 255; return u <= 0.04045 ? u / 12.92 : ((u + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(d[0]) + 0.7152 * f(d[1]) + 0.0722 * f(d[2]); };
+  const ratio = (a, b) => { const x = lum(a), y = lum(b); return Math.round((Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05) * 100) / 100; };
+  const pairs = [['ink', 'paper'], ['ink', 'card'], ['ink-2', 'paper'], ['ink-2', 'card'], ['ink-3', 'paper'], ['ink-3', 'card'], ['ink-3', 'card-2'], ['ink-3', 'paper-2'], ['accent-ink', 'paper'], ['accent-ink', 'card'], ['accent-ink', 'accent-soft'], ['accent', 'card'], ['ok', 'ok-soft'], ['warn', 'warn-soft'], ['bad', 'bad-soft'], ['info', 'info-soft'], ['paper', 'ink'], ['code-ink', 'code-bg']];
+  const all = pairs.map(([f, b]) => ({ pair: `--${f} on --${b}`, r: ratio(v(f), v(b)) }));
+  const p = document.querySelector('#content > p');
+  return { worst: all.reduce((a, b) => (b.r < a.r ? b : a)), body: p ? ratio(getComputedStyle(p).color, getComputedStyle(document.body).backgroundColor) : null, bg: getComputedStyle(document.body).backgroundColor, scheme: cs.colorScheme.trim() };
+});
+
+async function runReaderPrefs(ctx, ok) {
+  const zh = await seedChrome(ctx, fixture('zh-explainer.md'));
+  const en = await seedChrome(ctx, fixture('en-report.md'));
+  const wide = await seedChrome(ctx, fixture('wide-tables.md'));
+  const dg = await seedChrome(ctx, '# Diagram on paper\n\nA two-step flow.\n\n```mermaid\nflowchart TD\n  A[Write] --> B[Share]\n```\n');
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${zh.id}`);
+    await waitRendered(page);
+    const d = await page.evaluate(() => ({ pressed: ['theme-seg', 'leading-seg', 'width-seg', 'font-seg', 'tables-seg'].map((id) => document.querySelector(`#${id} [aria-pressed="true"]`)?.getAttribute('data-v')), motion: document.getElementById('motion-toggle').checked, gloss: document.getElementById('gloss-toggle').checked }));
+    const h0 = await htmlState(page);
+    ok(h0.theme === 'light' && h0.leading === null && h0.motionOk && JSON.stringify(d.pressed) === '["system","comfortable","standard","sans","auto"]' && d.motion && !d.gloss, `defaults are unchanged: System, Comfortable, Standard, Sans, Auto, hints off; motion on (${JSON.stringify({ ...d, ...h0 })})`);
+    ok((await lineRatio(page, '#content > p')) === 1.85, 'Comfortable is the original line height (1.85)');
+    const light = await themeContrast(page);
+    ok(light.worst.r >= 4.5 && light.body >= 4.5, `Light: every text colour passes WCAG AA (worst ${light.worst.pair} ${light.worst.r}:1, body text ${light.body}:1)`);
+    await page.click('#btn-aa');
+    await page.click('#theme-seg [data-v="paper"]');
+    await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'paper', null, { timeout: 3000 });
+    const paper = await themeContrast(page);
+    ok(paper.bg === 'rgb(244, 236, 219)' && paper.scheme === 'light', `Paper: a warm sepia page in the light colour scheme (${paper.bg}, ${paper.scheme})`);
+    ok(paper.worst.r >= 4.5 && paper.body >= 4.5, `Paper: every text colour passes WCAG AA (worst ${paper.worst.pair} ${paper.worst.r}:1, body text ${paper.body}:1)`);
+    ok((await page.getAttribute('meta[name="theme-color"]', 'content')) === '#f4ecdb', 'the browser toolbar colour follows Paper');
+    await page.click('#theme-seg [data-v="dark"]');
+    await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'dark', null, { timeout: 3000 });
+    const dark = await themeContrast(page);
+    ok(dark.worst.r >= 4.5 && dark.body >= 4.5, `Dark: every text colour passes WCAG AA (worst ${dark.worst.pair} ${dark.worst.r}:1, body text ${dark.body}:1)`);
+    await page.click('#leading-seg [data-v="loose"]');
+    const zhLoose = await lineRatio(page, '#content > p');
+    await page.click('#leading-seg [data-v="compact"]');
+    const zhCompact = await lineRatio(page, '#content > p');
+    ok(zhLoose === 2.1 && zhCompact === 1.7 && (await page.getAttribute('html', 'data-leading')) === 'compact', `Line spacing on a Chinese document: Loose 2.1, Compact 1.7 (got ${zhLoose}, ${zhCompact})`);
+    await page.click('#leading-seg [data-v="loose"]');
+    await page.click('#theme-seg [data-v="paper"]');
+    await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'paper', null, { timeout: 3000 });
+    await page.keyboard.press('Escape');
+    await page.screenshot({ path: ctx.proofPath });
+
+    // The choice follows you: other documents, the guide, the home page, Library and Settings.
+    const other = await context.newPage();
+    await gotoResilient(other, `${ctx.serverUrl}/v/${en.id}`, { waitUntil: 'domcontentloaded' });
+    const early = await htmlState(other);
+    await waitRendered(other);
+    const enLoose = await lineRatio(other, '#content > p');
+    ok(early.theme === 'paper' && early.leading === 'loose', `another document opens in Paper with Loose spacing before it renders (${JSON.stringify(early)})`);
+    ok(enLoose === 2 && enLoose < zhLoose, `Latin text gets a little less leading than Chinese at the same setting (${enLoose} vs ${zhLoose})`);
+    for (const url of ['/guide', '/', '/dashboard', '/settings']) {
+      await gotoResilient(other, `${ctx.serverUrl}${url}`, { waitUntil: 'domcontentloaded' });
+      const s = await htmlState(other);
+      ok(s.theme === 'paper' && s.leading === 'loose', `${url} uses the same preferences (${s.theme}/${s.leading})`);
+    }
+    await other.waitForSelector('#reading #theme-seg [data-v="paper"][aria-pressed="true"]', { timeout: 3000 });
+    ok(await other.isVisible('#reading #leading-seg [data-v="loose"][aria-pressed="true"]'), 'Settings → Reading shows the choices made in the Aa menu');
+
+    // Mermaid treats Paper as a light theme.
+    await gotoResilient(other, `${ctx.serverUrl}/v/${dg.id}`, { waitUntil: 'load' });
+    await other.waitForSelector('#content .mermaid.mermaid-drawn svg', { timeout: 15000 });
+    const node = await other.evaluate(() => {
+      const r = document.querySelector('#content .mermaid svg .node rect, #content .mermaid svg .node polygon, #content .mermaid svg .node path');
+      const g = document.createElement('canvas').getContext('2d'); g.fillStyle = '#000'; g.fillStyle = r ? getComputedStyle(r).fill : '#000'; g.fillRect(0, 0, 1, 1);
+      const d = g.getImageData(0, 0, 1, 1).data; return { fill: r ? getComputedStyle(r).fill : null, lum: (0.2126 * d[0] + 0.7152 * d[1] + 0.0722 * d[2]) / 255 };
+    });
+    ok(node.fill && node.lum > 0.6, `a Mermaid diagram on Paper is drawn with the light palette (node fill ${node.fill})`);
+  }, { viewport: { width: 1280, height: 900 } });
+
+  // Phones: a smaller title, so the first screen shows the document; the Aa sheet fits.
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${zh.id}`);
+    await waitRendered(page);
+    const r = await page.evaluate(() => { const h1 = document.querySelector('#content h1'), cs = getComputedStyle(h1); return { size: parseFloat(cs.fontSize), lh: Math.round(parseFloat(cs.lineHeight) / parseFloat(cs.fontSize) * 100) / 100, summary: Math.round(document.querySelector('#content .md-summary').getBoundingClientRect().top) }; });
+    ok(r.size >= 22 && r.size <= 34 && r.lh <= 1.3, `the title is phone-sized with tighter leading (${r.size}px, ${r.lh})`);
+    ok(r.summary < 844 / 2, `the summary card starts in the top half of the first screen (${r.summary}px)`);
+    const enPage = await context.newPage();
+    await gotoResilient(enPage, `${ctx.serverUrl}/v/${en.id}`, { waitUntil: 'load' });
+    await waitRendered(enPage);
+    const enSize = await enPage.evaluate(() => parseFloat(getComputedStyle(document.querySelector('#content h1')).fontSize));
+    ok(enSize >= 22 && enSize <= 34, `an English title is phone-sized too (${enSize}px, was 44px)`);
+    await page.bringToFront();
+    await page.click('#btn-aa');
+    await page.waitForTimeout(250);
+    const sheet = await page.evaluate(() => { const b = document.getElementById('aa-pop').getBoundingClientRect(); return { l: b.left, r: b.right, overflow: document.documentElement.scrollWidth - innerWidth, segs: [...document.querySelectorAll('#aa-pop .seg')].every((s) => s.getBoundingClientRect().right <= b.right) }; });
+    ok(sheet.l >= 0 && sheet.r <= 390 && sheet.segs && sheet.overflow <= 0, `the Aa sheet with the new controls fits a 390px phone (${JSON.stringify(sheet)})`);
+  }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+
+  // Wide layout: tables use the room, running text keeps the standard measure.
+  await withContext(ctx, async (context) => {
+    await context.addInitScript(() => { if (location.protocol.startsWith('http')) localStorage.setItem('mdshare-width', 'wide'); });
+    const page = await openOwner(ctx, context, `/v/${wide.id}`);
+    await waitRendered(page);
+    await page.waitForTimeout(300);
+    const r = await page.evaluate(() => ({ p: Math.max(...[...document.querySelectorAll('#content > p')].map((p) => p.getBoundingClientRect().width)), col: document.getElementById('content').getBoundingClientRect().width, table: Math.max(...[...document.querySelectorAll('#content > .table-block')].map((b) => b.getBoundingClientRect().width)), overflow: document.documentElement.scrollWidth - innerWidth }));
+    ok(r.col > 900 && r.p <= 16.5 * 44 + 1 && r.table > r.p + 150 && r.overflow <= 0, `Wide: tables use the wide column (${Math.round(r.table)}px) while text keeps a readable measure (${Math.round(r.p)}px of ${Math.round(r.col)}px)`);
+  }, { viewport: { width: 1440, height: 900 } });
+}
+
+async function runReaderMotion(ctx, ok) {
+  const rows = ['North', 'South', 'East', 'West'].map((r, i) => `| ${r} | ${10 + i} | ${20 + i} | ${30 + i} | ${40 + i} |`).join('\n');
+  const tail = ['- one\n- two\n- three\n- four\n- five\n- six\n- seven\n- eight\n- nine\n- ten', ':::stats\n$2.5B | later\n1,234 | count\n2026 | year\nQ3 | quarter\n3–5 | range\n:::', ':::tabs\n### First tab\nAlpha\n### Second tab\nBeta\n:::', `| Region | Q1 | Q2 | Q3 | Q4 |\n| --- | --- | --- | --- | --- |\n${rows}`].join('\n\n');
+  const { id } = await seedChrome(ctx, longDoc(false, ':::stats\n$140.6M | revenue\n+1,252% | growth {up}\n:::\n\n', tail));
+  // Counts view transitions and records every text a number card shows.
+  const spy = () => {
+    window.__vt = 0; window.__counts = [];
+    const o = Document.prototype.startViewTransition;
+    if (o) Document.prototype.startViewTransition = function (cb) { window.__vt++; return o.call(this, cb); };
+    new MutationObserver((ms) => { for (const m of ms) { const t = m.target; if (t.nodeType === 1 && t.classList.contains('v') && t.closest('.md-stat')) window.__counts.push(t.textContent); } }).observe(document, { subtree: true, childList: true });
+  };
+  const statsText = (page, n) => page.evaluate((i) => [...document.querySelectorAll('#content .md-stats')[i].querySelectorAll('.v')].map((v) => v.textContent), n);
+  await withContext(ctx, async (context) => {
+    await context.addInitScript(spy);
+    const page = await openOwner(ctx, context, `/v/${id}`);
+    await waitRendered(page);
+    const s0 = await page.evaluate(() => {
+      const kids = [...document.getElementById('content').children], vh = innerHeight;
+      const marked = (k) => k.classList.contains('rv') || k.classList.contains('rv-group');
+      const onScreen = kids.filter((k) => { const r = k.getBoundingClientRect(); return r.bottom > 0 && r.top < vh; });
+      const later = kids.filter(marked), one = later.find((k) => k.classList.contains('rv'));
+      const list = document.querySelector('#content > ul');
+      return { motionOk: document.documentElement.classList.contains('motion-ok'), onScreen: onScreen.length, onScreenHidden: onScreen.filter((k) => marked(k) || getComputedStyle(k).opacity !== '1').length, later: later.length, opacity: one ? getComputedStyle(one).opacity : null, delays: list ? [...list.children].map((li) => li.style.getPropertyValue('--rv-d')) : null };
+    });
+    ok(s0.motionOk && s0.onScreen >= 3 && s0.onScreenHidden === 0, `motion is on by default and nothing on the first screen is hidden for a reveal (${s0.onScreen} blocks on screen)`);
+    ok(s0.later > 10 && s0.opacity === '0', `blocks below the screen wait to fade in (${s0.later} blocks, opacity ${s0.opacity})`);
+    ok(JSON.stringify(s0.delays) === JSON.stringify(['0ms', '35ms', '70ms', '105ms', '140ms', '175ms', '210ms', '245ms', '245ms', '245ms']), `list items fade in 35ms apart, at most 8 steps (${JSON.stringify(s0.delays)})`);
+    await page.waitForTimeout(900);
+    const top = { vals: await statsText(page, 0), seen: await page.evaluate(() => window.__counts.slice()) };
+    ok(JSON.stringify(top.vals) === '["$140.6M","+1,252%"]' && top.seen.includes('$0.0M') && top.seen.some((t) => /^\$\d+\.\dM$/.test(t) && t !== '$0.0M' && t !== '$140.6M'), `number cards on the first screen count up from 0 and end on their exact text (${top.seen.length} steps)`);
+    // Printing shows everything, even blocks that haven't been scrolled to.
+    await page.emulateMedia({ media: 'print' });
+    const pr = await page.evaluate(() => { const k = document.querySelector('#content > .rv'), g = document.querySelector('#content > .rv-group .rv-k'); return [k && getComputedStyle(k).opacity, g && getComputedStyle(g).opacity]; });
+    await page.emulateMedia({ media: 'screen' });
+    ok(JSON.stringify(pr) === '["1","1"]', `printing shows blocks that are still waiting to fade in (${JSON.stringify(pr)})`);
+    // Scrolling brings the rest in; an arrived block keeps no motion classes or styles.
+    await page.evaluate(() => document.querySelector('#content > ul').scrollIntoView({ block: 'center' }));
+    await page.waitForTimeout(700);
+    const s1 = await page.evaluate(() => { const ul = document.querySelector('#content > ul'); return { opacity: getComputedStyle(ul.lastElementChild).opacity, classes: (ul.className + [...ul.children].map((li) => li.className).join('')).trim(), styled: [...ul.children].some((li) => li.style.getPropertyValue('--rv-d')) }; });
+    ok(s1.opacity === '1' && !/rv/.test(s1.classes) && !s1.styled, `a list fades in as it arrives and is left exactly as rendered (${JSON.stringify(s1)})`);
+    await page.evaluate(() => document.querySelectorAll('#content .md-stats')[1].scrollIntoView({ block: 'center' }));
+    await page.waitForTimeout(1000);
+    const low = { vals: await statsText(page, 1), seen: await page.evaluate(() => window.__counts.slice()) };
+    ok(JSON.stringify(low.vals) === '["$2.5B","1,234","2026","Q3","3–5"]' && low.seen.includes('$0.0B') && low.seen.some((t) => /^\d{1,3}$/.test(t) && t !== '0'), `later number cards count when they arrive and end exactly (${JSON.stringify(low.vals)})`);
+    ok(!low.seen.some((t) => /^\d{4}$/.test(t) || /^Q\d$/.test(t) || /–/.test(t)), 'a year, a "Q3" label and a range never count');
+    // Tabs, Table/Cards and the theme cross-fade with a view transition.
+    await page.click('#content .md-tabbar button:nth-child(2)');
+    await page.waitForFunction(() => document.querySelector('#content .md-tabbar button:nth-child(2)').getAttribute('aria-selected') === 'true', null, { timeout: 3000 });
+    await page.click('#content .table-block button[data-view="cards"]');
+    await page.waitForFunction(() => document.querySelector('#content .table-block .table-wrap').dataset.view === 'cards', null, { timeout: 3000 });
+    await page.click('#btn-aa');
+    await page.click('#theme-seg [data-v="dark"]');
+    await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'dark', null, { timeout: 3000 });
+    const vt = await page.evaluate(() => ({ supported: typeof document.startViewTransition === 'function', n: window.__vt }));
+    ok(vt.supported && vt.n === 3, `tabs, Table/Cards and the theme switch each run one view transition (${vt.n})`);
+    // Aa → Motion off: nothing waits, nothing counts, switches are instant.
+    await page.uncheck('#motion-toggle');
+    const off = await htmlState(page);
+    ok(!off.motionOk && off.motion === 'off' && (await page.evaluate(() => localStorage.getItem('mdshare-motion'))) === 'off', `the Motion switch turns motion off and remembers it (${JSON.stringify(off)})`);
+    await page.keyboard.press('Escape');
+    const p2 = await context.newPage();
+    await gotoResilient(p2, `${ctx.serverUrl}/v/${id}`, { waitUntil: 'load' });
+    await waitRendered(p2);
+    await p2.waitForTimeout(700);
+    const r2 = await p2.evaluate(() => ({ marked: document.querySelectorAll('#content .rv, #content .rv-group, #content .rv-k').length, seen: window.__counts.length }));
+    ok(r2.marked === 0 && r2.seen === 0, `with Motion off nothing is hidden and no number counts (${JSON.stringify(r2)})`);
+    await p2.click('#content .md-tabbar button:nth-child(2)');
+    const sync = await p2.evaluate(() => ({ selected: document.querySelector('#content .md-tabbar button:nth-child(2)').getAttribute('aria-selected'), vt: window.__vt }));
+    ok(sync.selected === 'true' && sync.vt === 0, `with Motion off a tab switches at once, without a view transition (${JSON.stringify(sync)})`);
+    await page.screenshot({ path: ctx.proofPath });
+  }, { viewport: { width: 1280, height: 900 } });
+
+  // The OS setting wins over the switch.
+  await withContext(ctx, async (context) => {
+    await context.addInitScript(spy);
+    const page = await openOwner(ctx, context, `/v/${id}`);
+    await waitRendered(page);
+    await page.waitForTimeout(500);
+    const r = await page.evaluate(() => { const sw = document.getElementById('motion-toggle'); return { motionOk: document.documentElement.classList.contains('motion-ok'), marked: document.querySelectorAll('#content .rv, #content .rv-group').length, seen: window.__counts.length, disabled: sw.disabled, checked: sw.checked, note: document.getElementById('motion-note').textContent }; });
+    ok(!r.motionOk && r.marked === 0 && r.seen === 0 && r.disabled && !r.checked && /reduced motion/.test(r.note), `with the OS reduced-motion setting nothing is hidden or counted, and the switch says why (${JSON.stringify(r)})`);
+  }, { viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
+
+  // Without JavaScript the document is readable and nothing is hidden.
+  await ownerApi(ctx, 'PATCH', '/api/pin', { id, kind: 'paste', is_public: true });
+  await withContext(ctx, async (context) => {
+    const page = await openAnon(ctx, context, `/v/${id}`);
+    const r = await page.evaluate(() => ({ cls: document.documentElement.className, text: (document.querySelector('#content pre') || {}).textContent || '' }));
+    ok(!/motion-ok/.test(r.cls) && r.text.includes('Section 10') && (await page.isVisible('#content pre')), 'without JavaScript the document text is shown and nothing waits for a reveal');
+  }, { javaScriptEnabled: false });
+}
+
+async function runResumeReading(ctx, ok) {
+  const zh = await seedChrome(ctx, longDoc(true));
+  const en = await seedChrome(ctx, longDoc(false));
+  const spotOf = (page, id) => page.evaluate((i) => JSON.parse(localStorage.getItem('mdshare-resume') || '{}')[i] || null, id);
+  const setSpot = (page, id, s) => page.evaluate(([i, v]) => { const all = JSON.parse(localStorage.getItem('mdshare-resume') || '{}'); all[i] = v; localStorage.setItem('mdshare-resume', JSON.stringify(all)); }, [id, s]);
+  const pillOf = (page) => page.evaluate(() => { const p = document.querySelector('.resume-pill'); if (!p) return null; const r = p.getBoundingClientRect(); return { text: p.textContent, shown: p.classList.contains('show'), left: r.left, right: r.right, y: scrollY, overflow: document.documentElement.scrollWidth - innerWidth }; });
+  const scrollToSection = (page, n) => page.evaluate((i) => { const h = document.querySelectorAll('#content h2')[i]; window.scrollTo(0, h.getBoundingClientRect().top + scrollY - 70); }, n);
+  const open = async (context, url) => { const p = await context.newPage(); await gotoResilient(p, `${ctx.serverUrl}${url}`, { waitUntil: 'load' }); await waitRendered(p); return p; };
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, `/v/${zh.id}`);
+    await waitRendered(page);
+    await page.waitForTimeout(400);
+    ok((await spotOf(page, zh.id)) === null, 'opening a document saves nothing until you scroll');
+    await scrollToSection(page, 4);
+    await page.waitForTimeout(1400);
+    const spot = await spotOf(page, zh.id);
+    const h5 = await page.evaluate(() => document.querySelectorAll('#content h2')[4].id);
+    ok(spot && spot.h === h5 && spot.r > 0.1 && spot.r < 0.95 && Math.abs(Date.now() - spot.t) < 60000, `scrolling saves the section and how far down you are (${JSON.stringify(spot)})`);
+
+    // Reopening offers the pill; the page never moves by itself.
+    const again = await open(context, `/v/${zh.id}`);
+    await again.waitForSelector('.resume-pill.show', { timeout: 4000 });
+    await again.waitForTimeout(700);
+    const p1 = await pillOf(again);
+    ok(p1 && p1.text.includes('从上次读到的地方继续') && p1.text.includes('· 第5节') && p1.y === 0, `reopening offers “从上次读到的地方继续 · 第5节” and does not scroll (${JSON.stringify(p1)})`);
+    ok(p1.left >= 0 && p1.right <= 390 && p1.overflow <= 0, 'the pill fits a 390px phone');
+    await again.screenshot({ path: ctx.proofPath });
+    await again.click('.resume-pill');
+    await again.waitForFunction(() => { const t = document.querySelectorAll('#content h2')[4].getBoundingClientRect().top; return t > 40 && t < 110; }, null, { timeout: 4000 });
+    await again.waitForTimeout(400);
+    const at = await again.evaluate(() => { const h = document.querySelectorAll('#content h2')[4]; return { top: Math.round(h.getBoundingClientRect().top), pill: !!document.querySelector('.resume-pill'), focused: document.activeElement === h }; });
+    ok(at.top > 40 && at.top < 110 && !at.pill && at.focused, `tapping it scrolls to that section and focuses it (${JSON.stringify(at)})`);
+
+    // A #link, an old or out-of-range spot: no pill.
+    const h3 = await again.evaluate(() => document.querySelectorAll('#content h2')[2].id);
+    const linked = await context.newPage();
+    await gotoResilient(linked, `${ctx.serverUrl}/v/${zh.id}#${encodeURIComponent(h3)}`, { waitUntil: 'load' });
+    await waitRendered(linked);
+    await linked.waitForTimeout(800);
+    ok(!(await linked.$('.resume-pill')), 'a link to a #section never shows the pill');
+    // Close the pages that scrolled (they save on the way out) before planting test spots.
+    await linked.close(); await again.close();
+    for (const [label, s] of [['31 days old', { h: h5, r: 0.5, t: Date.now() - 31 * 864e5 }], ['at 5%', { h: h5, r: 0.05, t: Date.now() }], ['at 97%', { h: h5, r: 0.97, t: Date.now() }]]) {
+      await setSpot(page, zh.id, s);
+      const p = await open(context, `/v/${zh.id}`);
+      await p.waitForTimeout(800);
+      ok(!(await p.$('.resume-pill')), `no pill when the saved spot is ${label}`);
+      await p.close();
+    }
+
+    // It goes away when you scroll, or by itself after about 8 seconds.
+    await setSpot(page, zh.id, { h: h5, r: 0.5, t: Date.now() });
+    const p3 = await open(context, `/v/${zh.id}`);
+    await p3.waitForSelector('.resume-pill.show', { timeout: 4000 });
+    await p3.evaluate(() => window.scrollBy(0, 300));
+    await p3.waitForTimeout(600);
+    ok(!(await p3.$('.resume-pill')), 'scrolling hides the pill');
+    await p3.close();
+    await setSpot(page, zh.id, { h: h5, r: 0.5, t: Date.now() });
+    const p4 = await open(context, `/v/${zh.id}`);
+    await p4.waitForSelector('.resume-pill.show', { timeout: 4000 });
+    await p4.waitForTimeout(8800);
+    ok(!(await p4.$('.resume-pill')) && (await p4.evaluate(() => scrollY)) === 0, 'left alone, the pill goes after about 8 seconds and the page never moved');
+
+    // Only the newest 200 documents are remembered.
+    await page.evaluate(() => { const all = {}; for (let i = 0; i < 205; i++) all['old' + i] = { h: '', r: 0.5, t: 1000 + i }; localStorage.setItem('mdshare-resume', JSON.stringify(all)); });
+    await scrollToSection(p4, 6);
+    await p4.waitForTimeout(1400);
+    const cap = await p4.evaluate((cur) => { const all = JSON.parse(localStorage.getItem('mdshare-resume')); return { n: Object.keys(all).length, cur: !!all[cur], oldest: ['old0', 'old5'].filter((k) => all[k]).length, kept: !!all.old6 }; }, zh.id);
+    ok(cap.n === 200 && cap.cur && cap.oldest === 0 && cap.kept, `at most 200 documents are kept, oldest dropped first (${JSON.stringify(cap)})`);
+
+    // English documents get the English pill.
+    const e1 = await open(context, `/v/${en.id}`);
+    await scrollToSection(e1, 4);
+    await e1.waitForTimeout(1400);
+    const e2 = await open(context, `/v/${en.id}`);
+    await e2.waitForSelector('.resume-pill.show', { timeout: 4000 });
+    const pe = await pillOf(e2);
+    ok(pe && pe.text.includes('Continue where you left off') && pe.text.includes('Section 5'), `English documents say “Continue where you left off · Section 5” (${pe && pe.text})`);
+  }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+}
+
+async function runSettingsReading(ctx, ok) {
+  const zh = await seedChrome(ctx, fixture('zh-explainer.md'));
+  const pub = await seedChrome(ctx, fixture('en-report.md'));
+  await ownerApi(ctx, 'PATCH', '/api/pin', { id: pub.id, kind: 'paste', is_public: true });
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, '/settings#reading');
+    await page.waitForSelector('#reading #reading-sample', { timeout: 5000 });
+    const r = await page.evaluate(() => { const c = document.getElementById('reading'); return { controls: ['theme-seg', 'zoom-in', 'zoom-out', 'zoom-val', 'font-seg', 'leading-seg', 'width-seg', 'tables-seg', 'motion-toggle', 'gloss-toggle', 'reading-reset'].filter((id) => c.querySelector('#' + id)).length, themes: [...c.querySelectorAll('#theme-seg button')].map((b) => b.dataset.v), top: Math.round(c.getBoundingClientRect().top), others: !!document.getElementById('pref-autokeep') && !!document.querySelector('#tokens #btn-create-token') && !!document.getElementById('tokens-list') && !!document.getElementById('btn-signout'), single: document.querySelectorAll('#theme-seg, #gloss-toggle').length }; });
+    ok(r.controls === 11 && JSON.stringify(r.themes) === '["light","paper","dark","system"]' && r.single === 2, `Settings → Reading has every reading preference, a sample and Reset (${r.controls}/11)`);
+    ok(r.top >= 0 && r.top < 200, `/settings#reading (the Aa menu link) opens at the Reading panel (top ${r.top}px)`);
+    ok(r.others, 'publishing, API tokens and sign-out are still on the page');
+    await page.click('#reading #theme-seg [data-v="paper"]');
+    await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'paper', null, { timeout: 3000 });
+    await page.click('#reading #font-seg [data-v="serif"]');
+    await page.click('#reading #leading-seg [data-v="loose"]');
+    await page.click('#reading #zoom-in');
+    await page.click('#reading #width-seg [data-v="wide"]');
+    await page.click('#reading #tables-seg [data-v="cards"]');
+    await page.uncheck('#reading #motion-toggle');
+    await page.check('#reading #gloss-toggle');
+    const s = await page.evaluate(() => { const lr = (el) => { const cs = getComputedStyle(el); return Math.round(parseFloat(cs.lineHeight) / parseFloat(cs.fontSize) * 100) / 100; }; const en = document.querySelector('#reading-sample .prose:not(.cjk) p'), zh = document.querySelector('#reading-sample .prose.cjk p'); return { font: getComputedStyle(en).fontFamily, size: parseFloat(getComputedStyle(en).fontSize), en: lr(en), zh: lr(zh), zoom: document.getElementById('zoom-val').textContent, store: Object.fromEntries(['theme', 'font', 'leading', 'zoom', 'width', 'tables', 'motion', 'gloss'].map((k) => [k, localStorage.getItem('mdshare-' + k)])) }; });
+    ok(/Instrument Serif/.test(s.font) && Math.abs(s.size - 18.5 * 1.1) < 0.1 && s.zoom === '110%' && s.en === 1.94 && s.zh === 2.04, `the sample follows the choices live: Serif, 110%, Loose (${JSON.stringify({ ...s, store: undefined })})`);
+    ok(JSON.stringify(s.store) === JSON.stringify({ theme: 'paper', font: 'serif', leading: 'loose', zoom: '1.1', width: 'wide', tables: 'cards', motion: 'off', gloss: 'on' }), `each control stores its preference under the Aa menu's keys (${JSON.stringify(s.store)})`);
+    await page.screenshot({ path: ctx.proofPath.replace(/\.png$/, '-desktop.png'), fullPage: true });
+
+    const doc = await context.newPage();
+    await gotoResilient(doc, `${ctx.serverUrl}/v/${zh.id}`, { waitUntil: 'load' });
+    await waitRendered(doc);
+    const d = { ...(await htmlState(doc)), ...(await doc.evaluate(() => ({ gloss: document.querySelectorAll('#content abbr.md-gloss').length, pressed: ['theme-seg', 'leading-seg', 'font-seg'].map((id) => document.querySelector(`#${id} [aria-pressed="true"]`).dataset.v).join('/') }))) };
+    ok(d.theme === 'paper' && d.font === 'serif' && d.leading === 'loose' && d.width === 'wide' && d.zoom === '1.1' && !d.motionOk && d.gloss > 0 && d.pressed === 'paper/loose/serif', `a document opens with the Settings choices and its Aa menu shows them (${JSON.stringify(d)})`);
+    await doc.click('#btn-aa');
+    const link = await doc.evaluate(() => { const a = document.getElementById('aa-more'); return a && { href: a.getAttribute('href'), h: a.getBoundingClientRect().height }; });
+    ok(link && link.href === '/settings#reading' && link.h > 0, 'the owner\'s Aa menu links to “More reading settings”');
+
+    await page.bringToFront();
+    await page.click('#reading-reset');
+    await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'light', null, { timeout: 3000 });
+    const z = { ...(await htmlState(page)), ...(await page.evaluate(() => ({ zoomText: document.getElementById('zoom-val').textContent, keys: ['theme', 'font', 'leading', 'width', 'tables', 'motion', 'gloss'].filter((k) => localStorage.getItem('mdshare-' + k) !== null), pressed: ['theme-seg', 'font-seg', 'leading-seg', 'width-seg', 'tables-seg'].map((id) => document.querySelector(`#${id} [aria-pressed="true"]`).dataset.v).join('/'), gloss: document.getElementById('gloss-toggle').checked, sw: document.getElementById('motion-toggle').checked, toast: document.getElementById('toast').textContent }))) };
+    ok(z.font === null && z.leading === null && z.width === null && z.motion === null && z.motionOk && z.zoomText === '100%' && z.keys.length === 0 && z.pressed === 'system/sans/comfortable/standard/auto' && !z.gloss && z.sw && /defaults/.test(z.toast), `Reset puts every reading preference back to its default (${JSON.stringify(z)})`);
+  }, { viewport: { width: 1280, height: 900 } });
+  await withContext(ctx, async (context) => {
+    const page = await openAnon(ctx, context, `/v/${pub.id}`);
+    await waitRendered(page);
+    ok((await page.locator('#aa-more').count()) === 0 && (await page.locator('#aa-pop #leading-seg').count()) === 1 && (await page.locator('#aa-pop #theme-seg [data-v="paper"]').count()) === 1, 'a reader gets Paper, Line spacing and Motion in the Aa menu, but no Settings link (Settings is owner-only)');
+  });
+  await withContext(ctx, async (context) => {
+    const page = await openOwner(ctx, context, '/settings#reading');
+    await page.waitForSelector('#reading #reading-sample', { timeout: 5000 });
+    const r = await page.evaluate(() => ({ overflow: document.documentElement.scrollWidth - innerWidth, fits: [...document.querySelectorAll('#reading .seg, #reading .aa-size, #reading .switch, #reading-sample')].every((e) => { const b = e.getBoundingClientRect(); return b.left >= 0 && b.right <= innerWidth; }) }));
+    ok(r.overflow <= 0 && r.fits, `Settings → Reading fits a 390px phone (${JSON.stringify(r)})`);
+    await page.screenshot({ path: ctx.proofPath, fullPage: true });
+  }, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+}
+
 async function runEditSave(ctx, ok) {
   const { id } = await seedPaste(ctx.serverUrl, '# Edit me\n\nOriginal text.');
   await withContext(ctx, async (context) => {
@@ -1646,6 +1999,10 @@ const RUNNERS = {
   'directives': runDirectives,
   'xss-safety': runXssSafety,
   'reading-settings': runReadingSettings,
+  'reader-prefs': runReaderPrefs,
+  'reader-motion': runReaderMotion,
+  'resume-reading': runResumeReading,
+  'settings-reading': runSettingsReading,
   'edit-save': runEditSave,
   'library': runLibrary,
   'settings-signout': runSettingsSignout,

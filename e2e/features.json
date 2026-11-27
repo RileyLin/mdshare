@@ -281,6 +281,76 @@
     ]
   },
   {
+    "id": "reader-prefs",
+    "name": "Paper theme, line spacing, phone title, wide measure; preferences follow you",
+    "path": "/v/:id Aa menu (Theme, Line spacing), /guide, /, /dashboard, /settings",
+    "steps": [
+      "open a Chinese document: check the defaults, the light theme's contrast",
+      "Aa → Paper, Dark, Loose, Compact; open an English document, the guide, home, Library, Settings, a Mermaid document",
+      "390px phone: the title and the Aa sheet; 1440px with Wide: tables vs text"
+    ],
+    "assertions": [
+      "defaults unchanged (System, Comfortable = line-height 1.85, Standard, Sans, Auto, hints off); motion on",
+      "Paper is a warm light theme; light, paper and dark text colours all pass WCAG AA (4.5:1); toolbar colour follows",
+      "Loose/Compact change the line height, Chinese a little more than Latin",
+      "choices apply on every page before it renders; Settings shows them; Mermaid draws Paper as light",
+      "phone title 22-34px with tighter leading, the summary in the top half; the Aa sheet fits 390px",
+      "Wide: tables use the room, running text stays at the standard measure, no sideways scroll"
+    ]
+  },
+  {
+    "id": "reader-motion",
+    "name": "Motion: reveals, count-ups, view transitions; off switch, OS reduced motion, print, no JS",
+    "path": "/v/:id (long document with stats, a list, tabs, a table), Aa → Motion",
+    "steps": [
+      "open with motion on (default), look at the first screen, print preview, scroll down",
+      "switch a tab, Table/Cards and the theme",
+      "turn Motion off and reopen; open with OS reduced motion; open without JavaScript"
+    ],
+    "assertions": [
+      "nothing on the first screen is hidden; later blocks wait to fade in; list items 35ms apart, max 8",
+      "number cards count up from 0 and end on their exact text; years, Q3 and ranges never count",
+      "print shows waiting blocks; arrived blocks keep no motion classes",
+      "tabs, Table/Cards and the theme each run one view transition",
+      "Motion off or OS reduced motion: nothing hidden, nothing counts, switches are instant, the switch says why",
+      "without JavaScript the document text shows"
+    ]
+  },
+  {
+    "id": "resume-reading",
+    "name": "Resume where you left off (pill, never auto-jumps)",
+    "path": "/v/:id at 390px, localStorage mdshare-resume",
+    "steps": [
+      "open a long Chinese document, scroll to section 5, reopen it, tap the pill",
+      "reopen with a #link, with spots 31 days old / at 5% / at 97%",
+      "reopen and scroll; reopen and wait 8 s; plant 205 old spots; an English document"
+    ],
+    "assertions": [
+      "nothing is saved until you scroll; then {heading, ratio, time} per document",
+      "reopening shows “从上次读到的地方继续 · <section>” without scrolling; it fits 390px",
+      "tapping scrolls to the section and focuses it",
+      "no pill with a #link, an old spot, or one under 10% / over 95%",
+      "scrolling hides it; it goes by itself after ~8 s; the page never moves",
+      "at most 200 documents, oldest dropped; English documents get the English text"
+    ]
+  },
+  {
+    "id": "settings-reading",
+    "name": "Settings → Reading panel (every reading preference, live sample, reset)",
+    "path": "/settings#reading, Aa → More reading settings",
+    "steps": [
+      "owner opens /settings#reading; changes theme, font, size, spacing, width, tables, motion, hints",
+      "opens a document; resets in Settings; a reader opens a public document; 390px phone"
+    ],
+    "assertions": [
+      "the panel has every reading preference, a sample and Reset; the link opens at it; tokens and sign-out untouched",
+      "the sample follows changes live; each control stores the Aa menu's key",
+      "a document opens with those choices and its Aa menu shows them; the owner's Aa menu links here",
+      "Reset restores every default",
+      "readers get the new Aa controls but no Settings link; the panel fits 390px"
+    ]
+  },
+  {
     "id": "edit-save",
     "name": "Edit with live preview and save",
     "path": "/v/:id editor",
