@@ -241,6 +241,17 @@
   }
 
   var SUMMARY_RE = /^(一句话结论|一句话总结|一句话|核心结论|结论|总结|摘要|TL;?DR|Bottom line|Summary|Key takeaways?)$/i;
+  // A numbered list of 2-12 items that all start in bold: shown as numbered step cards.
+  function isStepCards(ol) {
+    var items = kids(ol);
+    if (items.length < 2 || items.length > 12) return false;
+    return items.every(function (li) {
+      var f = li.firstElementChild, first = li.firstChild;
+      if (f && f.tagName === 'P') { first = f.firstChild; f = f.firstElementChild; }
+      return f && f.tagName === 'STRONG' && first === f && textOf(f).length <= 60;
+    });
+  }
+  function headTitle(h) { return textOf(h).replace(/[：:]\s*$/, '').trim(); }
   function summaryCard(root) {
     var all = kids(root);
     var h2Count = 0;
@@ -263,23 +274,247 @@
     }
   }
 
+  // Glossary: a "##" section titled 术语 / 术语表 / 名词解释 / 关键术语 / Glossary / Terms / Key terms whose bullet
+  // lists are all "- **TERM**：definition" becomes a tidy card, and the FIRST time each term appears in
+  // the body it gets a dotted underline that opens its definition. Text nodes only (TreeWalker +
+  // createElement): the readable text is unchanged, and the popover is built on demand outside the
+  // document. "**TTS, Text-to-Speech（文本转语音）**" matches TTS, Text-to-Speech or 文本转语音.
+  var GLOSSARY_RE = /^(术语|术语表|名词解释|关键术语|Glossary|Terms|Key terms)$/i;
+  var GL_SEP = /^\s*[：:—–]\s*/;
+  var CJK_CH = new RegExp('[' + CJK + ']');
+  var LATIN_EDGE = /[A-Za-z0-9\u00c0-\u024f]/;
+  var TERM_SKIP = 'h1, h2, h3, h4, h5, h6, a, code, pre, kbd, samp, abbr, button, summary, th, svg, .mermaid, .md-badge, .md-label, .md-block-title, .md-stat .v, .md-term, .md-glossary, .md-tabbar';
+  function glossaryEntry(li) {
+    var row = li.firstElementChild && li.firstElementChild.tagName === 'P' && li.firstChild === li.firstElementChild ? li.firstElementChild : li;
+    var s = row.firstChild;
+    if (!s || s.nodeType !== 1 || s.tagName !== 'STRONG') return null;
+    var raw = textOf(s), sepIn = /[：:]$/.test(raw), term = raw.replace(/[：:]$/, '').trim();
+    if (!term || term.length > 80) return null;
+    var after = s.nextSibling;
+    if (!sepIn && !(after && after.nodeType === 3 && GL_SEP.test(after.nodeValue))) return null;
+    var def = '';
+    for (var n = after; n; n = n.nextSibling) if (!(n.nodeType === 1 && /^(UL|OL)$/.test(n.tagName))) def += n.textContent;
+    def = def.replace(GL_SEP, '').replace(/\s+/g, ' ').trim();
+    return def ? { row: row, strong: s, term: term, def: def, sepIn: sepIn } : null;
+  }
+  // Card layout: term | definition. The separator stays in the text (hidden visually).
+  function shapeGlossaryRow(e) {
+    var row = e.row, s = e.strong, start;
+    row.classList.add('md-gl-row');
+    if (e.sepIn) {
+      var last = s.lastChild, m = last && last.nodeType === 3 ? /[：:]\s*$/.exec(last.nodeValue) : null;
+      if (m) { last.nodeValue = last.nodeValue.slice(0, m.index); s.appendChild(el('span', 'md-gl-sep', m[0])); }
+      start = s.nextSibling;
+    } else {
+      var t = s.nextSibling, m2 = GL_SEP.exec(t.nodeValue), sep = el('span', 'md-gl-sep', m2[0]);
+      t.nodeValue = t.nodeValue.slice(m2[0].length);
+      row.insertBefore(sep, t);
+      start = t;
+    }
+    var def = el('span', 'md-gl-def'), moving = [];
+    for (var n = start; n; n = n.nextSibling) { if (n.nodeType === 1 && /^(UL|OL)$/.test(n.tagName)) break; moving.push(n); }
+    row.insertBefore(def, start || null);
+    moving.forEach(function (x) { def.appendChild(x); });
+  }
+  function termAliases(term) {
+    var inner = [], out = [];
+    // The names outside parentheses first ("TTS, Text-to-Speech"), then the ones inside ("文本转语音").
+    var rest = term.replace(/[（(]([^（）()]*)[）)]/g, function (_, x) { inner.push(x); return ','; });
+    [rest].concat(inner).forEach(function (p) {
+      p = p.replace(/\s+[/／]\s+|／|[，、；;]|,(?!\d)/g, '\u0000').replace(new RegExp('([' + CJK + '])/(?=[' + CJK + '])', 'g'), '$1\u0000');
+      p.split('\u0000').forEach(function (a) {
+        a = a.replace(/\s+/g, ' ').trim();
+        if (a.length >= 2 && a.length <= 40 && (/[A-Za-z]/.test(a) || CJK_CH.test(a)) && out.indexOf(a) === -1) out.push(a);
+      });
+    });
+    return out.slice(0, 6);
+  }
+  // Same key for an alias and for the text it matched: whitespace collapsed, none next to CJK.
+  function wkey(s) { return s.replace(/\s+/g, ' ').replace(new RegExp(' ?([' + CJK + ']) ?', 'g'), '$1').trim(); }
+  function aliasPattern(a) {
+    var p = '', prev = '';
+    for (var i = 0; i < a.length; i++) {
+      var c = a.charAt(i);
+      if (/\s/.test(c)) continue;
+      if (prev) {
+        var gap = /\s/.test(a.charAt(i - 1)), cj = CJK_CH.test(c), pj = CJK_CH.test(prev);
+        if (cj !== pj) p += '\\s*'; else if (gap) p += cj ? '\\s*' : '\\s+';
+      }
+      p += c.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
+      prev = c;
+    }
+    return p;
+  }
+  function glossary(root) {
+    var all = kids(root), h = null;
+    for (var i = 0; i < all.length && !h; i++) if (all[i].tagName === 'H2' && GLOSSARY_RE.test(headTitle(all[i]))) h = all[i];
+    if (!h) return;
+    var run = [], entries = [];
+    for (var n = h.nextElementSibling; n && (/^(P|UL|OL|H3|H4|H5|H6|BLOCKQUOTE)$/.test(n.tagName) || n.classList.contains('md-callout')); n = n.nextElementSibling) run.push(n);
+    run.forEach(function (list) {
+      if (list.tagName !== 'UL' || !list.children.length) return;
+      var es = kids(list).map(glossaryEntry);
+      if (es.some(function (e) { return !e; })) return;
+      list.classList.add('md-glossary-list');
+      entries = entries.concat(es);
+    });
+    if (!entries.length) return;
+    var card = el('section', 'md-glossary');
+    h.parentNode.insertBefore(card, h);
+    card.appendChild(h);
+    run.forEach(function (x) { card.appendChild(x); });
+    entries.forEach(shapeGlossaryRow);
+    markTerms(root, entries.slice(0, 200), h);
+  }
+  function markTerms(root, entries, head) {
+    var keys = {}, alts = [], names = entries.map(function (e) { return termAliases(e.term); });
+    // Every entry's first name before anyone's second; bounded, since it is one regex over the document.
+    for (var r = 0; r < 6; r++) {
+      names.forEach(function (list, i) {
+        var a = list[r], k = a && wkey(a).toLowerCase();
+        if (!a || keys[k] || alts.length >= 240) return;
+        // ALL-CAPS names (TTS, H100) match case-sensitively; others ignore case.
+        keys[k] = { entry: entries[i], cs: !/[a-z]/.test(a), wk: wkey(a), lead: LATIN_EDGE.test(a.charAt(0)), tail: LATIN_EDGE.test(a.charAt(a.length - 1)) };
+        alts.push(a);
+      });
+    }
+    if (!alts.length) return;
+    alts.sort(function (x, y) { return y.length - x.length; }); // longest first
+    var re = new RegExp(alts.map(aliasPattern).join('|'), 'gi');
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (t) { return !t.nodeValue.trim() || t.parentElement.closest(TERM_SKIP) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT; },
+    });
+    var list = [], left = entries.length;
+    while (walker.nextNode()) list.push(walker.currentNode);
+    for (var i = 0; i < list.length && left > 0; i++) {
+      var t = list[i], s = t.nodeValue, m, last = 0, frag = null;
+      re.lastIndex = 0;
+      while (left > 0 && (m = re.exec(s))) {
+        var info = keys[wkey(m[0]).toLowerCase()], st = m.index, en = st + m[0].length;
+        if (!info) continue;
+        // Latin terms need non-alphanumeric neighbours ("SM" is not in "SMS"); CJK terms match as is.
+        if ((info.cs && wkey(m[0]) !== info.wk) || (info.lead && st > 0 && LATIN_EDGE.test(s.charAt(st - 1))) || (info.tail && en < s.length && LATIN_EDGE.test(s.charAt(en)))) { re.lastIndex = st + 1; continue; }
+        if (info.entry.marked) continue; // first occurrence only
+        info.entry.marked = true; left--;
+        frag = frag || document.createDocumentFragment();
+        frag.appendChild(document.createTextNode(s.slice(last, st)));
+        var term = el('span', 'md-term', m[0]);
+        term.setAttribute('role', 'button'); term.tabIndex = 0;
+        term.setAttribute('aria-haspopup', 'dialog'); term.setAttribute('aria-expanded', 'false');
+        term._mdGloss = { term: info.entry.term, def: info.entry.def, head: head };
+        frag.appendChild(term);
+        last = en;
+      }
+      if (frag) { frag.appendChild(document.createTextNode(s.slice(last))); t.parentNode.replaceChild(frag, t); }
+    }
+    if (entries.some(function (e) { return e.marked; })) bindTerms();
+  }
+
+  // The term popover: one at a time, appended to <body> (never inside the document text), fixed
+  // next to its term. Hover (mouse) previews it, keyboard focus previews it, a click/tap/Enter pins it
+  // (Enter also moves focus into it); Escape, Tab out or a tap outside closes it.
+  var termPop = null, termTimer = 0, termBound = false, termRefocus = false;
+  function placeTermPop() {
+    if (!termPop) return;
+    var t = termPop.term, pop = termPop.pop;
+    if (!t.isConnected) { closeTermPop(false); return; }
+    var rs = t.getClientRects(), first = rs[0] || t.getBoundingClientRect(), last = rs[rs.length - 1] || first;
+    var vw = document.documentElement.clientWidth, vh = innerHeight, pw = pop.offsetWidth, ph = pop.offsetHeight;
+    var up = last.bottom + 8 + ph > vh - 8 && first.top - 8 - ph > 8;
+    var anchor = up ? first : last;
+    pop.style.left = Math.round(Math.max(8, Math.min(anchor.left, vw - pw - 8))) + 'px';
+    pop.style.top = Math.round(up ? first.top - 8 - ph : last.bottom + 8) + 'px';
+  }
+  function openTermPop(t, pinned, focusIn) {
+    clearTimeout(termTimer);
+    if (termPop && termPop.term === t) { if (pinned) termPop.pinned = true; if (focusIn) termPop.pop.focus(); return; }
+    closeTermPop(false);
+    var g = t._mdGloss; if (!g) return;
+    var zh = !!t.closest('.cjk');
+    var pop = el('div', 'md-term-pop'); pop.id = 'md-term-pop'; pop.tabIndex = -1;
+    pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-labelledby', 'md-term-pop-t'); pop.setAttribute('aria-describedby', 'md-term-pop-d');
+    var title = el('div', 'md-term-pop-t', g.term); title.id = 'md-term-pop-t';
+    var def = el('p', 'md-term-pop-d', g.def.length > 320 ? g.def.slice(0, 300) + '…' : g.def); def.id = 'md-term-pop-d';
+    pop.appendChild(title); pop.appendChild(def);
+    if (g.head && g.head.id) { var a = el('a', 'md-term-pop-all', zh ? '全部术语 →' : 'All terms →'); a.setAttribute('href', '#' + g.head.id); pop.appendChild(a); }
+    document.body.appendChild(pop);
+    termPop = { term: t, pop: pop, pinned: !!pinned };
+    t.setAttribute('aria-expanded', 'true'); t.setAttribute('aria-controls', pop.id);
+    placeTermPop();
+    if (focusIn) pop.focus();
+  }
+  function closeTermPop(refocus) {
+    clearTimeout(termTimer);
+    if (!termPop) return;
+    var t = termPop.term;
+    termPop.pop.remove();
+    termPop = null;
+    t.setAttribute('aria-expanded', 'false'); t.removeAttribute('aria-controls');
+    if (refocus && t.isConnected) { termRefocus = true; t.focus(); termRefocus = false; }
+  }
+  function termOf(n) { return n && n.closest ? n.closest('.md-term') : null; }
+  function inTermPop(n) { return !!(termPop && n && (termPop.pop.contains(n) || termPop.term.contains(n))); }
+  function bindTerms() {
+    if (termBound) return;
+    termBound = true;
+    document.addEventListener('click', function (e) {
+      var t = termOf(e.target);
+      if (t) { if (termPop && termPop.term === t && termPop.pinned) closeTermPop(false); else openTermPop(t, true, false); return; }
+      if (termPop && e.target.closest && e.target.closest('.md-term-pop-all')) closeTermPop(false);
+    });
+    document.addEventListener('keydown', function (e) {
+      var t = termOf(e.target);
+      if (t && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openTermPop(t, true, true); return; }
+      if (!termPop) return;
+      var inside = inTermPop(e.target);
+      if (e.key === 'Escape') { closeTermPop(inside); return; }
+      if (e.key === 'Tab' && termPop.pop.contains(e.target)) {
+        var link = termPop.pop.querySelector('a');
+        if (!e.shiftKey && link && e.target !== link) { e.preventDefault(); link.focus(); return; }
+        e.preventDefault(); closeTermPop(true);
+      }
+    });
+    document.addEventListener('focusin', function (e) {
+      if (termRefocus) return;
+      var t = termOf(e.target);
+      if (t) {
+        var keyboard;
+        try { keyboard = t.matches(':focus-visible'); } catch (x) { keyboard = false; }
+        if (keyboard) openTermPop(t, false, false);
+        return;
+      }
+      if (termPop && !inTermPop(e.target)) closeTermPop(false);
+    });
+    document.addEventListener('pointerdown', function (e) { if (termPop && !inTermPop(e.target)) closeTermPop(false); }, true);
+    document.addEventListener('pointerover', function (e) {
+      if (e.pointerType !== 'mouse') return;
+      var t = termOf(e.target);
+      if (t) { clearTimeout(termTimer); if (!(termPop && termPop.term === t)) termTimer = setTimeout(function () { openTermPop(t, false, false); }, 140); }
+      else if (inTermPop(e.target)) clearTimeout(termTimer);
+    });
+    document.addEventListener('pointerout', function (e) {
+      if (e.pointerType !== 'mouse') return;
+      var from = termOf(e.target) || (inTermPop(e.target) ? e.target : null);
+      if (!from || termOf(e.relatedTarget) === from || inTermPop(e.relatedTarget)) return;
+      clearTimeout(termTimer);
+      if (termPop && !termPop.pinned) termTimer = setTimeout(function () { if (termPop && !termPop.pinned) closeTermPop(false); }, 240);
+    });
+    var raf = 0;
+    var follow = function () { if (termPop && !raf) raf = requestAnimationFrame(function () { raf = 0; placeTermPop(); }); };
+    addEventListener('scroll', follow, { passive: true, capture: true });
+    addEventListener('resize', follow);
+  }
+
   function listRules(root) {
     root.querySelectorAll('ol').forEach(function (ol) {
       if (ol.closest('table, .md-summary, .md-timeline, .md-callout')) return;
-      var items = kids(ol);
-      if (items.length < 2 || items.length > 12) return;
-      var ok = items.every(function (li) {
-        var f = li.firstElementChild, first = li.firstChild;
-        if (f && f.tagName === 'P') { first = f.firstChild; f = f.firstElementChild; }
-        return f && f.tagName === 'STRONG' && first === f && textOf(f).length <= 60;
-      });
-      if (!ok) return;
+      if (!isStepCards(ol)) return;
       ol.classList.add('md-steps');
       var start = parseInt(ol.getAttribute('start'), 10);
       if (start > 1) ol.style.setProperty('--start', String(start - 1));
     });
     root.querySelectorAll('ul').forEach(function (ul) {
-      if (ul.closest('table, .md-compare, .md-cards')) return;
+      if (ul.closest('table, .md-compare, .md-cards, .md-glossary')) return;
       var items = kids(ul);
       if (items.length < 2) return;
       var ok = items.every(function (li) {
@@ -604,7 +839,7 @@
   var GLOSS_SKIP = /^(含|包括|见|如|例如|比如|即|注|约|共|原文|幻灯片|来源)|["“”「」『』]/;
   function glosses(root) {
     var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode: function (n) { return n.parentElement.closest('code, pre, a, abbr, h1, h2, h3, h4, .md-badge, th') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT; },
+      acceptNode: function (n) { return n.parentElement.closest('code, pre, a, abbr, h1, h2, h3, h4, .md-badge, th, .md-term, .md-glossary') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT; },
     });
     var list = [];
     while (walker.nextNode()) list.push(walker.currentNode);
@@ -732,10 +967,12 @@
 
   function enhance(root, opts) {
     opts = opts || {};
+    if (termPop && !termPop.term.isConnected) closeTermPop(false);
     buildDirectives(root);
     callouts(root);
     subheads(root);
     summaryCard(root);
+    glossary(root);
     listRules(root);
     tables(root, opts.meta);
     codeBlocks(root, opts);
@@ -751,6 +988,7 @@
     opts = opts || {};
     if (revealIO && target === revealRoot) { revealIO.disconnect(); revealIO = null; }
     var out = toHtml(md);
+    if (termPop && target.contains(termPop.term)) closeTermPop(false);
     target.innerHTML = out.html;
     if (opts.classic) return out.meta;
     enhance(target, Object.assign({ meta: out.meta }, opts));
