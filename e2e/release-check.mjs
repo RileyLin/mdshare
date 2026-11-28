@@ -84,9 +84,22 @@ for (const [p, status, marker] of [['/dashboard', 401, 'Welcome back'], ['/setti
 // 4. A real private create (release only): stays private, raw is denied, content never leaks.
 if (MODE === 'release') {
   const marker = `release-check-${Date.now().toString(36)}`;
+  // Anonymous creates can be switched off (MDSHARE_ANON_CREATE=off, the multi-user beta). Both states
+  // are valid; the private-create checks then run on a document made with the canary token instead.
   const c = await fetch(`${BASE}/api/share`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ markdown: `# Release check\n\n${marker}`, ttl: 3600, keep: true }) });
-  const body = await c.json().catch(() => ({}));
-  check('create: anonymous POST works, keep ignored', c.status === 200 && body.id && body.kept === false && /llms\.txt$/.test(body.format_guide || ''), `status ${c.status}`);
+  let body = await c.json().catch(() => ({}));
+  const anonOff = c.status === 401;
+  if (anonOff) {
+    check('create: anonymous POST is refused (anonymous creates off) with a sign-up hint', /sign up|sign in/i.test(body.error || '') && !body.id, `status ${c.status}`);
+    body = {};
+    if (CANARY) {
+      const t = await fetch(`${BASE}/api/share`, { method: 'POST', headers: { Authorization: 'Bear' + 'er ' + CANARY, 'Content-Type': 'application/json' }, body: JSON.stringify({ markdown: `# Release check\n\n${marker}`, ttl: 3600 }) });
+      body = await t.json().catch(() => ({}));
+      check('create: token POST works', t.status === 200 && body.id && /llms\.txt$/.test(body.format_guide || ''), `status ${t.status}`);
+    }
+  } else {
+    check('create: anonymous POST works, keep ignored', c.status === 200 && body.id && body.kept === false && /llms\.txt$/.test(body.format_guide || ''), `status ${c.status}`);
+  }
   if (body.id) {
     const v = await get(`/v/${body.id}`);
     check('create: new document is private (sign-in card, no content)', v.status === 401 && !v.text.includes(marker) && v.headers.get('cache-control') === 'private, no-store', `status ${v.status}`);
