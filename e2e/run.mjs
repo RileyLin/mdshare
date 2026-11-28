@@ -124,12 +124,20 @@ async function realOwnerLoginOnce(browser, serverUrl) {
     const page = await context.newPage();
     await gotoResilient(page, `${serverUrl}/dashboard`);
     await page.fill('#pwd', OWNER_PASSWORD);
-    await page.click('#submit-btn');
-    await page.waitForURL('**/dashboard', { timeout: 5000 });
+    // Wait for the login POST itself, not the URL: the page is already on /dashboard, so
+    // waitForURL resolves at once and, on a slow CI runner, the cookie was read before the
+    // response arrived (flaky 'no mdshare_auth cookie', ci run 46091786969 attempt 1).
+    const [loginResponse] = await Promise.all([
+      page.waitForResponse((r) => r.url().includes('/api/auth') && r.request().method() === 'POST', { timeout: 15000 }),
+      page.click('#submit-btn'),
+    ]);
     await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
-    const cookies = await context.cookies();
-    const authCookie = cookies.find((c) => c.name === 'mdshare_auth');
-    if (!authCookie) throw new Error('owner login did not produce an mdshare_auth session cookie');
+    let authCookie = null;
+    for (let i = 0; i < 20 && !authCookie; i++) {
+      authCookie = (await context.cookies()).find((c) => c.name === 'mdshare_auth');
+      if (!authCookie) await page.waitForTimeout(250);
+    }
+    if (!authCookie) throw new Error(`owner login did not produce an mdshare_auth session cookie (login POST answered ${loginResponse.status()})`);
     return `mdshare_auth=${authCookie.value}`;
   } finally {
     await context.close();
